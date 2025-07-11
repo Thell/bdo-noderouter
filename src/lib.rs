@@ -25,7 +25,6 @@ impl LinkNode {
     }
 
     pub fn isolate(&mut self) {
-        // println!("Isolating node with v: {}", self.v);
         let tmp = self.prev.clone();
         if self.prev.is_some() {
             self.prev.as_ref().unwrap().borrow_mut().next = self.next.clone();
@@ -85,14 +84,6 @@ impl Node {
     }
 
     fn insert_l_node(&mut self, v: Rc<RefCell<LinkNode>>) {
-        // println!(
-        //     "Inserting l_node with v: {} next: {} prev: {} l_start: {} l_end: {}",
-        //     v.borrow().v,
-        //     v.borrow().next.is_some(),
-        //     v.borrow().prev.is_some(),
-        //     self.l_start.borrow().v,
-        //     self.l_end.borrow().v
-        // );
         v.borrow_mut().next = self.l_start.borrow().next.clone();
         v.borrow_mut().prev = Some(self.l_start.clone());
         self.l_start
@@ -106,18 +97,12 @@ impl Node {
     }
 
     fn insert_l_nodes(&mut self, v: &Node) {
-        // println!(
-        //     "Inserting l_nodes v l_start: {} l_end: {}",
-        //     self.l_start.borrow().v,
-        //     self.l_end.borrow().v
-        // );
         let v_next_opt = v.l_start.borrow().next.clone();
         if v_next_opt
             .as_ref()
             .map_or(true, |n| Rc::ptr_eq(n, &v.l_end))
             || std::ptr::eq(self, v)
         {
-            // println!("skipping insert_l_nodes");
             return;
         }
 
@@ -485,13 +470,6 @@ impl DynamicCC {
     }
 
     fn get_f(&mut self, u: usize) -> usize {
-        // if self.nodes[u].f != u:
-        //     f = self.get_f(self.nodes[u].f)
-        //     if self.nodes[u].f != f:
-        //         self.nodes[u].f = f
-        //         self.l_nodes[u].isolate()
-        //         self.nodes[f].insert_l_node(self.l_nodes[u])
-        // return self.nodes[u].f
         if self.nodes[u].f != u as i32 {
             let f = self.get_f(self.nodes[u].f as usize);
             if self.nodes[u].f != f as i32 {
@@ -566,9 +544,6 @@ impl DynamicCC {
                 self.nodes[v].l_end.borrow_mut().next = None;
             }
         }
-        // for l_node in self.l_nodes.iter() {
-        //     dbg!(l_node);
-        // }
 
         for v in 0..n {
             self.nodes[v].p = -1;
@@ -597,7 +572,6 @@ impl DynamicCC {
                         self.used[v] = true;
                         self.q.push(v as i32);
                         self.nodes[v].p = p as i32;
-                        // println!("Inserting l_node for {}", v);
                         if use_union_find {
                             self.nodes[v].f = f as i32;
                             self.nodes[f].insert_l_node(self.l_nodes[v].clone());
@@ -627,8 +601,6 @@ impl DynamicCC {
             }
         }
         self.used.fill(false);
-
-        // self.assert_valid_lstart_lists();
     }
 
     fn insert_edge_in_graph(&mut self, u: usize, v: usize) -> bool {
@@ -641,7 +613,6 @@ impl DynamicCC {
     }
 
     fn insert_edge_balanced(&mut self, mut u: usize, mut v: usize) -> i32 {
-        // println!("Entered insert_edge_balanced! u: {} v: {}", u, v);
         let (mut fu, mut fv, mut p, mut pp);
         if !self.use_union_find {
             fu = u;
@@ -702,7 +673,6 @@ impl DynamicCC {
                 }
 
                 self.nodes[p as usize].p = -1;
-                // println!("A Calling reroot from insert_edge_balanced: {} {}", u, -1);
                 self.reroot(u, -1);
 
                 self.nodes[u].p = v as i32;
@@ -718,7 +688,6 @@ impl DynamicCC {
                     p = self.nodes[p as usize].p;
                 }
                 if r != fu as i32 {
-                    // println!("B Calling reroot from insert_edge_balanced: {} {}", r, fu);
                     self.reroot(r as usize, fu as i32);
                 }
             }
@@ -759,12 +728,10 @@ impl DynamicCC {
         }
 
         if self.use_union_find {
-            // println!("Calling union_f from insert_edge_balanced: {} {}", fu, fv);
             self.union_f(fu, fv);
         }
 
         if r != fv as i32 {
-            // println!("B Calling reroot from insert_edge_balanced: {} {}", r, fv);
             self.reroot(r as usize, fv as i32);
         }
 
@@ -781,12 +748,10 @@ impl DynamicCC {
     }
 
     fn delete_edge_balanced(&mut self, mut u: usize, mut v: usize) -> i32 {
-        // println!("Entered delete_edge_balanced! u: {} v: {}", u, v);
         if (self.nodes[u].p != v as i32 && self.nodes[v].p != u as i32) || u == v {
             return 0;
         }
         if self.nodes[v].p == u as i32 {
-            // println!("same parent, swapping...");
             std::mem::swap(&mut u, &mut v); // ensure u -> v
         }
 
@@ -805,43 +770,28 @@ impl DynamicCC {
             } else {
                 (u as usize, f as usize, false)
             };
-        // println!("u: {} v: {}", u, v);
-        // println!("ns: {} nl: {} need_reroot: {}", ns, nl, need_reroot);
-
-        // println!("pre-l_node_processing");
-        // self.assert_valid_lstart_lists();
         if self.use_union_find && need_reroot {
-            // println!("Processing {}", f);
             self.nodes[f as usize].f = u as i32;
             self.l_nodes[f as usize].borrow_mut().isolate();
             self.nodes[u].insert_l_node(self.l_nodes[f as usize].clone());
 
-            // println!("Processing {}", u);
             self.nodes[u].f = u as i32;
             self.l_nodes[u as usize].borrow_mut().isolate();
             self.nodes[u as usize].insert_l_node(self.l_nodes[u as usize].clone());
             self.need_reroot_num += 1;
         }
-        // println!("post-l_node_processing");
-        // self.assert_valid_lstart_lists();
 
         if self.find_replacement(ns, nl) {
             return 1;
         }
 
         if self.use_union_find {
-            // println!("pre-remove-subtree-union-find");
-            // self.assert_valid_lstart_lists();
             self.remove_subtree_union_find(ns, nl, need_reroot);
-            // println!("post-remove-subtree-union-find");
-            // self.assert_valid_lstart_lists();
         }
-
         2
     }
 
     fn find_replacement(&mut self, u: usize, f: usize) -> bool {
-        // println!("Entered find_replacement! {} {}", u, f);
         self.q.clear();
         self.l.clear();
 
@@ -929,11 +879,7 @@ impl DynamicCC {
                 }
 
                 if r != Some(f) {
-                    // println!("Calling reroot from find_replacement: {} {}", r.unwrap(), f);
-                    // self.assert_valid_lstart_lists();
                     self.reroot(r.unwrap(), f as i32);
-                    // println!("Called reroot from find_replacement: {} {}", r.unwrap(), f);
-                    // self.assert_valid_lstart_lists();
                 }
 
                 self.avgi += (i) as i32;
@@ -953,8 +899,6 @@ impl DynamicCC {
     }
 
     fn reroot(&mut self, mut u: usize, f: i32) {
-        // println!("Entered reroot! {} {}", u, f);
-        // self.assert_valid_lstart_lists();
         // Reverse parent pointers
         let mut p = self.nodes[u].p;
         let mut pp;
@@ -973,9 +917,8 @@ impl DynamicCC {
             u = p as usize;
             p = self.nodes[p as usize].p;
         }
-        // println!("Adjusted subtree counts");
+
         if self.use_union_find && f >= 0 {
-            // self.assert_valid_lstart_lists();
             self.nodes[f as usize].f = u as i32;
             self.l_nodes[f as usize].borrow_mut().isolate();
             self.nodes[u].insert_l_node(self.l_nodes[f as usize].clone());
@@ -984,13 +927,9 @@ impl DynamicCC {
             self.l_nodes[u as usize].borrow_mut().isolate();
             self.nodes[u].insert_l_node(self.l_nodes[u as usize].clone());
         }
-        // println!("leaving reroot");
-        // self.assert_valid_lstart_lists();
     }
 
     fn remove_subtree_union_find(&mut self, u: usize, v: usize, _need_reroot: bool) {
-        // println!("Entered remove_subtree_union_find! u: {} v: {}", u, v);
-        // self.assert_valid_lstart_lists();
         self.removenum += 1;
         self.avgq += self.q.len() as i32;
         if self.q.len() as i32 > self.maxq {
@@ -999,7 +938,6 @@ impl DynamicCC {
         let mut dnum = 0;
         let fv = v;
         let mut i = 0;
-        // self.assert_valid_lstart_lists();
         while i < self.q.len() {
             let x = self.q[i];
 
@@ -1047,12 +985,9 @@ impl DynamicCC {
             self.nodes[u as usize].insert_l_node(self.l_nodes[x as usize].clone());
             self.nodes[x as usize].f = u as i32;
         }
-        // println!("leaving remove_subtree_union_find...");
-        // self.assert_valid_lstart_lists();
     }
 
     fn union_f(&mut self, fu: usize, fv: usize) {
-        // println!("Entered union_f! u: {} v: {}", fu, fv);
         if fu == fv {
             return;
         }
@@ -1060,74 +995,6 @@ impl DynamicCC {
         self.l_nodes[fu].borrow_mut().isolate();
         self.nodes[fv].insert_l_node(self.l_nodes[fu].clone());
     }
-
-    // pub fn assert_valid_lstart_lists(&self) {
-    //     use std::collections::HashSet;
-
-    //     const MAX_STEPS: usize = 400;
-
-    //     for (i, node) in self.nodes.iter().enumerate() {
-    //         let mut seen: HashSet<i32> = HashSet::new();
-    //         let mut path: Vec<i32> = Vec::new();
-
-    //         if Rc::<RefCell<LinkNode>>::strong_count(&node.l_start) > 2 {
-    //             println!(
-    //                 "Stong ref count for node {} is {}",
-    //                 i,
-    //                 Rc::<RefCell<LinkNode>>::strong_count(&node.l_start)
-    //             );
-    //             println!(
-    //                 "Weak ref count for node {} is {}",
-    //                 i,
-    //                 Rc::<RefCell<LinkNode>>::weak_count(&node.l_start)
-    //             );
-    //         }
-    //         let mut current_rc_opt = node.l_start.borrow().next.clone();
-    //         let lend_rc = node.l_end.clone();
-
-    //         let mut steps = 0;
-    //         while current_rc_opt.is_some() {
-    //             let current_rc = current_rc_opt.as_ref().unwrap();
-
-    //             if steps >= MAX_STEPS {
-    //                 panic!(
-    //                     "💥 Node {} list walk exceeded {} steps — possible infinite loop. Path: {:?}",
-    //                     i, MAX_STEPS, path
-    //                 );
-    //             }
-
-    //             if Rc::ptr_eq(current_rc, &lend_rc) {
-    //                 break;
-    //             }
-
-    //             // Scope the borrow to avoid conflict before updating current_rc_opt
-    //             current_rc_opt = {
-    //                 let current_ref = current_rc.borrow();
-    //                 let v = current_ref.v;
-
-    //                 if seen.contains(&v) {
-    //                     path.push(v);
-    //                     println!("‼️  Node {} has a cycle in l_start chain: {:?}", i, path);
-    //                 }
-
-    //                 seen.insert(v);
-    //                 path.push(v);
-
-    //                 current_ref.next.clone()
-    //             };
-
-    //             steps += 1;
-    //         }
-
-    //         if current_rc_opt.is_none() {
-    //             println!(
-    //                 "⚠️  Node {} list terminated early (None) without reaching l_end. Path: {:?}",
-    //                 i, path
-    //             );
-    //         }
-    //     }
-    //     println!("   l_start lists are valid!")
-    // }
 }
 
 /// A Python module implemented in Rust.
