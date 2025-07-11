@@ -217,18 +217,6 @@ struct DynamicCC {
     l: Vec<usize>,
 
     use_union_find: bool,
-
-    avgdelta: usize,
-    maxdelta: usize,
-    avgq: i32,
-    maxq: i32,
-    maxi: i32,
-    avgi: i32,
-    replacesuccessnum: usize,
-    removenum: usize,
-    avg: f64,
-    maxavg: f64,
-    need_reroot_num: usize,
 }
 
 #[pymethods]
@@ -502,17 +490,6 @@ impl DynamicCC {
             q: vec![],
             l: vec![],
             use_union_find,
-            avgdelta: 0,
-            maxdelta: 0,
-            avgq: 0,
-            maxq: 0,
-            maxi: 0,
-            avgi: 0,
-            replacesuccessnum: 0,
-            removenum: 0,
-            avg: 0.0,
-            maxavg: 0.0,
-            need_reroot_num: 0,
         }
     }
 
@@ -778,7 +755,6 @@ impl DynamicCC {
             self.nodes[u].f = u as i32;
             self.l_nodes[u as usize].borrow_mut().isolate();
             self.nodes[u as usize].insert_l_node(self.l_nodes[u as usize].clone());
-            self.need_reroot_num += 1;
         }
 
         if self.find_replacement(ns, nl) {
@@ -882,11 +858,6 @@ impl DynamicCC {
                     self.reroot(r.unwrap(), f as i32);
                 }
 
-                self.avgi += (i) as i32;
-                if (i as i32) > self.maxi {
-                    self.maxi = i as i32;
-                }
-                self.replacesuccessnum += 1;
                 return true;
             }
         }
@@ -930,12 +901,6 @@ impl DynamicCC {
     }
 
     fn remove_subtree_union_find(&mut self, u: usize, v: usize, _need_reroot: bool) {
-        self.removenum += 1;
-        self.avgq += self.q.len() as i32;
-        if self.q.len() as i32 > self.maxq {
-            self.maxq = self.q.len() as i32;
-        }
-        let mut dnum = 0;
         let fv = v;
         let mut i = 0;
         while i < self.q.len() {
@@ -948,7 +913,6 @@ impl DynamicCC {
                     while !Rc::ptr_eq(&curr, &l_end) {
                         let y_v = curr.borrow().v as usize;
                         self.nodes[y_v].f = fv as i32;
-                        dnum += 1;
 
                         let next = { curr.borrow().next.clone() };
                         curr = next.unwrap();
@@ -967,16 +931,6 @@ impl DynamicCC {
             }
 
             i += 1;
-        }
-
-        self.avgdelta += dnum;
-        self.avg += dnum as f64 / self.q.len() as f64;
-        let avg_now = dnum as f64 / self.q.len() as f64;
-        if avg_now > self.maxavg {
-            self.maxavg = avg_now;
-        }
-        if dnum > self.maxdelta {
-            self.maxdelta = dnum;
         }
 
         for i in 0..self.q.len() {
