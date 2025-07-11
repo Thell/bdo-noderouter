@@ -37,9 +37,7 @@ class PrimalDualNWSF:
 
         self.config: dict = config
         self.ref_graph: rx.PyGraph = exploration_graph.to_undirected(multigraph=False)
-        self.dtree: DynamicCC = DynamicCC(
-            {v: [] for v in self.ref_graph.node_indices()}, use_union_find=False
-        )
+        self.dtree: DynamicCC = DynamicCC({v: [] for v in self.ref_graph.node_indices()})
         self.dtree_active_indices: set[int] = set()
         self.bridge_start_time = 0
 

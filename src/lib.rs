@@ -96,31 +96,6 @@ impl Node {
         self.l_start.borrow_mut().next = Some(v.clone());
     }
 
-    fn insert_l_nodes(&mut self, v: &Node) {
-        let v_next_opt = v.l_start.borrow().next.clone();
-        if v_next_opt
-            .as_ref()
-            .map_or(true, |n| Rc::ptr_eq(n, &v.l_end))
-            || std::ptr::eq(self, v)
-        {
-            return;
-        }
-
-        let s = v_next_opt.unwrap();
-        let t = v.l_end.borrow().prev.as_ref().unwrap().clone();
-
-        t.borrow_mut().next = self.l_start.borrow().next.clone();
-        if let Some(next) = self.l_start.borrow().next.clone() {
-            next.borrow_mut().prev = Some(t.clone());
-        }
-
-        s.borrow_mut().prev = Some(self.l_start.clone());
-        self.l_start.borrow_mut().next = Some(s);
-
-        v.l_start.borrow_mut().next = Some(v.l_end.clone());
-        v.l_end.borrow_mut().prev = Some(v.l_start.clone());
-    }
-
     fn flush(&mut self) {
         if self.ins_buf.is_empty() && self.del_buf.is_empty() {
             return;
@@ -215,15 +190,13 @@ struct DynamicCC {
     used: Vec<bool>,
     q: Vec<i32>,
     l: Vec<usize>,
-
-    use_union_find: bool,
 }
 
 #[pymethods]
 impl DynamicCC {
     #[new]
-    fn new(adj_dict: HashMap<i32, Vec<i32>>, use_union_find: bool) -> Self {
-        let mut instance = Self::setup(&adj_dict, use_union_find);
+    fn new(adj_dict: HashMap<i32, Vec<i32>>) -> Self {
+        let mut instance = Self::setup(&adj_dict);
         instance.initialize();
         instance
     }
@@ -471,7 +444,7 @@ impl DynamicCC {
 }
 
 impl DynamicCC {
-    fn setup(adj_dict: &HashMap<i32, Vec<i32>>, use_union_find: bool) -> Self {
+    fn setup(adj_dict: &HashMap<i32, Vec<i32>>) -> Self {
         let n = adj_dict.len();
 
         let mut nodes: Vec<Node> = Vec::with_capacity(n);
@@ -489,13 +462,11 @@ impl DynamicCC {
             used: vec![],
             q: vec![],
             l: vec![],
-            use_union_find,
         }
     }
 
     fn initialize(&mut self) {
         let n = self.n;
-        let use_union_find = self.use_union_find;
 
         let mut s: Vec<(i32, i32)> = vec![];
         self.used = vec![false; n];
@@ -505,22 +476,6 @@ impl DynamicCC {
             s.push((length, -(i as i32)));
         }
         s.sort();
-
-        if use_union_find {
-            self.l_nodes = (0..n)
-                .map(|_| Rc::new(RefCell::new(LinkNode::new())))
-                .collect();
-            for v in 0..n {
-                self.l_nodes[v].borrow_mut().v = v as i32;
-                self.l_nodes[v].borrow_mut().prev = None;
-                self.l_nodes[v].borrow_mut().next = None;
-                self.nodes[v].f = v as i32;
-                self.nodes[v].l_start.borrow_mut().next = Some(self.nodes[v].l_end.clone());
-                self.nodes[v].l_end.borrow_mut().prev = Some(self.nodes[v].l_start.clone());
-                self.nodes[v].l_start.borrow_mut().prev = None;
-                self.nodes[v].l_end.borrow_mut().next = None;
-            }
-        }
 
         for v in 0..n {
             self.nodes[v].p = -1;
@@ -536,10 +491,6 @@ impl DynamicCC {
             self.used[f] = true;
             self.q.push(f as i32);
 
-            if use_union_find {
-                self.nodes[f].insert_l_node(self.l_nodes[f].clone());
-            }
-
             let mut s_index = 0;
             while s_index < self.q.len() {
                 let p = self.q[s_index];
@@ -549,10 +500,6 @@ impl DynamicCC {
                         self.used[v] = true;
                         self.q.push(v as i32);
                         self.nodes[v].p = p as i32;
-                        if use_union_find {
-                            self.nodes[v].f = f as i32;
-                            self.nodes[f].insert_l_node(self.l_nodes[v].clone());
-                        }
                     }
                 }
                 s_index += 1;
@@ -574,7 +521,7 @@ impl DynamicCC {
                 }
             }
             if r != f as i32 {
-                self.reroot(r as usize, f as i32);
+                self.reroot(r as usize);
             }
         }
         self.used.fill(false);
@@ -591,18 +538,13 @@ impl DynamicCC {
 
     fn insert_edge_balanced(&mut self, mut u: usize, mut v: usize) -> i32 {
         let (mut fu, mut fv, mut p, mut pp);
-        if !self.use_union_find {
-            fu = u;
-            while self.nodes[fu].p != -1 {
-                fu = self.nodes[fu].p as usize;
-            }
-            fv = v;
-            while self.nodes[fv].p != -1 {
-                fv = self.nodes[fv].p as usize;
-            }
-        } else {
-            fu = self.get_f(u);
-            fv = self.get_f(v);
+        fu = u;
+        while self.nodes[fu].p != -1 {
+            fu = self.nodes[fu].p as usize;
+        }
+        fv = v;
+        while self.nodes[fv].p != -1 {
+            fv = self.nodes[fv].p as usize;
         }
 
         if fu == fv {
@@ -650,7 +592,7 @@ impl DynamicCC {
                 }
 
                 self.nodes[p as usize].p = -1;
-                self.reroot(u, -1);
+                self.reroot(u);
 
                 self.nodes[u].p = v as i32;
 
@@ -665,7 +607,7 @@ impl DynamicCC {
                     p = self.nodes[p as usize].p;
                 }
                 if r != fu as i32 {
-                    self.reroot(r as usize, fu as i32);
+                    self.reroot(r as usize);
                 }
             }
             return 0;
@@ -704,12 +646,8 @@ impl DynamicCC {
             p = self.nodes[u].p;
         }
 
-        if self.use_union_find {
-            self.union_f(fu, fv);
-        }
-
         if r != fv as i32 {
-            self.reroot(r as usize, fv as i32);
+            self.reroot(r as usize);
         }
 
         1
@@ -741,28 +679,14 @@ impl DynamicCC {
         }
 
         self.nodes[u].p = -1;
-        let (ns, nl, need_reroot): (usize, usize, bool) =
-            if self.nodes[u].sub_cnt > self.nodes[f as usize].sub_cnt {
-                (f as usize, u as usize, true)
-            } else {
-                (u as usize, f as usize, false)
-            };
-        if self.use_union_find && need_reroot {
-            self.nodes[f as usize].f = u as i32;
-            self.l_nodes[f as usize].borrow_mut().isolate();
-            self.nodes[u].insert_l_node(self.l_nodes[f as usize].clone());
-
-            self.nodes[u].f = u as i32;
-            self.l_nodes[u as usize].borrow_mut().isolate();
-            self.nodes[u as usize].insert_l_node(self.l_nodes[u as usize].clone());
-        }
+        let (ns, nl): (usize, usize) = if self.nodes[u].sub_cnt > self.nodes[f as usize].sub_cnt {
+            (f as usize, u as usize)
+        } else {
+            (u as usize, f as usize)
+        };
 
         if self.find_replacement(ns, nl) {
             return 1;
-        }
-
-        if self.use_union_find {
-            self.remove_subtree_union_find(ns, nl, need_reroot);
         }
         2
     }
@@ -855,7 +779,7 @@ impl DynamicCC {
                 }
 
                 if r != Some(f) {
-                    self.reroot(r.unwrap(), f as i32);
+                    self.reroot(r.unwrap());
                 }
 
                 return true;
@@ -869,7 +793,7 @@ impl DynamicCC {
         false
     }
 
-    fn reroot(&mut self, mut u: usize, f: i32) {
+    fn reroot(&mut self, mut u: usize) {
         // Reverse parent pointers
         let mut p = self.nodes[u].p;
         let mut pp;
@@ -888,66 +812,6 @@ impl DynamicCC {
             u = p as usize;
             p = self.nodes[p as usize].p;
         }
-
-        if self.use_union_find && f >= 0 {
-            self.nodes[f as usize].f = u as i32;
-            self.l_nodes[f as usize].borrow_mut().isolate();
-            self.nodes[u].insert_l_node(self.l_nodes[f as usize].clone());
-
-            self.nodes[u].f = u as i32;
-            self.l_nodes[u as usize].borrow_mut().isolate();
-            self.nodes[u].insert_l_node(self.l_nodes[u as usize].clone());
-        }
-    }
-
-    fn remove_subtree_union_find(&mut self, u: usize, v: usize, _need_reroot: bool) {
-        let fv = v;
-        let mut i = 0;
-        while i < self.q.len() {
-            let x = self.q[i];
-
-            let l_start_next = self.nodes[x as usize].l_start.borrow().next.clone();
-            let l_end = self.nodes[x as usize].l_end.clone();
-            if let Some(mut curr) = l_start_next {
-                if !Rc::ptr_eq(&curr, &l_end) {
-                    while !Rc::ptr_eq(&curr, &l_end) {
-                        let y_v = curr.borrow().v as usize;
-                        self.nodes[y_v].f = fv as i32;
-
-                        let next = { curr.borrow().next.clone() };
-                        curr = next.unwrap();
-                    }
-
-                    let (a, b) = if fv < x as usize {
-                        let (left, right) = self.nodes.split_at_mut(x as usize);
-                        (&mut left[fv], &right[0])
-                    } else {
-                        let (left, right) = self.nodes.split_at_mut(fv);
-                        (&mut right[0], &left[x as usize])
-                    };
-
-                    a.insert_l_nodes(b);
-                }
-            }
-
-            i += 1;
-        }
-
-        for i in 0..self.q.len() {
-            let x = self.q[i];
-            self.l_nodes[x as usize].borrow_mut().isolate();
-            self.nodes[u as usize].insert_l_node(self.l_nodes[x as usize].clone());
-            self.nodes[x as usize].f = u as i32;
-        }
-    }
-
-    fn union_f(&mut self, fu: usize, fv: usize) {
-        if fu == fv {
-            return;
-        }
-        self.nodes[fu].f = fv as i32;
-        self.l_nodes[fu].borrow_mut().isolate();
-        self.nodes[fv].insert_l_node(self.l_nodes[fu].clone());
     }
 }
 
