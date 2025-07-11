@@ -1,0 +1,126 @@
+{
+    "activateAncado": false,
+    "lodgingP2W": {
+        "5": 0,
+        "88": 0,
+        "32": 0,
+        "52": 0,
+        "77": 0,
+        "107": 0,
+        "120": 0,
+        "126": 0,
+        "182": 0,
+        "202": 0,
+        "221": 0,
+        "229": 0,
+        "601": 0,
+        "605": 0,
+        "619": 0,
+        "693": 0,
+        "706": 0,
+        "735": 0,
+        "873": 0,
+        "955": 0,
+        "1124": 0,
+        "1210": 0,
+        "1219": 0,
+        "1246": 0,
+        "218": 0,
+        "1375": 0,
+        "1420": 0,
+        "1424": 0,
+        "1444": 0
+    },
+    "userWorkers": [
+        {
+            "tnk": 1795,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1827,
+                "storage": 1795
+            }
+        },
+        {
+            "tnk": 1,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 132,
+                "storage": 1
+            }
+        },
+        {
+            "tnk": 1857,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1886,
+                "storage": 1857
+            }
+        }
+    ],
+    "farmingEnable": false,
+    "farmingProfit": 0,
+    "farmingBareProfit": 0,
+    "grindTakenList": [],
+    "solution_nodes": [
+        1,
+        21,
+        132,
+        1795,
+        1827,
+        1854,
+        1857,
+        1886
+    ],
+    "solution_cost": 5
+}

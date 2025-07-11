@@ -1,0 +1,4066 @@
+{
+    "activateAncado": false,
+    "lodgingP2W": {
+        "5": 0,
+        "88": 0,
+        "32": 0,
+        "52": 0,
+        "77": 0,
+        "107": 0,
+        "120": 0,
+        "126": 0,
+        "182": 0,
+        "202": 0,
+        "221": 0,
+        "229": 0,
+        "601": 0,
+        "605": 0,
+        "619": 0,
+        "693": 0,
+        "706": 0,
+        "735": 0,
+        "873": 0,
+        "955": 0,
+        "1124": 0,
+        "1210": 0,
+        "1219": 0,
+        "1246": 0,
+        "218": 0,
+        "1375": 0,
+        "1420": 0,
+        "1424": 0,
+        "1444": 0
+    },
+    "userWorkers": [
+        {
+            "tnk": 1795,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1826,
+                "storage": 1795
+            }
+        },
+        {
+            "tnk": 1795,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1827,
+                "storage": 1795
+            }
+        },
+        {
+            "tnk": 1795,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1828,
+                "storage": 1795
+            }
+        },
+        {
+            "tnk": 1795,
+            "charkey": "8050",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1829,
+                "storage": 1795
+            }
+        },
+        {
+            "tnk": 1857,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1879,
+                "storage": 1857
+            }
+        },
+        {
+            "tnk": 1857,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1880,
+                "storage": 1857
+            }
+        },
+        {
+            "tnk": 1857,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1881,
+                "storage": 1857
+            }
+        },
+        {
+            "tnk": 1,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 132,
+                "storage": 1
+            }
+        },
+        {
+            "tnk": 1,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 131,
+                "storage": 1
+            }
+        },
+        {
+            "tnk": 61,
+            "charkey": "7573",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 110.35,
+            "mspdSheet": 4.95,
+            "luckSheet": 26.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 203,
+                "storage": 61
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 488,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 602,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1501,
+                1602,
+                1502,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 951,
+                "storage": 602
+            }
+        },
+        {
+            "tnk": 608,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 905,
+                "storage": 608
+            }
+        },
+        {
+            "tnk": 1781,
+            "charkey": "8050",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1815,
+                "storage": 1781
+            }
+        },
+        {
+            "tnk": 1781,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1501,
+                1302,
+                1603,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1816,
+                "storage": 1781
+            }
+        },
+        {
+            "tnk": 1795,
+            "charkey": "8050",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1820,
+                "storage": 1795
+            }
+        },
+        {
+            "tnk": 1781,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1821,
+                "storage": 1781
+            }
+        },
+        {
+            "tnk": 1781,
+            "charkey": "8050",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1822,
+                "storage": 1781
+            }
+        },
+        {
+            "tnk": 1781,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1830,
+                "storage": 1781
+            }
+        },
+        {
+            "tnk": 1785,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1823,
+                "storage": 1785
+            }
+        },
+        {
+            "tnk": 1857,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1886,
+                "storage": 1857
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1501,
+                1301,
+                1602,
+                1502,
+                1302,
+                1603,
+                1503
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1882,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1884,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1885,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 1857,
+            "charkey": "8050",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1889,
+                "storage": 1857
+            }
+        },
+        {
+            "tnk": 1858,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1893,
+                "storage": 1858
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1894,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 464,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 1795,
+            "charkey": "8050",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1813,
+                "storage": 1795
+            }
+        },
+        {
+            "tnk": 1795,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1501,
+                1303
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1814,
+                "storage": 1795
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1890,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 1858,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1891,
+                "storage": 1858
+            }
+        },
+        {
+            "tnk": 1858,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1892,
+                "storage": 1858
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1895,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1896,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 1,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 136,
+                "storage": 1
+            }
+        },
+        {
+            "tnk": 1,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 160,
+                "storage": 1
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7573",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 110.35,
+            "mspdSheet": 4.95,
+            "luckSheet": 26.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 436,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 435,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7573",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 110.35,
+            "mspdSheet": 4.95,
+            "luckSheet": 26.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 438,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 439,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7573",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 110.35,
+            "mspdSheet": 4.95,
+            "luckSheet": 26.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 440,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 1319,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1513,
+                "storage": 1319
+            }
+        },
+        {
+            "tnk": 1319,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1501,
+                1602,
+                1302,
+                1502,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1527,
+                "storage": 1319
+            }
+        },
+        {
+            "tnk": 1314,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1531,
+                "storage": 1314
+            }
+        },
+        {
+            "tnk": 1314,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1530,
+                "storage": 1314
+            }
+        },
+        {
+            "tnk": 1314,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1529,
+                "storage": 1314
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1601,
+                1502,
+                1301,
+                1602,
+                1302,
+                1503
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1538,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7573",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 110.35,
+            "mspdSheet": 4.95,
+            "luckSheet": 26.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1536,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1537,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1834,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1904,
+                "storage": 1834
+            }
+        },
+        {
+            "tnk": 1834,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1899,
+                "storage": 1834
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1883,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1897,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1501,
+                1603,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 459,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7573",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 110.35,
+            "mspdSheet": 4.95,
+            "luckSheet": 26.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1534,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1601,
+                1502,
+                1301,
+                1602,
+                1503,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1535,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1501,
+                1301,
+                1502,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1565,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8058",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1887,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 1853,
+            "charkey": "8050",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1888,
+                "storage": 1853
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1601,
+                1502,
+                1301,
+                1602,
+                1503,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 852,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 853,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7573",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 110.35,
+            "mspdSheet": 4.95,
+            "luckSheet": 26.82,
+            "skills": [
+                1012,
+                1501,
+                1502,
+                1503,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 854,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 855,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 842,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 840,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 602,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1913,
+                "storage": 602
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1209,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1141,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1501,
+                1601,
+                1502,
+                1301,
+                1602,
+                1503,
+                1302
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1206,
+                "storage": 1141
+            }
+        },
+        {
+            "tnk": 1314,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1514,
+                "storage": 1314
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1554,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1380,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1555,
+                "storage": 1380
+            }
+        },
+        {
+            "tnk": 1623,
+            "charkey": "8006",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.99,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1642,
+                "storage": 1623
+            }
+        },
+        {
+            "tnk": 1623,
+            "charkey": "8006",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.99,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1645,
+                "storage": 1623
+            }
+        },
+        {
+            "tnk": 1843,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1909,
+                "storage": 1843
+            }
+        },
+        {
+            "tnk": 602,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 952,
+                "storage": 602
+            }
+        },
+        {
+            "tnk": 608,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 908,
+                "storage": 608
+            }
+        },
+        {
+            "tnk": 1314,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1515,
+                "storage": 1314
+            }
+        },
+        {
+            "tnk": 1843,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1902,
+                "storage": 1843
+            }
+        },
+        {
+            "tnk": 1843,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1903,
+                "storage": 1843
+            }
+        },
+        {
+            "tnk": 1843,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1907,
+                "storage": 1843
+            }
+        },
+        {
+            "tnk": 1843,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1908,
+                "storage": 1843
+            }
+        },
+        {
+            "tnk": 1843,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1906,
+                "storage": 1843
+            }
+        },
+        {
+            "tnk": 1843,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1910,
+                "storage": 1843
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 443,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 602,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1911,
+                "storage": 602
+            }
+        },
+        {
+            "tnk": 602,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 958,
+                "storage": 602
+            }
+        },
+        {
+            "tnk": 1319,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1522,
+                "storage": 1319
+            }
+        },
+        {
+            "tnk": 1319,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1523,
+                "storage": 1319
+            }
+        },
+        {
+            "tnk": 1319,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1520,
+                "storage": 1319
+            }
+        },
+        {
+            "tnk": 1319,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1521,
+                "storage": 1319
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 455,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1501,
+                1602,
+                1302,
+                1502,
+                1603,
+                1303
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 476,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 480,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 1141,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1501,
+                1302,
+                1502,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1201,
+                "storage": 1141
+            }
+        },
+        {
+            "tnk": 1691,
+            "charkey": "8027",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.99,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1711,
+                "storage": 1691
+            }
+        },
+        {
+            "tnk": 1750,
+            "charkey": "8039",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1777,
+                "storage": 1750
+            }
+        },
+        {
+            "tnk": 1750,
+            "charkey": "8035",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1778,
+                "storage": 1750
+            }
+        },
+        {
+            "tnk": 1,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 183,
+                "storage": 1
+            }
+        },
+        {
+            "tnk": 1,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 144,
+                "storage": 1
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1208,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1204,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1561,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1562,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1558,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1556,
+                "storage": 1301
+            }
+        },
+        {
+            "tnk": 1691,
+            "charkey": "8027",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.99,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1710,
+                "storage": 1691
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1203,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1314,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1516,
+                "storage": 1314
+            }
+        },
+        {
+            "tnk": 1623,
+            "charkey": "8006",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.99,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1636,
+                "storage": 1623
+            }
+        },
+        {
+            "tnk": 1623,
+            "charkey": "8006",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.99,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1601,
+                1501,
+                1301,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1637,
+                "storage": 1623
+            }
+        },
+        {
+            "tnk": 1750,
+            "charkey": "8039",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1771,
+                "storage": 1750
+            }
+        },
+        {
+            "tnk": 1750,
+            "charkey": "8039",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1772,
+                "storage": 1750
+            }
+        },
+        {
+            "tnk": 1314,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1517,
+                "storage": 1314
+            }
+        },
+        {
+            "tnk": 1691,
+            "charkey": "8023",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 162.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 11.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1501,
+                1502,
+                1601,
+                1301,
+                1503,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1716,
+                "storage": 1691
+            }
+        },
+        {
+            "tnk": 1750,
+            "charkey": "8039",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1769,
+                "storage": 1750
+            }
+        },
+        {
+            "tnk": 1750,
+            "charkey": "8035",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1770,
+                "storage": 1750
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 903,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 914,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1502,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1501,
+                1601,
+                1502,
+                1301,
+                1602,
+                1503,
+                1302,
+                1603
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1501,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1504,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1505,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1508,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1101,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1507,
+                "storage": 1101
+            }
+        },
+        {
+            "tnk": 1649,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1687,
+                "storage": 1649
+            }
+        },
+        {
+            "tnk": 602,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1912,
+                "storage": 602
+            }
+        },
+        {
+            "tnk": 602,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 910,
+                "storage": 602
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 913,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 912,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1685,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1686,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 1691,
+            "charkey": "8027",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 106.45,
+            "mspdSheet": 4.99,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1501,
+                1603,
+                1502,
+                1303
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1713,
+                "storage": 1691
+            }
+        },
+        {
+            "tnk": 1649,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1681,
+                "storage": 1649
+            }
+        },
+        {
+            "tnk": 1649,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1682,
+                "storage": 1649
+            }
+        },
+        {
+            "tnk": 1649,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1688,
+                "storage": 1649
+            }
+        },
+        {
+            "tnk": 1649,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1679,
+                "storage": 1649
+            }
+        },
+        {
+            "tnk": 1141,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1220,
+                "storage": 1141
+            }
+        },
+        {
+            "tnk": 1141,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1219,
+                "storage": 1141
+            }
+        },
+        {
+            "tnk": 1141,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1215,
+                "storage": 1141
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1213,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1212,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 301,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1216,
+                "storage": 301
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501,
+                1502
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 901,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 601,
+            "charkey": "7572",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 152.05,
+            "mspdSheet": 8.41,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1102,
+                1103,
+                1403
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 902,
+                "storage": 601
+            }
+        },
+        {
+            "tnk": 608,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1012,
+                1601,
+                1301,
+                1602,
+                1302,
+                1603,
+                1303,
+                1501
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 907,
+                "storage": 608
+            }
+        },
+        {
+            "tnk": 302,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1683,
+                "storage": 302
+            }
+        },
+        {
+            "tnk": 302,
+            "charkey": "7571",
+            "label": "default",
+            "level": 40,
+            "wspdSheet": 96.45,
+            "mspdSheet": 4.16,
+            "luckSheet": 12.82,
+            "skills": [
+                1011,
+                1401,
+                1012,
+                1006,
+                1101,
+                1402,
+                1601,
+                1301,
+                1602
+            ],
+            "job": {
+                "kind": "plantzone",
+                "pzk": 1684,
+                "storage": 302
+            }
+        }
+    ],
+    "farmingEnable": false,
+    "farmingProfit": 0,
+    "farmingBareProfit": 0,
+    "grindTakenList": [],
+    "solution_nodes": [
+        1,
+        21,
+        22,
+        24,
+        42,
+        45,
+        48,
+        61,
+        64,
+        131,
+        132,
+        136,
+        144,
+        160,
+        183,
+        203,
+        301,
+        302,
+        305,
+        309,
+        322,
+        323,
+        324,
+        327,
+        328,
+        341,
+        344,
+        345,
+        347,
+        435,
+        436,
+        438,
+        439,
+        440,
+        443,
+        455,
+        459,
+        464,
+        476,
+        480,
+        488,
+        602,
+        608,
+        609,
+        624,
+        628,
+        629,
+        633,
+        638,
+        651,
+        652,
+        656,
+        660,
+        662,
+        664,
+        667,
+        668,
+        670,
+        672,
+        674,
+        675,
+        677,
+        703,
+        705,
+        706,
+        707,
+        708,
+        710,
+        712,
+        715,
+        716,
+        717,
+        718,
+        720,
+        722,
+        723,
+        726,
+        840,
+        842,
+        852,
+        853,
+        854,
+        855,
+        901,
+        902,
+        903,
+        905,
+        907,
+        908,
+        910,
+        912,
+        913,
+        914,
+        951,
+        952,
+        958,
+        1101,
+        1133,
+        1134,
+        1136,
+        1137,
+        1140,
+        1141,
+        1144,
+        1149,
+        1154,
+        1155,
+        1156,
+        1159,
+        1161,
+        1162,
+        1170,
+        1201,
+        1203,
+        1204,
+        1206,
+        1208,
+        1209,
+        1212,
+        1213,
+        1215,
+        1216,
+        1220,
+        1301,
+        1302,
+        1303,
+        1304,
+        1305,
+        1306,
+        1307,
+        1309,
+        1310,
+        1314,
+        1315,
+        1319,
+        1321,
+        1325,
+        1327,
+        1328,
+        1329,
+        1330,
+        1345,
+        1346,
+        1350,
+        1351,
+        1352,
+        1354,
+        1355,
+        1379,
+        1380,
+        1385,
+        1387,
+        1388,
+        1389,
+        1501,
+        1502,
+        1504,
+        1505,
+        1507,
+        1508,
+        1513,
+        1514,
+        1515,
+        1516,
+        1517,
+        1520,
+        1521,
+        1522,
+        1523,
+        1527,
+        1529,
+        1530,
+        1531,
+        1534,
+        1535,
+        1536,
+        1537,
+        1538,
+        1554,
+        1555,
+        1556,
+        1558,
+        1561,
+        1562,
+        1565,
+        1609,
+        1619,
+        1621,
+        1622,
+        1623,
+        1625,
+        1636,
+        1637,
+        1642,
+        1645,
+        1649,
+        1652,
+        1653,
+        1654,
+        1655,
+        1656,
+        1657,
+        1658,
+        1659,
+        1663,
+        1664,
+        1665,
+        1666,
+        1668,
+        1679,
+        1681,
+        1682,
+        1683,
+        1684,
+        1685,
+        1686,
+        1687,
+        1688,
+        1691,
+        1695,
+        1702,
+        1703,
+        1710,
+        1711,
+        1713,
+        1716,
+        1740,
+        1741,
+        1742,
+        1743,
+        1750,
+        1755,
+        1756,
+        1757,
+        1759,
+        1762,
+        1769,
+        1770,
+        1771,
+        1772,
+        1777,
+        1778,
+        1781,
+        1785,
+        1792,
+        1793,
+        1795,
+        1796,
+        1797,
+        1799,
+        1813,
+        1814,
+        1815,
+        1816,
+        1820,
+        1821,
+        1822,
+        1823,
+        1826,
+        1827,
+        1828,
+        1829,
+        1830,
+        1834,
+        1837,
+        1838,
+        1840,
+        1843,
+        1845,
+        1846,
+        1847,
+        1848,
+        1849,
+        1850,
+        1851,
+        1852,
+        1853,
+        1854,
+        1855,
+        1857,
+        1858,
+        1859,
+        1860,
+        1861,
+        1863,
+        1864,
+        1868,
+        1870,
+        1874,
+        1875,
+        1877,
+        1878,
+        1879,
+        1880,
+        1881,
+        1882,
+        1883,
+        1884,
+        1885,
+        1886,
+        1887,
+        1888,
+        1889,
+        1890,
+        1891,
+        1892,
+        1893,
+        1894,
+        1895,
+        1896,
+        1897,
+        1899,
+        1902,
+        1903,
+        1904,
+        1906,
+        1907,
+        1908,
+        1909,
+        1910,
+        1911,
+        1912,
+        1913
+    ],
+    "solution_cost": 426
+}
