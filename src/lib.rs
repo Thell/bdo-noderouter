@@ -42,109 +42,14 @@ pub(crate) struct BridgeState {
     pub rings: Vec<IntSet<usize>>,
     pub yielded_hashes: IntSet<u64>,
     pub search_state: VecDeque<SearchState>,
+    pub seen_nodes: IntSet<usize>,
+    pub current_ring_idx: usize,
 }
 
-// This struct holds the state for our stateful iterator.
-pub struct BridgeIterator<'a> {
-    router: &'a NodeRouter,
-    rings: Vec<IntSet<usize>>,
-    yielded_hashes: IntSet<u64>,
-    search_state: VecDeque<SearchState>,
-}
-
-// A helper struct to hold the state for our recursive-like descent.
-// This replaces the need for a recursive function call stack.
-struct SearchState {
+pub(crate) struct SearchState {
     ring_idx: usize,
     current_nodes: IntSet<usize>,
     bridge: IntSet<usize>,
-    candidates: Vec<usize>,
-    candidate_pair_index: (usize, usize),
-}
-
-impl<'a> Iterator for BridgeIterator<'a> {
-    type Item = IntSet<usize>;
-
-    /// The `next` method implements the logic to find and yield the next bridge.
-    fn next(&mut self) -> Option<Self::Item> {
-        // The main loop that processes the search state queue.
-        while let Some(mut state) = self.search_state.pop_front() {
-            // This is the base case of the recursion.
-            if state.ring_idx == 1 {
-                let s_neighbors: IntSet<usize> = state
-                    .current_nodes
-                    .iter()
-                    .flat_map(|v| self.router.index_to_neighbors.get(v).unwrap().iter())
-                    .copied()
-                    .filter(|v| self.rings[0].contains(v))
-                    .collect();
-
-                if s_neighbors.len() >= 2 {
-                    let bridge_hash = hash_intset(&state.bridge);
-                    if self.yielded_hashes.insert(bridge_hash) {
-                        return Some(state.bridge);
-                    }
-                }
-                continue;
-            }
-
-            // Recursive step.
-            if state.candidates.is_empty() {
-                let inner_ring = &self.rings[state.ring_idx - 1];
-                let candidates: Vec<usize> = state
-                    .current_nodes
-                    .iter()
-                    .flat_map(|n| self.router.index_to_neighbors.get(n).unwrap().iter())
-                    .copied()
-                    .filter(|v| inner_ring.contains(v))
-                    .collect();
-
-                let mut candidates_vec = candidates;
-                candidates_vec.sort_unstable();
-                state.candidates = candidates_vec;
-                state.candidate_pair_index = (0, 1);
-            }
-
-            let mut seen_candidate_pairs = RapidHashSet::default();
-
-            if state.candidate_pair_index.0 < state.candidates.len() {
-                let u = state.candidates[state.candidate_pair_index.0];
-                for j in state.candidate_pair_index.1..state.candidates.len() {
-                    let v = state.candidates[j];
-                    let candidate_pair = if u < v { (u, v) } else { (v, u) };
-
-                    if !seen_candidate_pairs.contains(&candidate_pair) {
-                        seen_candidate_pairs.insert(candidate_pair);
-
-                        let mut new_bridge = state.bridge.clone();
-                        new_bridge.insert(u);
-                        new_bridge.insert(v);
-
-                        let new_current_nodes = IntSet::from_iter([u, v]);
-
-                        // Push the next state onto the queue to simulate recursion.
-                        self.search_state.push_front(SearchState {
-                            ring_idx: state.ring_idx - 1,
-                            current_nodes: new_current_nodes,
-                            bridge: new_bridge,
-                            candidates: Vec::new(),
-                            candidate_pair_index: (0, 0),
-                        });
-                    }
-                }
-
-                // Update the state for the next iteration of the inner loop.
-                state.candidate_pair_index = (
-                    state.candidate_pair_index.0 + 1,
-                    state.candidate_pair_index.0 + 2,
-                );
-                self.search_state.push_front(state);
-            }
-        }
-
-        // No more states to process, so the iterator is exhausted.
-        None
-    }
 }
 
 pub type ExplorationGraphData = HashMap<usize, ExplorationNodeData>;
@@ -831,7 +736,10 @@ impl NodeRouter {
                     .iter()
                     .map(|&v| self.index_to_waypoint[&v])
                     .collect::<Vec<_>>();
-                println!("Processing bridge: {:?}", bridge);
+                println!(
+                    "Processing bridge: {:?} => {:?}",
+                    bridge, tmp_bridge_as_waypoints
+                );
 
                 let reisolate_bridge_nodes: Vec<usize> = bridge
                     .iter()
@@ -902,50 +810,159 @@ impl NodeRouter {
     }
 
     fn init_bridge_generator(&self, settlement: &IntSet<usize>) -> BridgeState {
-        let max_frontier_rings = 3;
-        let ring_combo_cutoff = [0, 3, 2, 2];
-        let mut rings: Vec<IntSet<usize>> = vec![];
-        let mut seen_nodes = settlement.clone();
-        rings.push(settlement.clone());
+        let mut rings: Vec<IntSet<usize>> = vec![settlement.clone()];
+        let seen_nodes = settlement.clone();
+        let current_ring_idx = 0;
 
-        while rings.len() <= max_frontier_rings {
-            let new_nodes = self.find_frontier_nodes(&seen_nodes, Some(2));
-            if new_nodes.is_empty() {
-                break;
-            }
-            seen_nodes.extend(new_nodes.iter());
-            rings.push(new_nodes);
+        BridgeState {
+            rings,
+            yielded_hashes: IntSet::default(),
+            search_state: VecDeque::new(),
+            seen_nodes,
+            current_ring_idx,
         }
+    }
 
-        let mut search_state = VecDeque::new();
+    fn next_bridge(&self, state: &mut BridgeState) -> Option<IntSet<usize>> {
+        let max_frontier_rings = 3;
+        let ring_combo_cutoff = [0, 3, 2, 2]; // Match Python's bridge size limits
 
-        // Phase 1: single node bridges
-        for ring_idx in (1..rings.len()).rev() {
-            let nodes = &rings[ring_idx];
-            let inner_ring = &rings[ring_idx - 1];
-            for &node in nodes.iter() {
-                let neighbors: IntSet<usize> = self
-                    .index_to_neighbors
-                    .get(&node)
-                    .unwrap()
-                    .intersection(inner_ring)
+        // Process existing search states
+        while let Some(search) = state.search_state.pop_front() {
+            let ring_idx = search.ring_idx;
+            if ring_idx == 1 {
+                let nodes_to_check = &search.current_nodes;
+                let s_neighbors: IntSet<usize> = nodes_to_check
+                    .iter()
+                    .flat_map(|v| self.index_to_neighbors.get(v).unwrap().iter())
                     .copied()
+                    .filter(|v| state.rings[0].contains(v))
                     .collect();
-
-                if neighbors.len() < 2 {
-                    continue;
+                
+                if DO_DBG {
+                    let s_neighbors_waypoints: Vec<usize> = s_neighbors
+                        .iter()
+                        .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
+                        .collect();
+                    println!(
+                        "Checking bridge {:?} at ring_idx 1 with inner-ring neighbors {:?} (waypoints {:?})",
+                        search.bridge, s_neighbors, s_neighbors_waypoints
+                    );
                 }
 
-                let neighbors_vec: Vec<_> = neighbors.iter().copied().collect();
-                if let Some(first) = neighbors_vec.get(0) {
-                    let rest = &neighbors_vec[1..];
-                    let inner_ring_neighbors: IntSet<usize> = self
+                if s_neighbors.len() >= 2 {
+                    let bridge_hash = hash_intset(&search.bridge);
+                    if state.yielded_hashes.insert(bridge_hash) {
+                        return Some(search.bridge);
+                    }
+                } else if DO_DBG {
+                    println!(
+                        "Bridge {:?} discarded: insufficient settlement neighbors ({})",
+                        search.bridge, s_neighbors.len()
+                    );
+                }
+                continue;
+            }
+
+            let inner_ring = &state.rings[ring_idx - 1];
+            let candidates: Vec<usize> = search
+                .current_nodes
+                .iter()
+                .flat_map(|n| self.index_to_neighbors.get(n).unwrap().iter())
+                .copied()
+                .filter(|v| inner_ring.contains(v))
+                .collect();
+
+            if DO_DBG {
+                let candidates_waypoints: Vec<usize> = candidates
+                    .iter()
+                    .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
+                    .collect();
+    
+                println!(
+                    "Ring_idx {}: Candidates for bridge {:?} (waypoints {:?}): {:?} (waypoints {:?})",
+                    ring_idx, search.bridge, 
+                    search.bridge.iter().map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v)).collect::<Vec<_>>(),
+                    candidates, candidates_waypoints
+                );
+            }
+
+            let mut seen_candidate_pairs = RapidHashSet::default();
+            for i in 0..(candidates.len() - 1) {
+                let u = candidates[i];
+                for j in (i + 1)..candidates.len() {
+                    let v = candidates[j];
+                    let candidate_pair = sort_pair(u, v);
+                    if seen_candidate_pairs.contains(&candidate_pair) {
+                        continue;
+                    }
+                    seen_candidate_pairs.insert(candidate_pair);
+
+                    let mut new_bridge = search.bridge.clone();
+                    new_bridge.insert(u);
+                    new_bridge.insert(v);
+
+                    let new_current_nodes = IntSet::from_iter([u, v]);
+                    state.search_state.push_back(SearchState {
+                        ring_idx: ring_idx - 1,
+                        current_nodes: new_current_nodes,
+                        bridge: new_bridge,
+                    });
+                }
+            }
+        }
+
+        // Generate new bridges by advancing to the next ring
+        if state.current_ring_idx < max_frontier_rings {
+            state.current_ring_idx += 1;
+            let new_nodes = self.find_frontier_nodes(&state.seen_nodes, Some(2));
+            if !new_nodes.is_empty() {
+                if DO_DBG {
+                    println!("Ring {}: {:?}", state.current_ring_idx, new_nodes);
+                }
+                state.seen_nodes.extend(new_nodes.iter());
+                state.rings.push(new_nodes.clone());
+                let ring_idx = state.current_ring_idx;
+                let inner_ring = &state.rings[ring_idx - 1];
+                let mut seen_candidate_pairs = RapidHashSet::default();
+
+                // Phase 1: Single-node bridges
+                for &node in new_nodes.iter() {
+                    let neighbors: IntSet<usize> = self
                         .index_to_neighbors
-                        .get(first)
+                        .get(&node)
                         .unwrap()
                         .intersection(inner_ring)
                         .copied()
                         .collect();
+
+                    if DO_DBG {
+                        let neighbors_waypoints: Vec<usize> = neighbors
+                            .iter()
+                            .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
+                            .collect();
+    
+                        println!(
+                            "Node {} has inner-ring neighbors {:?} (waypoints {:?})",
+                            node, neighbors, neighbors_waypoints
+                        );
+                    }
+
+                    if neighbors.len() < 2 {
+                        continue;
+                    }
+
+                    let neighbors_vec: Vec<_> = neighbors.iter().copied().collect();
+                    let first = neighbors_vec[0];
+                    let rest = &neighbors_vec[1..];
+                    let inner_ring_neighbors: IntSet<usize> = self
+                        .index_to_neighbors
+                        .get(&first)
+                        .unwrap()
+                        .intersection(inner_ring)
+                        .copied()
+                        .collect();
+
                     if !rest.iter().any(|n| {
                         inner_ring_neighbors
                             .intersection(self.index_to_neighbors.get(n).unwrap())
@@ -953,165 +970,92 @@ impl NodeRouter {
                             .is_some()
                     }) {
                         let bridge = IntSet::from_iter([node]);
-                        search_state.push_back(SearchState {
+                        state.search_state.push_back(SearchState {
                             ring_idx,
-                            current_nodes: bridge.clone(),
+                            current_nodes: IntSet::from_iter([node]),
                             bridge,
-                            candidates: Vec::new(),
-                            candidate_pair_index: (0, 0),
                         });
+                    } else if DO_DBG {
+                        println!("Node {} discarded: inner-ring neighbors are adjacent", node);
                     }
                 }
-            }
-        }
 
-        // Phase 2: multi-node bridges
-        for ring_idx in (1..rings.len()).rev() {
-            let nodes = &rings[ring_idx];
-            let inner_ring = &rings[ring_idx - 1];
+                // Phase 2: Multi-node bridges
+                let subgraph = self.ref_graph.filter_map(
+                    |node_idx, _| {
+                        if new_nodes.contains(&node_idx.index()) {
+                            Some(())
+                        } else {
+                            None
+                        }
+                    },
+                    |_, edge_idx| Some(*edge_idx),
+                );
 
-            let subgraph = self.ref_graph.filter_map(
-                |node_idx, _| {
-                    if nodes.contains(&node_idx.index()) {
-                        Some(())
-                    } else {
-                        None
-                    }
-                },
-                |_, edge_idx| Some(*edge_idx),
-            );
+                let node_indices: Vec<_> = subgraph.node_identifiers().collect();
+                let mut seen_endpoints = RapidHashSet::default();
 
-            let mut seen_endpoints: RapidHashSet<(usize, usize)> = RapidHashSet::default();
+                for i in 0..node_indices.len() {
+                    let u = node_indices[i].index();
+                    for j in (i + 1)..node_indices.len() {
+                        let v = node_indices[j].index();
+                        let key = sort_pair(u, v);
+                        if seen_endpoints.contains(&key) {
+                            continue;
+                        }
 
-            let node_indices: Vec<_> = subgraph.node_identifiers().collect();
-
-            for i in 0..node_indices.len() {
-                for j in (i + 1)..node_indices.len() {
-                    let u = node_indices[i];
-                    let v = node_indices[j];
-
-                    let u_idx = u.index();
-                    let v_idx = v.index();
-
-                    let key = if u_idx < v_idx {
-                        (u_idx, v_idx)
-                    } else {
-                        (v_idx, u_idx)
-                    };
-                    if seen_endpoints.contains(&key) {
-                        continue;
-                    }
-                    seen_endpoints.insert(key);
-
-                    // Take a single path (if any) from u to v, within the path length limit.
-                    let mut path_iter = all_simple_paths::<Vec<NodeIndex>, _, RandomState>(
-                        &subgraph,
-                        u,
-                        v,
-                        1,
-                        Some(ring_combo_cutoff[ring_idx]),
-                    )
-                    .take(1);
-
-                    if let Some(path) = path_iter.next() {
-                        // Check neighbor conditions
-                        let u_neighbors = self.index_to_neighbors.get(&u_idx).unwrap();
-                        let v_neighbors = self.index_to_neighbors.get(&v_idx).unwrap();
+                        let u_neighbors = self
+                            .index_to_neighbors
+                            .get(&u)
+                            .unwrap()
+                            .intersection(inner_ring)
+                            .copied()
+                            .collect::<IntSet<usize>>();
+                        let v_neighbors = self
+                            .index_to_neighbors
+                            .get(&v)
+                            .unwrap()
+                            .intersection(inner_ring)
+                            .copied()
+                            .collect::<IntSet<usize>>();
 
                         if u_neighbors
-                            .intersection(v_neighbors)
+                            .intersection(&v_neighbors)
                             .any(|n| inner_ring.contains(n))
+                            || u_neighbors.is_empty()
+                            || v_neighbors.is_empty()
                         {
                             continue;
                         }
 
-                        let combo_set: IntSet<usize> = path.iter().map(|n| n.index()).collect();
-                        search_state.push_back(SearchState {
-                            ring_idx,
-                            current_nodes: IntSet::from_iter([u_idx, v_idx]),
-                            bridge: combo_set,
-                            candidates: Vec::new(),
-                            candidate_pair_index: (0, 0),
-                        });
-                    }
-                }
-            }
-        }
+                        seen_endpoints.insert(key);
+                        seen_candidate_pairs.insert(key);
 
-        BridgeState {
-            rings,
-            yielded_hashes: IntSet::default(),
-            search_state,
-        }
-    }
+                        let mut path_iter = all_simple_paths::<Vec<NodeIndex>, _, RandomState>(
+                            &subgraph,
+                            NodeIndex::new(u),
+                            NodeIndex::new(v),
+                            0,
+                            Some(ring_combo_cutoff[ring_idx]),
+                        );
 
-    pub fn next_bridge(&self, state: &mut BridgeState) -> Option<IntSet<usize>> {
-        while let Some(mut search) = state.search_state.pop_front() {
-            if search.ring_idx == 1 {
-                let s_neighbors: IntSet<usize> = search
-                    .current_nodes
-                    .iter()
-                    .flat_map(|v| self.index_to_neighbors.get(v).unwrap().iter())
-                    .copied()
-                    .filter(|v| state.rings[0].contains(v))
-                    .collect();
-
-                if s_neighbors.len() >= 2 {
-                    let bridge_hash = hash_intset(&search.bridge);
-                    if state.yielded_hashes.insert(bridge_hash) {
-                        return Some(search.bridge);
-                    }
-                }
-                continue;
-            }
-
-            if search.candidates.is_empty() {
-                let inner_ring = &state.rings[search.ring_idx - 1];
-                let mut candidates: Vec<usize> = search
-                    .current_nodes
-                    .iter()
-                    .flat_map(|n| self.index_to_neighbors.get(n).unwrap().iter())
-                    .copied()
-                    .filter(|v| inner_ring.contains(v))
-                    .collect();
-
-                candidates.sort_unstable();
-                search.candidates = candidates;
-                search.candidate_pair_index = (0, 1);
-            }
-
-            let mut seen_candidate_pairs = RapidHashSet::default();
-
-            if search.candidate_pair_index.0 < search.candidates.len() {
-                let u = search.candidates[search.candidate_pair_index.0];
-                for j in search.candidate_pair_index.1..search.candidates.len() {
-                    let v = search.candidates[j];
-                    let candidate_pair = if u < v { (u, v) } else { (v, u) };
-
-                    if seen_candidate_pairs.insert(candidate_pair) {
-                        let mut new_bridge = search.bridge.clone();
-                        new_bridge.insert(u);
-                        new_bridge.insert(v);
-
-                        let new_current_nodes = IntSet::from_iter([u, v]);
-
-                        state.search_state.push_front(SearchState {
-                            ring_idx: search.ring_idx - 1,
-                            current_nodes: new_current_nodes,
-                            bridge: new_bridge,
-                            candidates: Vec::new(),
-                            candidate_pair_index: (0, 0),
-                        });
+                        while let Some(path) = path_iter.next() {
+                            let combo = IntSet::from_iter(path.iter().map(|n| n.index()));
+                            state.search_state.push_back(SearchState {
+                                ring_idx,
+                                current_nodes: IntSet::from_iter([u, v]),
+                                bridge: combo,
+                            });
+                        }
                     }
                 }
 
-                // Update for next inner loop
-                search.candidate_pair_index = (
-                    search.candidate_pair_index.0 + 1,
-                    search.candidate_pair_index.0 + 2,
-                );
-                state.search_state.push_front(search);
+                if DO_DBG {
+                    println!("Search_state size after ring {}: {}", ring_idx, state.search_state.len());
+                }
             }
+            // Re-run to process new states
+            return self.next_bridge(state);
         }
 
         None
