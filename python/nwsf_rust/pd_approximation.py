@@ -1,23 +1,36 @@
-# pd_approximation.py
+# pd_approximation_best.py
 """
-Primal-dual Node-Weighted Steiner Forest approximation solver with bridge heuristics
-using
+Primal-dual Node-Weighted Steiner Forest approximation solver with bridge heuristics.
 """
 
-from collections.abc import Generator
+# NOTE: It might be interesting to utilized a single sweep over the bridge generated
+# cycles to determine which nodes are removable while maintaining connectivity instead
+# of solely using the removal set nodes from _removal_candidates which are purely
+# based on degree and then passed to the generator for yielding weight based combinations.
+#
+# A single pass over the cycle basis would only yield individual candidates, but then
+# those could be fed to a stable_subgraph to use all_pairs_shortest_paths to get any
+# contiguous runs which could then be the candidates for the removal set combinations
+# instead of only singletons which can cause massive combinatorial explosion for large
+# generated cycles in the mainline of a large tree where the bridge connects several
+# long branches.
+#
+# One of the reasons the removal_set concept was adopted was because you can easily
+# remove a node on one side of the main line branch and be ok while you may isntead
+# be able to remove several from the other side of the articulation point.
+
 import time
+from collections.abc import Generator
 
+import rustworkx as rx
 from bidict import bidict
 from loguru import logger
-import rustworkx as rx
 
-import api_common as common_api
-from api_common import ResultDict
-from api_highs_model import SUPER_ROOT
-from api_rx_pydigraph import set_graph_terminal_sets_attribute
 import data_store as ds
-
-from nwsf_rust import DynamicCC
+from api_common import set_logger, ResultDict, SUPER_ROOT
+from api_exploration_graph import get_exploration_graph
+from api_rx_pydigraph import set_graph_terminal_sets_attribute
+from nwsf_rust import IDTree, NodeRouter
 
 
 class PrimalDualNWSF:
@@ -35,9 +48,12 @@ class PrimalDualNWSF:
         if self._do_debug:
             self._init_input_validation(exploration_graph, terminals)
 
+        # Testing
+        self.testing_orig_terminals = terminals.copy()
+
         self.config: dict = config
         self.ref_graph: rx.PyGraph = exploration_graph.to_undirected(multigraph=False)
-        self.dtree: DynamicCC = DynamicCC({v: [] for v in self.ref_graph.node_indices()})
+        self.dtree: IDTree = IDTree({v: [] for v in self.ref_graph.node_indices()})
         self.dtree_active_indices: set[int] = set()
         self.bridge_start_time = 0
 
@@ -45,9 +61,9 @@ class PrimalDualNWSF:
         self.index_to_neighbors: dict[int, set[int]] = {
             v: set(self.ref_graph.neighbors(v)) for v in self.ref_graph.node_indices()
         }
-        self.index_to_waypoint: dict[int, int] = dict(
-            {i: exploration_graph[i]["waypoint_key"] for i in exploration_graph.node_indices()}
-        )
+        self.index_to_waypoint: dict[int, int] = dict({
+            i: exploration_graph[i]["waypoint_key"] for i in exploration_graph.node_indices()
+        })
         self.index_to_weight: dict[int, int] = {
             i: self.ref_graph[i]["need_exploration_point"] for i in self.ref_graph.node_indices()
         }
@@ -58,34 +74,34 @@ class PrimalDualNWSF:
             tmp.inv[t]: tmp.inv.get(r, SUPER_ROOT) for t, r in terminals.items()
         }
 
-        self.base_towns: set[int] = set(
-            {i for i in self.ref_graph.node_indices() if self.ref_graph[i]["is_base_town"]}
-        )
+        self.base_towns: set[int] = set({
+            i for i in self.ref_graph.node_indices() if self.ref_graph[i]["is_base_town"]
+        })
 
-        # This is used in the _combinations_with_weight_range_generator
+        # Used in the _combinations_with_weight_range_generator to limit combo generation.
         self.max_node_weight = max(self.index_to_weight.values())
 
-        # Untouchables consists of:
-        # - all terminals
-        # - all fixed roots
-        # - leaf terminal parents
+        # Untouchables consists of all terminals, fixed roots, leaf terminal parents
         self.untouchables = self._generate_untouchables()
 
         # Used in approximation to reduce violated set connectivity checks.
-        self._connected_pairs: set[tuple[int, int]] = set()
+        self.connected_pairs: set[tuple[int, int]] = set()
 
         # Bridge heuristics
 
-        # 10_000 is the single reverse pass threshold I've used for benching all along
+        # 10_000 is the single reverse pass threshold used for benching since early development
         # min 350 => 1.5x the max iter of test cases for 2-direction pass
         # min 125 => 1.5x for reverse sort
-        self._max_removal_attempts = 10_000
+        # self.max_removal_attempts = 350
+        self.max_removal_attempts = 350
 
         # Used for controlling the sort reverse flag in the combo generator.
-        self._do_both_directions = False
         self._combo_gen_direction = True  # default value reverse=
 
-        # Used in reverse deletion to reduce deletion and connection checks.
+        # Used to limit the expansion of bridging spanners into the wild frontier
+        self.max_bridging_depth = 10
+
+        # Used in reverse deletion to filter deletion and connection checks.
         self._bridge_affected_base_towns: set[int] = set()
         self._bridge_affected_indices: set[int] = set()
         self._bridge_affected_terminals: set[tuple[int, int]] = set()  # (terminal, root) pairs
@@ -115,6 +131,47 @@ class PrimalDualNWSF:
         # connected component handling which is a core concept of this solver.
         assert isinstance(exploration_graph, rx.PyDiGraph), "Exploration graph must be a PyDiGraph"
         assert exploration_graph.is_symmetric(), "Exploration graph must have bi-directional links"
+
+    def validate_state(self, ordered_removables: list[int]):
+        tmpA = self.dtree_active_indices
+        tmpB = set(self.dtree.active_nodes())
+        assert tmpA == tmpB, "dtree_active_indices != active_nodes()"
+        tmpC = self.untouchables | set(ordered_removables)
+        if tmpB != tmpC:
+            logger.warning("untouchables | ordered_removables != active_nodes()")
+            logger.warning(f"  active nodes not in untouchables | ordered_removables: {tmpB - tmpC}")
+            logger.warning(f"  untouchables | ordered_removables not in active nodes: {tmpC - tmpB}")
+
+    def _generate_untouchables(self) -> set[int]:
+        """Set of all terminals, fixed roots and leaf terminal parents"""
+        untouchables = set(self.terminal_to_root.keys()) | set(self.terminal_to_root.values()) - {SUPER_ROOT}
+        self._seed_degree1_parents(untouchables)
+        return untouchables
+
+    def _seed_degree1_parents(self, X: set[int]):
+        """Add unambigous connected nodes (degree 1) to X (in-place)."""
+        for node in X.copy():
+            neighbors = self.index_to_neighbors[node]
+            if len(neighbors) == 1:
+                X.update(neighbors)
+        if self._do_debug:
+            logger.debug(f"Added degree 1 terminal parents to X. New  size: {len(X)}...")
+
+    def _pyGraph_subgraph_stable(
+        self, indices: list[int] | set[int], source_graph: rx.PyGraph | None = None, inclusive: bool = True
+    ) -> rx.PyGraph:
+        """Copies ref graph and deletes all nodes not in indices if inclusive is True.
+
+        This generates a subgraph that has 1:1 index matching with ref_graph which eliminates
+        the need for node_map. If any nodes are added to this copy those nodes will **NOT**
+        have the same indices as they would in ref_graph.
+        """
+        dup_graph = self.ref_graph.copy() if source_graph is None else source_graph.copy()
+        if not inclusive:
+            dup_graph.remove_nodes_from(indices)
+        else:
+            dup_graph.remove_nodes_from(set(dup_graph.node_indices()) - set(indices))
+        return dup_graph
 
     def _dump_graph_specs(self, subgraph: rx.PyGraph | None = None) -> None:
         if not self._do_debug:
@@ -146,109 +203,74 @@ class PrimalDualNWSF:
             f"Components by length: {component_counts_by_length}\n"
         )
 
-    def _generate_untouchables(self) -> set[int]:
-        """Set of all terminals, fixed roots and leaf terminal parents"""
-        untouchables = set(self.terminal_to_root.keys()) | set(self.terminal_to_root.values()) - {SUPER_ROOT}
-        self._seed_degree1_parents(untouchables)
-        return untouchables
-
-    def _seed_degree1_parents(self, X: set[int]):
-        """Add unambigous connected nodes (degree 1) to X (in-place)."""
-        for node in X.copy():
-            neighbors = list(self.ref_graph.neighbors(node))
-            if len(neighbors) == 1:
-                X.update({neighbors[0]})
-        if self._do_debug:
-            logger.debug(f"Added degree 1 terminal parents to X. New  size: {len(X)}...")
-
-    def _pyGraph_filtered_copy(
-        self, indices: list[int] | set[int], source_graph: rx.PyGraph | None = None, inclusive: bool = True
-    ) -> rx.PyGraph:
-        """Copies ref graph and deletes all nodes not in indices if inclusive is True.
-
-        This generates a subgraph that has 1:1 index matching with ref_graph which eliminates
-        the need for node_map. If any nodes are added to this copy those nodes will **NOT**
-        have the same indices as they would in ref_graph.
-        """
-        dup_graph = self.ref_graph.copy() if source_graph is None else source_graph.copy()
-        if not inclusive:
-            dup_graph.remove_nodes_from(indices)
-        else:
-            dup_graph.remove_nodes_from(set(dup_graph.node_indices()) - set(indices))
-        return dup_graph
-
-    # def validate_node_connected_components(
-    #     self, incumbent: rx.PyGraph, subgraph: rx.PyGraph, label: str
-    # ) -> None:
-    #     test_rx_components = {}
-    #     test_dtree_components = {}
-    #     for v in self.ref_graph.node_indices():
-    #         if subgraph.has_node(v):
-    #             test_rx_components[v] = sorted(rx.node_connected_component(subgraph, v))
-    #             test_dtree_components[v] = sorted(self.dtree.node_connected_component(v))
-    #             continue
-    #         elif incumbent.has_node(v):
-    #             incumbent_isolated = incumbent.neighbors(v) == []
-    #             dtree_isolated = self.dtree.is_isolated(v)
-    #             if incumbent_isolated == dtree_isolated:
-    #                 continue
-    #             if not incumbent_isolated:
-    #                 logger.warning(
-    #                     f"{label} isolation mismatch! {incumbent_isolated=} {dtree_isolated=} {v=} {self.index_to_waypoint[v]}"
-    #                 )
-    #             if not dtree_isolated:
-    #                 test_rx_components[v] = sorted(rx.node_connected_component(incumbent, v))
-    #                 test_dtree_components[v] = sorted(self.dtree.node_connected_component(v))
-    #             else:
-    #                 continue
-
-    #     for v in test_rx_components.keys():
-    #         if v not in test_rx_components:
-    #             continue
-    #         if test_rx_components[v] != test_dtree_components[v]:
-    #             logger.error(f"{label} component mismatch")
-    #             logger.error(
-    #                 f"       rx: {test_rx_components[v]} => {[self.index_to_waypoint[v] for v in test_rx_components[v]]}"
-    #             )
-    #             logger.error(
-    #                 f"    dtree: {test_dtree_components[v]} => {[self.index_to_waypoint[v] for v in test_dtree_components[v]]}"
-    #             )
-
     def solve(self) -> rx.PyDiGraph:
         """Runs the Steiner Forest approximation algorithm..."""
-        if self._do_debug:
-            logger.debug("Running Steiner Forest approximation...")
+        # if self._do_debug:
+        #     logger.debug("Running Steiner Forest approximation...")
+        from api_common import get_clean_exploration_data
+        import json
+        # Manual testing of NodeRouter PDApproximation...
+        waypoint_to_index = {v: i for i, v in enumerate(self.index_to_waypoint.values())}
+        exploration_data = get_clean_exploration_data(config)
+        exploration_json_dumps = json.dumps(exploration_data)
+        NR = NodeRouter(exploration_json_dumps)
+
         start_time = time.perf_counter()
         ordered_removables = self._approximate()
+        app1_time = time.perf_counter() - start_time
+        start_time = time.perf_counter()
+        test_result = NR.py_solve_for_terminal_pairs(list(self.testing_orig_terminals.items()))
+        app2_time = time.perf_counter() - start_time
+        print(f"Approximation => Python: {app1_time} Rust: {app2_time}")
 
-        # We'll have to setup a dtree copy before we can re-implement this...
-        # # Doing both directions allow the better results from both processing
-        # # the removables in ascending and descending order.
-        # if self._do_both_directions:
-        #     incumbentA = (incumbent[0].copy(), incumbent[1])
-        #     self._combo_gen_direction = False
-        #     incumbentA = self._bridge_heuristics(incumbentA)
-        # else:
-        #     incumbentA = None
+        test_cost = sum(self.index_to_weight[waypoint_to_index[v]] for v in test_result)
+        validation_cost = sum(self.index_to_weight[v] for v in self.dtree_active_indices)
+        if test_cost != validation_cost:
+            logger.error(f"Test cost != Validation cost: {test_cost} != {validation_cost}")
+            print("Test result:", sorted((test_result)))
+            print("Validation result:", sorted(self.dtree_active_indices))
+            print(
+                f"Python len active nodes is {len(self.dtree.active_nodes())} num active indices is {len(self.dtree_active_indices)} and num ordered removables is {len(ordered_removables)}"
+            )
+        else:
+            logger.success("Python and Rust match on cost...")
+        # if self._do_debug:
+        #     self.validate_state(ordered_removables)
+
+        # Processing order matters! Use both forward and reverse
+        # removal combos in distinct passes for improved solutions.
+        dtree_ORIG = self.dtree.py_clone()
+        removables_ORIG = ordered_removables.copy()
+        active_indices_ORIG = self.dtree_active_indices.copy()
+
+        self._combo_gen_direction = False
+        self._bridge_heuristics(ordered_removables)
+        dtree_incumbentA = self.dtree.py_clone()
+
+        self.dtree = dtree_ORIG
+        ordered_removables = removables_ORIG
+        self.dtree_active_indices = active_indices_ORIG
 
         self._combo_gen_direction = True
         self._bridge_heuristics(ordered_removables)
 
-        # if incumbentA is not None:
-        #     # Test which incumbent dominates
-        #     incumbentA_weight = sum(self.index_to_weight[v] for v in incumbentA[0].node_indices())
-        #     incumbentA_component_count = len(rx.connected_components(incumbentA[0]))
-        #     incumbent_weight = sum(self.index_to_weight[v] for v in incumbent[0].node_indices())
-        #     incumbent_component_count = len(rx.connected_components(incumbent[0]))
-        #     if incumbentA_weight < incumbent_weight or (
-        #         incumbentA_weight == incumbent_weight
-        #         and incumbentA_component_count > incumbent_component_count
-        #     ):
-        #         incumbent = incumbentA
-        self._bridge_affected_indices = set(self.dtree.active_node_indices())
+        if dtree_incumbentA is not None:
+            # Test which incumbent dominates
+            incumbentA_weight = sum(self.index_to_weight[v] for v in dtree_incumbentA.active_nodes())
+            incumbentA_component_count = dtree_incumbentA.num_connected_components()
+            incumbent_weight = sum(self.index_to_weight[v] for v in self.dtree.active_nodes())
+            incumbent_component_count = self.dtree.num_connected_components()
+            if incumbentA_weight < incumbent_weight or (
+                incumbentA_weight == incumbent_weight
+                and incumbentA_component_count > incumbent_component_count
+            ):
+                self.dtree = dtree_incumbentA
+
+        self._bridge_affected_indices = set(self.dtree.active_nodes())
         self._bridge_affected_terminals = set(self.terminal_to_root.items())
         self._bridge_affected_base_towns = self.base_towns
         assert self._terminal_pairs_connected()
+
         solution_graph = self._finalize(start_time)
         return solution_graph
 
@@ -260,7 +282,7 @@ class PrimalDualNWSF:
 
         - re-assigns original terminal roots pairs to pairs from the approximation clusters.
         """
-        subgraph = self._pyGraph_filtered_copy(list(self.dtree.active_node_indices()))
+        subgraph = self._pyGraph_subgraph_stable(list(self.dtree.active_nodes()))
         if self._do_info:
             logger.info("Finalizing solution...")
             self._dump_graph_specs(subgraph)
@@ -272,9 +294,7 @@ class PrimalDualNWSF:
         all_roots_and_terminals = set(terminal_waypoints.keys()) | set(terminal_waypoints.values()) - {
             SUPER_ROOT
         }
-        all_base_towns: set[int] = {
-            node["waypoint_key"] for node in self.ref_graph.nodes() if node["is_base_town"]
-        }
+        all_base_towns: set[int] = {self.index_to_waypoint[node] for node in self.base_towns}
 
         final_components: list[list[int]] = []
         terminal_pairs: dict[int, int] = {}
@@ -355,21 +375,21 @@ class PrimalDualNWSF:
 
         X = self._generate_untouchables()
 
-        if self._do_info:
-            logger.info(f"Initialized approximation with {len(X)} nodes...")
+        if self._do_debug:
+            logger.debug(f"Initialized approximation with {len(X)} nodes...")
             starting_ccs = rx.connected_components(self.ref_graph.subgraph(list(X)))
-            logger.info(
+            logger.debug(
                 f"There are {len(starting_ccs)} connected components in X of sizes: {sorted([len(cc) for cc in starting_ccs])}",
             )
 
         X, iters, ordered_removables = self._primal_dual_approximation(X)
 
         # Initializing the dtree using the PyGraph just seems simplest...
-        subgraph = self._pyGraph_filtered_copy(X)
+        subgraph = self._pyGraph_subgraph_stable(X)
         for v in subgraph.node_indices():
             for u in subgraph.neighbors(v):
                 self.dtree.insert_edge(u, v)
-        self.dtree_active_indices = set(self.dtree.active_node_indices())
+        self.dtree_active_indices = set(self.dtree.active_nodes())
         # self.validate_node_connected_components(subgraph, subgraph, "approximation initialization")
 
         # Ordered removables are in temporal order of going tight, sub ordered structurally
@@ -379,21 +399,29 @@ class PrimalDualNWSF:
         # of the algorithm and bridge heuristic processing.
         ordered_removables = self._prune_approximation(ordered_removables)
         ordered_removables = list(reversed(ordered_removables))
+        # if self._do_info:
+        incumbent_weight = sum(self.index_to_weight[v] for v in self.dtree.active_nodes())
+        if self._do_debug:
+            logger.warning(
+                f"Post pruning: node count={len(self.dtree.active_nodes())}, cost={incumbent_weight}, "
+                f"components={self.dtree.num_connected_components()}, "
+                f"iterations={iters}, time={time.perf_counter() - start_time:.4f}s"
+            )
 
         # remove_removables is setup to primarily handle 'bridged' components in the Bridge
-        # Heuristic. To simplify code re-use the bridge related variables are set here to
+        # Heuristic. To simplify the code the bridge related variables are set here to
         # cover all removables, terminals and base towns in the graph.
         self._update_bridge_affected_nodes(self.dtree_active_indices)
         freed, _freed_edges = self._remove_removables(ordered_removables)
+
         self.dtree_active_indices -= freed
         ordered_removables = [v for v in ordered_removables if v not in freed]
 
         if self._do_info:
-            incumbent_weight = sum(self.index_to_weight[v] for v in self.dtree.active_node_indices())
-
+            incumbent_weight = sum(self.index_to_weight[v] for v in self.dtree.active_nodes())
             logger.info(
-                f"Initial solution: node count={subgraph.num_nodes()}, cost={incumbent_weight}, "
-                f"components={rx.number_connected_components(subgraph)}, "
+                f"Initial solution: node count={len(self.dtree.active_nodes())}, cost={incumbent_weight}, "
+                f"components={self.dtree.num_connected_components()}, "
                 f"iterations={iters}, time={time.perf_counter() - start_time:.4f}s"
             )
 
@@ -456,10 +484,10 @@ class PrimalDualNWSF:
             if self._do_debug:
                 logger.debug(f"Removed {len(indices)} degree 1 nodes")
 
-        ordered_removables = [v for v in ordered_removables if v in self.dtree.active_node_indices()]
+        ordered_removables = [v for v in ordered_removables if v in self.dtree.active_nodes()]
         return ordered_removables
 
-    def _find_frontier_nodes(self, settlement: set[int]) -> set[int]:
+    def _find_frontier_nodes(self, settlement: set[int], min_degree=0) -> set[int]:
         """Finds and returns nodes not in settlement with neighbors in settlement."""
         if self._do_debug:
             logger.debug("Finding frontier nodes...")
@@ -468,9 +496,11 @@ class PrimalDualNWSF:
         for v in settlement:
             frontier.update(self.index_to_neighbors[v])
         frontier.difference_update(settlement)
+        if min_degree > 0:
+            frontier = {v for v in frontier if len(self.index_to_neighbors[v]) >= min_degree}
 
         if self._do_debug:
-            logger.debug(f"Found {len(frontier)} frontier nodes for settlement of size {len(settlement)}...")
+            logger.warning(f"Found {len(frontier)} frontier nodes for settlement of size {len(settlement)}...")
 
         return frontier
 
@@ -479,13 +509,34 @@ class PrimalDualNWSF:
         if self._do_debug:
             logger.debug("Finding violated sets...")
 
-        subgraph = self._pyGraph_filtered_copy(nodes_subset)
+        # It is fairly common in the smaller test incidents that a super terminal can
+        # be placed in a Terminal Cluster Set of a component with a higher cost simply
+        # because another (cheaper) component near it is non-violated. To avoid these
+        # situations reset the connected pairs cache and mark all components as violated
+        # until all super terminals are connected. Since it is assumed that super terminals
+        # are listed last in the terminal_to_root listing use reversed to eliminate almost
+        # all overhead associated with tightening and removing more frontier nodes.
+
+        # Another scenario where a super terminal can be put in a higher cost component
+        # is when it is nearer to a basetown that is a potential super-terminal root but
+        # that basetown isn't a fixed root for any other terminal while the super-terminal
+        # is also near enough to a higher cost component's settlement that _is_ violated,
+        # meaning the violated component and super-terminal component both grow while the
+        # potential super-terminal root basetown doesn't leading to the super-terminal
+        # joining with the higher cost component prior to joining with the lower costing
+        # basetown. A possible fix for this is to include potential roots in the violated
+        # components until all super terminals are not violated where the potential roots
+        # are those that are nearest to the super-terminals, and if that basetown is already
+        # a fixed basetown for a terminal then nothing special needs to be done.
+
+        has_violated_super_terminal = False
+        subgraph = self._pyGraph_subgraph_stable(nodes_subset)
+        connected_components = rx.connected_components(subgraph)
         violated: list[set[int]] = []
-        for cc in rx.connected_components(subgraph):
-            # Filter the terminals to check to only those in the vurrent component that
-            # have not had connection established using set membership instead of path testing.
+        for cc in connected_components:
+            # Since the pd approximation is additive we can safely avoid duplicate checks.
             active_terminals = [
-                p for p in list(self.terminal_to_root.items()) if p not in self._connected_pairs
+                p for p in reversed(list(self.terminal_to_root.items())) if p not in self.connected_pairs
             ]
             for terminal, root in active_terminals:
                 terminal_in_cc = terminal in cc
@@ -496,11 +547,21 @@ class PrimalDualNWSF:
                 )
 
                 if not terminal_in_cc and not root_in_cc:
+                    if root == SUPER_ROOT:
+                        has_violated_super_terminal = True
+                        break
                     continue
                 if terminal_in_cc and root_in_cc:
-                    self._connected_pairs.add((terminal, root))
+                    self.connected_pairs.add((terminal, root))
                 else:
+                    if root == SUPER_ROOT:
+                        has_violated_super_terminal = True
+                        break
                     violated.append(cc)
+
+        if has_violated_super_terminal:
+            self.connected_pairs.clear()
+            return connected_components
         return violated
 
     ###################################################################
@@ -535,23 +596,34 @@ class PrimalDualNWSF:
             test_pass += 1
             improved = False
 
-            logger.info(
-                f"Starting bridge testing pass {test_pass} ({time.perf_counter() - bridge_start_time:.2f}s)"
-            )
-            logger.debug(
-                f"Unused graph nodes: {self.ref_graph.num_nodes() - len(incumbent_indices)}, "
-                f"incumbent subgraph nodes: {len(incumbent_indices)}"
-            )
+            if self._do_debug:
+                logger.debug(
+                    f"Starting bridge testing pass {test_pass} ({time.perf_counter() - bridge_start_time:.2f}s)"
+                )
+                logger.debug(
+                    f"Unused graph nodes: {self.ref_graph.num_nodes() - len(incumbent_indices)}, "
+                    f"incumbent subgraph nodes: {len(incumbent_indices)}"
+                )
+                self.validate_state(ordered_removables)
 
             bridges = self._bridge_generator(incumbent_indices)
             for bridge in bridges:
+                total_iter += 1
                 reisolate_bridge_nodes = [v for v in bridge if v not in incumbent_indices]
 
-                if self._do_info:
-                    logger.info(
+                # Test output to compare the Rust implementation to...
+                logger.warning(
+                        f"Processing bridge {bridge}... {[self.index_to_waypoint[v] for v in bridge]}"
+                )
+                continue
+
+                if self._do_debug:
+                    logger.debug(
                         f"Processing bridge {bridge}... {[self.index_to_waypoint[v] for v in bridge]}"
                     )
-                total_iter += 1
+                    if self._do_debug:
+                        self.validate_state(ordered_removables)
+                    assert not any(v in incumbent_indices for v in bridge)
 
                 # Produce a candidate by inserting bridge into incumbent tree
                 self._connect_bridge(bridge)
@@ -561,6 +633,8 @@ class PrimalDualNWSF:
                     self.dtree.isolate_nodes(reisolate_bridge_nodes)
                     self.dtree_active_indices = incumbent_indices.copy()
                     num_skipped_no_cycles += 1
+                    if self._do_debug:
+                        self.validate_state(ordered_removables)
                     continue
 
                 # Skip processing repeated bridge/cycle sets, the result will be the same.
@@ -568,6 +642,8 @@ class PrimalDualNWSF:
                     self.dtree.isolate_nodes(reisolate_bridge_nodes)
                     self.dtree_active_indices = incumbent_indices.copy()
                     num_skipped_seen_before += 1
+                    if self._do_debug:
+                        self.validate_state(ordered_removables)
                     continue
 
                 # Only particular nodes can be removed from a cycle
@@ -575,35 +651,44 @@ class PrimalDualNWSF:
                     self.dtree.isolate_nodes(reisolate_bridge_nodes)
                     self.dtree_active_indices = incumbent_indices.copy()
                     num_skipped_no_candidates += 1
+                    if self._do_debug:
+                        self.validate_state(ordered_removables)
                     continue
 
                 # Attempt to improve the solution by removing different combinations of removal candidates
-                is_improved, removal_attempts = self._improve_component(
+                is_improved, removal_attempts, freed = self._improve_component(
                     bridge, removal_candidates, ordered_removables
                 )
                 total_iter += removal_attempts
 
                 if is_improved:
-                    incumbent_indices = set(self.dtree.active_node_indices())
+                    incumbent_indices = set(self.dtree.active_nodes())
                     self.dtree_active_indices = incumbent_indices.copy()
                     bridges = self._bridge_generator(incumbent_indices)
                     improved = True
+                    ordered_removables = [
+                        v for v in ordered_removables if v not in freed
+                    ] + self._sort_by_weights(list(bridge))
+                    if self._do_debug:
+                        self.validate_state(ordered_removables)
                     break
 
                 # Re-isolate the bridge nodes in dtree to restore to pre-bridged state.
                 self.dtree.isolate_nodes(reisolate_bridge_nodes)
                 self.dtree_active_indices = incumbent_indices.copy()
+                if self._do_debug:
+                    self.validate_state(ordered_removables)
 
-            if self._do_info:
-                logger.info(
+            if self._do_debug:
+                logger.debug(
                     f"Bridge testing pass {test_pass} completed: iterations={total_iter}, "
                     f"components={self.dtree.num_connected_components()}, "
                     f"time={time.perf_counter() - bridge_start_time:.2f}s"
                 )
 
             if not improved:
-                if self._do_info:
-                    logger.info(
+                if self._do_debug:
+                    logger.debug(
                         "Bridge testing complete. No improvements found. "
                         f"removals checked= {num_removals_checked}, "
                         f"skipped no cycles= {num_skipped_no_cycles}, "
@@ -613,56 +698,147 @@ class PrimalDualNWSF:
                         f"time={time.perf_counter() - bridge_start_time:.2f}s"
                     )
                 break
-            self._bridge_affected_indices = set(self.dtree.active_node_indices())
-            self._bridge_affected_terminals = set(self.terminal_to_root.items())
-            self._bridge_affected_base_towns = self.base_towns
-            assert self._terminal_pairs_connected()
-
         return
 
-    def _bridge_generator(self, settlement: set[int]) -> Generator[set[int] | frozenset[int], None, None]:
-        """Finds settlement node and edge bridges in frontier.
-        - A node bridge is a single node and its edges
-        - An edge bridge contains two nodes and there edges including the bridge edge between them.
+    def _bridge_generator(self, settlement: set[int]) -> Generator[frozenset[int], None, None]:
+        """Finds bridging spans of settlement border nodes within frontier and wild frontier."""
 
-        Yields:
-          - sets of node bridges, frozenset of edge bridges
-        """
-        if self._do_debug:
-            logger.debug("Initializing bridge generator...")
+        # ref_graph => full reference graph of all nodes and edges.
+        # Contains potentially topologically constrained expansion of Settlement
+        # Settlement potentially contains disjoint connected components
 
-        frontier = self._find_frontier_nodes(settlement)
-        subgraph = self._pyGraph_filtered_copy(frontier)
+        # S => Settlement (induced subgraph of currently 'active' nodes of ref_graph)
+        # B => Border (nodes in Settlement with ref_graph neighbors in Frontier)
+        # F => Frontier (non-settled nodes with ref_graph neighbors in Settlement)
+        # W => Wild Frontier (non-settled nodes with no settled ref_graph neighbors)
 
-        node_bridges_found = 0
-        edge_bridges_found = 0
+        # 𝓕 => Fringe edges (edges in ref_graph connecting border and frontier nodes)
+        # 𝓑 => bridging span of nodes not in S that connect distinct nodes in S.
 
-        # Yield node bridges
-        for v in frontier:
-            if len(set(self.ref_graph.neighbors(v)) & settlement) > 1:
-                yield {v}
-                node_bridges_found += 1
+        # Let ring 0 => B (in most cases B == S since S is most commonly a Steiner Forest/Tree)
+        # Let ring 1 => F0 be an eccentric ring around {B}
+        # Let ring 2 => F1 be an eccentric ring around {F0|B}
+        # Let ring 3 => F2 be an eccentric ring around {F1|F0|B}
+        # ...
 
-        # Yield edge bridges
-        for u, v in subgraph.edge_list():
-            yield frozenset((u, v))
-            edge_bridges_found += 1
+        max_frontier_rings = 3  # number rings around settlement
+        ring_combo_cutoff = [0, 3, 2, 2]  # max width of connected run _along_ outermost ring.
 
-        if self._do_info:
-            logger.info(
-                f"Found {node_bridges_found + edge_bridges_found} bridges (nodes: {node_bridges_found}, edges: {edge_bridges_found})"
+        rings: list[set[int]] = []
+        seen_candidate_pairs: set[tuple[int, int]] = set()
+        yielded: set[frozenset[int]] = set()
+
+        def descend_to_yield_bridges(
+            ring_idx: int, current_nodes: set[int] | frozenset[int], bridge: frozenset[int]
+        ) -> Generator[frozenset[int], None, None]:
+            """Descend from current ring to settlement frontier (F0), yielding bridges connecting ≥2 S nodes."""
+            nonlocal seen_candidate_pairs
+            assert ring_idx > 0
+
+            # Base case (Settlement Frontier): yield and return
+            if ring_idx == 1:
+                if bridge not in yielded:
+                    s_neighbors = set().union(*(self.index_to_neighbors[v] for v in current_nodes)) & rings[0]
+                    if len(s_neighbors) >= 2:
+                        yielded.add(bridge)
+                        yield bridge
+                return
+
+            # Collect and process pairwise combinations of current_node candidates...
+            # Candidates are current_nodes neighbors in ring_idx - 1
+            candidates = list(
+                set.union(*(self.index_to_neighbors[n] for n in current_nodes)) & rings[ring_idx - 1]
             )
+            for i in range(len(candidates) - 1):
+                u = candidates[i]
+                for v in candidates[i + 1 :]:
+                    # This filter works for all depths, which is fine for a small planar graph with
+                    # limited max ring depth. It may be too restrictive with higher max ring depth.
+                    candidate_pair = (u, v) if u < v else (v, u)
+                    if candidate_pair not in seen_candidate_pairs:
+                        seen_candidate_pairs.add(candidate_pair)
+                        yield from descend_to_yield_bridges(ring_idx - 1, {u, v}, bridge | frozenset({u, v}))
+
+        # Populate ring0 (Settlement border)
+        seen_nodes = settlement.copy()
+        rings.append(settlement)
+
+        while len(rings) <= max_frontier_rings:
+            # Populate the new outermost ring
+            nodes = self._find_frontier_nodes(seen_nodes, min_degree=2)
+            seen_nodes |= nodes
+            ring_idx = len(rings)
+            rings.append(nodes)
+
+            # Phase 1:
+            # Yield single node bridges from outermost ring connecting with >=2 neighbors in inner ring.
+
+            # NOTE: Validating inner ring neighbors does not strictly need to be done but reduces workload.
+            inner_ring = rings[ring_idx - 1]
+            for node in nodes:
+                neighbors = self.index_to_neighbors[node] & inner_ring
+                if len(neighbors) < 2:
+                    continue
+
+                first, *rest = neighbors
+                inner_ring_neighbors = self.index_to_neighbors[first] & inner_ring
+                if not any(inner_ring_neighbors & self.index_to_neighbors[n] for n in rest):
+                    yield from descend_to_yield_bridges(ring_idx, {node}, frozenset({node}))
+
+            # Phase 2:
+            # Yield multi-node bridges from outermost ring.
+
+            # NOTE: Each ring is only a single node 'thick' so the `all_pairs_all_simple_paths`
+            # is an efficient way to obtain all size constrained connected runs within the ring
+            # along with the associated endpoint nodes.
+            subgraph = self._pyGraph_subgraph_stable(nodes)
+            tmp = rx.all_pairs_all_simple_paths(subgraph, cutoff=ring_combo_cutoff[ring_idx])
+            seen_endpoints: set[tuple[int, int]] = set()
+
+            # Connected runs within the current outer ring make up the multi-node bridges for the ring.
+            # They exist as connected runs between u and v.
+
+            # NOTE: These runs can be accumulated and made available to the descend function to increase
+            # the spread along the inner rings while descending but since each ring consists only of
+            # F nodes each node in the span would have corresponding nodes in the inner ring and the
+            # span would need to have a lower weight to improve the incumbent solution which wouldn't
+            # happen based on the PD approximation.
+            for u in tmp:
+                for v in tmp[u]:
+                    if self.index_to_neighbors[u] & self.index_to_neighbors[v] & inner_ring:
+                        continue
+                    # Use one representative combo per endpoints pair
+                    key = (u, v) if u < v else (v, u)
+                    if key not in seen_endpoints:
+                        seen_endpoints.add(key)
+                        combo = frozenset(tmp[u][v][0])
+                        yield from descend_to_yield_bridges(ring_idx, combo, combo)
+
 
     def _connect_bridge(self, bridge: set[int] | frozenset[int]) -> None:
         """Applies bridge to dtree."""
         # Insert edges connecting bridge nodes to their active neighbors.
-        for v in bridge:
-            active_neighbors = self.index_to_neighbors[v] & self.dtree_active_indices
-            for u in active_neighbors:
-                if self.dtree.insert_edge(v, u) == -1:
-                    logger.error(f"Edge insertion failed for {(v, u)} in bridge {bridge}")
-            if active_neighbors:
-                self.dtree_active_indices.add(v)
+        # Use tmp to store the whole bridge, deplete by moving from tmp to dtree
+        # when the node in tmp has an active neighbor in dtree.
+        tmp = set(bridge.copy())
+        moved_node = True
+        while tmp and moved_node:
+            moved_node = False
+            for v in tmp.copy():
+                active_neighbors = self.index_to_neighbors[v] & self.dtree_active_indices
+                for u in active_neighbors:
+                    if self.dtree.insert_edge(v, u) == -1:
+                        logger.error(f"Edge insertion failed for {(v, u)} in bridge {bridge}")
+                if active_neighbors:
+                    self.dtree_active_indices.add(v)
+                    tmp.remove(v)
+                    moved_node = True
+                    if self._do_trace:
+                        logger.trace(
+                            f"active_neighbors for v={v} ({self.index_to_waypoint[v]}): {active_neighbors} ({[self.index_to_waypoint[i] for i in active_neighbors]})"
+                        )
+            if not moved_node:
+                logger.warning(f"Failed to move bridge nodes: {tmp} from bridge {bridge} to dtree")
 
         if self._do_debug:
             component = self.dtree.node_connected_component(list(bridge)[0])
@@ -675,6 +851,14 @@ class PrimalDualNWSF:
         """Isolate and filter cycle basis rooted at a bridge node."""
         if self._do_debug:
             logger.debug(f"Processing bridge {bridge}... ({[self.index_to_waypoint[v] for v in bridge]})")
+
+        # logger.warning("dtree Potential cycles:")
+        # for cycle in self.dtree.cycle_basis(root=list(bridge)[0]):
+        #     logger.warning(f"  {cycle}, {[self.index_to_waypoint[v] for v in cycle]}")
+        # logger.warning("pygraph Potential cycles:")
+        # tmp = self._pyGraph_subgraph_stable(self.dtree_active_indices)
+        # for cycle in rx.cycle_basis(tmp, root=list(bridge)[0]):
+        #     logger.warning(f"  {cycle}, {[self.index_to_waypoint[v] for v in cycle]}")
 
         cycles = [
             frozenset(cycle)
@@ -701,7 +885,7 @@ class PrimalDualNWSF:
         cycles: list[frozenset[int]],
         seen_before: set[frozenset[frozenset[int]]],
     ) -> bool:
-        this_set = frozenset(cycles)
+        this_set = frozenset([frozenset(bridge)] + cycles)
         if this_set in seen_before:
             if self._do_debug:
                 logger.debug(
@@ -721,6 +905,41 @@ class PrimalDualNWSF:
 
         threshold = len(cycles) + 1
         candidates = set().union(*cycles) - self.untouchables - bridge
+
+        # # MARK: TESTBLOCK
+        # if bridge == frozenset({611, 612, 654, 656, 657, 659, 660, 662, 665, 604, 605, 606, 607}):
+        #     print("dbg")
+
+        #     # Remove candidates one-by-one and validate connectivity
+        #     # Regardless of connectivity restore the node
+        #     def __terminal_connected(terminal, root):
+        #         return (
+        #             self.dtree.query(terminal, root)
+        #             if root != SUPER_ROOT
+        #             else any(self.dtree.query(terminal, b) for b in self.base_towns)
+        #         )
+
+        #     def __terminals_pairs_connected():
+        #         for terminal, root in self.terminal_to_root.items():
+        #             if not __terminal_connected(terminal, root):
+        #                 return False
+        #         return True
+
+        #     validated_candidates = []
+        #     for v in candidates:
+        #         deleted_edges = []
+        #         for u in self.index_to_neighbors[v] & self.dtree_active_indices:
+        #             if self.dtree.delete_edge(v, u) != -1:
+        #                 deleted_edges.append((v, u))
+        #         if __terminals_pairs_connected():
+        #             validated_candidates.append(v)
+        #         for v, u in deleted_edges:
+        #             self.dtree.insert_edge(v, u)
+
+        #     dtree_candidates: list[tuple[int, int]] = [(v, self.index_to_weight[v]) for v in validated_candidates]
+        #     print("dbg")
+        # # MARK: TESTCLOCK_END
+
         dtree_candidates: list[tuple[int, int]] = [
             (v, self.index_to_weight[v]) for v in candidates if self.dtree.degree(v) <= threshold
         ]
@@ -741,7 +960,7 @@ class PrimalDualNWSF:
         bridge: set[int] | frozenset[int],
         removal_candidates: list[tuple[int, int]],
         ordered_removables: list[int],
-    ) -> tuple[bool, int]:
+    ) -> tuple[bool, int, set[int] | frozenset[int]]:
         """Test the removal of filtered combinations of removal candidates."""
         if self._do_debug:
             logger.debug(
@@ -753,7 +972,7 @@ class PrimalDualNWSF:
         # NOTE: Each node removal alters the connected components of the graph.
 
         removal_attempts = 0
-        max_removal_attempts = self._max_removal_attempts
+        max_removal_attempts = self.max_removal_attempts
 
         bridged_component = set(self.dtree.node_connected_component(list(bridge)[0]))
         self._update_bridge_affected_nodes(bridged_component)
@@ -807,9 +1026,10 @@ class PrimalDualNWSF:
             ordered_removables = [v for v in ordered_removables if v not in removal_set]
 
             # Attempt to remove additional nodes using the ordered set.
-            freed, freed_edges = self._remove_removables(ordered_removables)
+            freed, freed_edges = self._remove_removables(ordered_removables)  # TESTING
+            # freed, freed_edges = self._remove_removables(list(bridge) + ordered_removables)  # TESTING
             active_component_indices -= freed
-            new_weight = sum(self.index_to_weight[v] for v in self.dtree.active_node_indices())
+            new_weight = sum(self.index_to_weight[v] for v in self.dtree.active_nodes())
 
             # Test if mutated dominates incumbent.
             # mutated started as incumbent (a single component) and may have split a terminal
@@ -830,9 +1050,9 @@ class PrimalDualNWSF:
                 continue
 
             if self._do_info:
-                node_count = len(self.dtree.active_node_indices())
+                node_count = len(self.dtree.active_nodes())
                 new_cc_count = self.dtree.num_connected_components()
-                logger.info(
+                logger.success(
                     f"Improved component: node count={node_count}, cost={new_weight}, components={new_cc_count}, "
                     f"iterations={removal_attempts} "
                     f"bridge={[self.index_to_waypoint[v] for v in bridge]}, "
@@ -841,9 +1061,9 @@ class PrimalDualNWSF:
             if self._do_trace:
                 logger.trace(f"Solution improved using removal set {removal_set} and freed {freed}...")
 
-            return True, removal_attempts
+            return True, removal_attempts, freed | set(removal_set)
 
-        return False, removal_attempts
+        return False, removal_attempts, set()
 
     def _weighted_range_combo_generator(
         self, items: list[tuple[int, int]], bridge_cost: int, bridge_nodes: int
@@ -963,10 +1183,10 @@ class PrimalDualNWSF:
 
     def _terminal_pairs_connected(self) -> bool:
         """Checks if affected terminal pairs are connected in the subgraph."""
-        if self._do_debug:
-            logger.debug(
+        if self._do_trace:
+            logger.trace(
                 f"Checking {len(self._bridge_affected_terminals)} affected terminals on graph with "
-                f"{len(self.dtree.active_node_indices())} active nodes..."
+                f"{len(self.dtree.active_nodes())} active nodes..."
             )
 
         all_connected = True
@@ -990,6 +1210,11 @@ class PrimalDualNWSF:
         )
 
 
+#####
+# MARK: Main entry
+#####
+
+
 def optimize_with_terminals(
     exploration_graph: rx.PyDiGraph, terminals: dict[int, int], config: dict
 ) -> ResultDict:
@@ -1005,7 +1230,7 @@ if __name__ == "__main__":
     import testing as test
 
     config = ds.get_config("/home/thell/nwsf_rust/python/nwsf_rust/pd_approximation.toml")
-    common_api.set_logger(config)
+    set_logger(config)
 
     if config.get("actions", {}).get("baseline_tests", False):
         success = test.baselines(optimize_with_terminals, config)
@@ -1015,18 +1240,33 @@ if __name__ == "__main__":
 
     if config.get("actions", {}).get("scaling_tests", False):
         total_time_start = time.perf_counter()
-        # for budget in [265]:
-        for budget in range(5, 555, 5):
+        # for budget in [415]:
+        # for budget in range(5, 555, 5):
+        for budget in [20]:
             print("\n" + "*" * 100)
             print(f"Test: optimal terminals for budget of {budget}")
             test.workerman_terminals(optimize_with_terminals, config, budget, False)
             print("-" * 72)
-            test.workerman_terminals(optimize_with_terminals, config, budget, True)
-        # for percent in [7]:
-        for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
-            print("\n" + "*" * 100)
-            print(f"Test: random terminals representing {percent} percent coverage:")
-            test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
-            print("-" * 72)
-            test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
+            # test.workerman_terminals(optimize_with_terminals, config, budget, True)
+        # for percent in [9, 100]:
+        # for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
+        #     print("\n" + "*" * 100)
+        #     print(f"Test: random terminals representing {percent} percent coverage:")
+        #     test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
+        #     print("-" * 72)
+        #     test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
+
+    # # fmt:off
+    # tst_set = {1826: 1795, 1827: 1795, 1828: 1795, 1829: 1795, 1879: 1857, 1880: 1857, 1882: 1857, 132: 1, 176: 1, 175: 1, 488: 301, 905: 608, 1821: 1781, 1822: 1781, 1830: 1781, 1886: 1857, 1881: 1853, 1884: 1853, 1885: 1853, 1889: 1857, 1893: 1858, 1894: 1853, 464: 301, 1820: 1781, 1890: 1853, 1891: 1858, 1892: 1858, 1895: 1853, 1896: 1853, 1815: 1781, 1813: 1795, 136: 1, 160: 1, 439: 301, 440: 301, 1513: 1319, 1527: 1319, 1538: 1301, 1537: 1301, 1904: 1834, 1899: 1834, 1883: 1853, 1897: 1853, 1535: 1301, 1565: 1301, 1887: 1853, 1888: 1853, 1913: 602, 1912: 602, 1209: 1101, 1206: 1141, 1510: 1319, 1514: 1314, 1555: 1380, 1642: 1623, 1645: 1623, 1909: 1843, 852: 601, 853: 601, 842: 601, 840: 601, 908: 608, 1515: 1314, 1902: 1843, 1903: 1843, 1907: 1843, 1906: 1843, 443: 301, 1522: 1319, 1523: 1319, 455: 301, 476: 301, 480: 301, 1521: 1319, 952: 602, 1778: 1750, 184: 1, 183: 1, 144: 1, 1911: 602, 1208: 1101, 1561: 1301, 1562: 1301, 1558: 1301, 1556: 1301, 1516: 1314, 1636: 1623, 1637: 1623, 1771: 1750, 1772: 1750, 1517: 1314, 903: 601, 914: 601, 1687: 1649, 913: 601, 912: 601, 1685: 301, 1686: 301, 1713: 1691, 1681: 1649, 1688: 1649, 1220: 301, 1201: 301, 1213: 301, 1219: 301, 1212: 301, 1216: 301, 901: 601, 902: 601, 907: 608, 1683: 302, 1684: 302}
+    # exploration_graph = get_exploration_graph(config)
+    # result = optimize_with_terminals(exploration_graph, tst_set, config)
+    # result_graph = result["solution_graph"]
+    # cost = sum([n["need_exploration_point"] for n in result_graph.nodes()])
+    # print(f"node graph cost: {cost}")
+
+    # workerman_plantzones = [n["need_exploration_point"] for n in result_graph.nodes() if n["is_workerman_plantzone"]]
+    # print(f"There are {len(workerman_plantzones)} plantzones with cost: {sum(workerman_plantzones)}")
+
+    # nonworkerman_plantzones = [n["need_exploration_point"] for n in result_graph.nodes() if not n["is_workerman_plantzone"] and not n["is_base_town"]]
+    # print(f"There are {len(nonworkerman_plantzones)} non-plantzone/non-base-twon nodes with cost: {sum(nonworkerman_plantzones)}")

@@ -48,16 +48,8 @@ include_shortest_paths = true
 include_shortest_paths_all_terminals = true
 
 [approximation]
-# - method WFPD can give better results on some Workerman Tests but performs poorly on random.
-# - With proper post processing it may be worthwhile to use PD without post_process_bridges
 approximate_solution = true
-# Valid choices are 'PD' and 'WFPD'.
-method = ["PD"]
 post_process_bridges = true
-# Valid choices are 'manual', 'recalculated', and 'auto' switching.
-bridge_frontier = "manual"
-augement_paths = true
-cleanup = true
 
 # reductions are not used by the approximation functions.
 [reduction]
