@@ -742,6 +742,8 @@ class PrimalDualNWSF:
                     if len(s_neighbors) >= 2:
                         yielded.add(bridge)
                         yield bridge
+                # else:
+                #     logger.warning(f"  skipping (yielded) {current_nodes} => {[self.index_to_waypoint[v] for v in current_nodes]}")
                 return
 
             # Collect and process pairwise combinations of current_node candidates...
@@ -761,6 +763,7 @@ class PrimalDualNWSF:
 
         # Populate ring0 (Settlement border)
         seen_nodes = settlement.copy()
+        # logger.warning(f"{settlement=} => {[self.index_to_waypoint[v] for v in settlement]}")
         rings.append(settlement)
 
         while len(rings) <= max_frontier_rings:
@@ -805,14 +808,19 @@ class PrimalDualNWSF:
             # happen based on the PD approximation.
             for u in tmp:
                 for v in tmp[u]:
+                    # logger.warning(f"  phase2 processing endpoints {u} {v} => {self.index_to_waypoint[u]} {self.index_to_waypoint[v]}")
                     if self.index_to_neighbors[u] & self.index_to_neighbors[v] & inner_ring:
+                        # logger.warning(f"    phase2 neighbor check: skipping {u} {v} => {self.index_to_waypoint[u]} {self.index_to_waypoint[v]}")
                         continue
                     # Use one representative combo per endpoints pair
                     key = (u, v) if u < v else (v, u)
                     if key not in seen_endpoints:
                         seen_endpoints.add(key)
                         combo = frozenset(tmp[u][v][0])
+                        logger.warning(f"  phase2 descending on {u} {v} {combo=} => {self.index_to_waypoint[u]} {self.index_to_waypoint[v]} {[self.index_to_waypoint[i] for i in combo]}")
                         yield from descend_to_yield_bridges(ring_idx, combo, combo)
+                    # else:
+                    #     logger.warning(f"    phase2 seen endpoints: skipping {u} {v} => {self.index_to_waypoint[u]} {self.index_to_waypoint[v]}")
 
 
     def _connect_bridge(self, bridge: set[int] | frozenset[int]) -> None:
