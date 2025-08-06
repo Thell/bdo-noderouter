@@ -1,14 +1,14 @@
 use pyo3::prelude::*;
 use wasm_bindgen::prelude::*;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::vec;
 
 use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::{RandomState, RapidHashSet};
 use rapidhash::v3::rapidhash_v3;
 
-use petgraph::algo::{all_simple_paths, has_path_connecting, tarjan_scc};
+use petgraph::algo::{all_simple_paths, astar, dijkstra, has_path_connecting, tarjan_scc};
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableUnGraph;
 use petgraph::visit::IntoNodeIdentifiers;
@@ -20,10 +20,325 @@ const SUPER_ROOT: usize = 99_999;
 const DO_DBG: bool = false;
 
 fn sort_pair<T: Ord>(a: T, b: T) -> (T, T) {
-    if a > b {
-        (b, a)
-    } else {
+    if a < b {
         (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+use generator::{done, Generator, Gn, Scope};
+struct BridgeGenerator {
+    ref_graph: StableUnGraph<usize, usize>,
+    index_to_neighbors: IntMap<usize, IntSet<usize>>,
+    index_to_waypoint: IntMap<usize, usize>,
+}
+
+impl BridgeGenerator {
+    fn new(
+        ref_graph: StableUnGraph<usize, usize>,
+        index_to_neighbors: IntMap<usize, IntSet<usize>>,
+        index_to_waypoint: IntMap<usize, usize>,
+    ) -> Self {
+        Self {
+            ref_graph,
+            index_to_neighbors,
+            index_to_waypoint,
+        }
+    }
+
+    /// Finds and returns nodes not in settlement with neighbors in settlement.
+    fn find_frontier_nodes(
+        &self,
+        settlement: &IntSet<usize>,
+        min_degree: Option<usize>,
+    ) -> IntSet<usize> {
+        if DO_DBG {
+            println!(
+                "Finding frontier nodes for settlement of size {}...",
+                settlement.len()
+            );
+        }
+        let mut frontier = IntSet::default();
+        for &v in settlement {
+            if let Some(neighbors) = self.index_to_neighbors.get(&v) {
+                frontier.extend(neighbors);
+            }
+        }
+        frontier.retain(|v| !settlement.contains(v));
+
+        if let Some(min_degree) = min_degree {
+            frontier.retain(|v| {
+                self.index_to_neighbors
+                    .get(v)
+                    .map_or(false, |nbrs| nbrs.len() >= min_degree)
+            });
+        }
+        if DO_DBG {
+            println!("  num frontier nodes {}", frontier.len());
+        }
+        frontier
+    }
+
+    pub fn bridge_generator<'a>(
+        &'a self,
+        settlement: IntSet<usize>,
+    ) -> Generator<'a, (), IntSet<usize>> {
+        let max_frontier_rings = 3;
+        let ring_combo_cutoff = [0, 3, 2, 2];
+
+        // Initialize
+        let mut seen_candidate_pairs = RapidHashSet::default();
+        let mut yielded_hashes: IntSet<u64> = IntSet::default();
+
+        // Populate ring0 (Settlement border)
+        let mut rings: Vec<IntSet<usize>> = vec![settlement.clone()];
+        let mut seen_nodes = settlement.clone();
+
+        Gn::new_scoped(move |mut s| {
+            while rings.len() <= max_frontier_rings {
+                // Populate the new outermost ring
+                let nodes = self.find_frontier_nodes(&seen_nodes, Some(2));
+                let node_waypoints: Vec<_> =
+                    nodes.iter().map(|&n| self.index_to_waypoint[&n]).collect();
+                println!(" {:?} \n=> {:?}", nodes, node_waypoints);
+                seen_nodes.extend(&nodes);
+                let ring_idx = rings.len();
+                rings.push(nodes.clone());
+
+                // Phase 1: outer ring singleton nodes...
+                // Yield single node bridges (nodes with >=2 neighbors in inner ring).
+                // NOTE: Validating inner ring neighbors does not strictly need to be done but reduces workload.
+                let inner_ring = &rings[ring_idx - 1];
+                for node in nodes.clone() {
+                    let neighbors: IntSet<usize> = self
+                        .index_to_neighbors
+                        .get(&node)
+                        .unwrap()
+                        .intersection(&inner_ring)
+                        .copied()
+                        .collect();
+
+                    if neighbors.len() < 2 {
+                        continue;
+                    }
+
+                    let neighbors_vec: Vec<_> = neighbors.iter().copied().collect();
+                    let first = neighbors_vec[0];
+                    let rest = &neighbors_vec[1..];
+                    let inner_ring_neighbors: IntSet<usize> = self
+                        .index_to_neighbors
+                        .get(&first)
+                        .unwrap()
+                        .intersection(&inner_ring)
+                        .copied()
+                        .collect();
+
+                    if !rest.iter().any(|n| {
+                        inner_ring_neighbors
+                            .intersection(self.index_to_neighbors.get(n).unwrap())
+                            .next()
+                            .is_some()
+                    }) {
+                        let bridge = IntSet::from_iter([node]);
+                        self.descend_to_yield_bridges(
+                            &mut s,
+                            ring_idx,
+                            &bridge,
+                            bridge.clone(),
+                            &rings,
+                            &mut yielded_hashes,
+                            &mut seen_candidate_pairs,
+                        );
+                    }
+                }
+
+                // Phase 2: outer ring multi-node combos...
+                // Yield multi-node bridges (connected nodes in outermost ring w/o overlapping neighbors).
+                let subgraph = self.ref_graph.filter_map(
+                    |node_idx, _| {
+                        if nodes.contains(&node_idx.index()) {
+                            Some(())
+                        } else {
+                            None
+                        }
+                    },
+                    |_, edge_idx| Some(*edge_idx),
+                );
+                let mut node_indentifiers: Vec<_> = subgraph.node_identifiers().collect();
+                node_indentifiers.sort_unstable();
+                let node_indices: Vec<_> = node_indentifiers.iter().map(|&v| v.index()).collect();
+
+                // Connected runs between u and v within the current outer ring make up the
+                // multi-node bridges for the ring.
+                // NOTE: These runs can be accumulated and made available to the descend function to increase
+                // the spread along the inner rings while descending but since each ring consists only of
+                // F nodes and each node in the span would has corresponding nodes in the inner ring the
+                // span would need to have a lower weight to improve the incumbent solution which wouldn't
+                // happen after the PD approximation.
+                let mut seen_endpoints = RapidHashSet::default();
+                for i in 0..(node_indices.len() - 1) {
+                    let u = node_indices[i];
+                    let u_identifier = NodeIndex::new(u);
+
+                    for j in (i + 1)..node_indices.len() {
+                        let v = node_indices[j];
+                        let v_identifier = NodeIndex::new(v);
+
+                        let key = sort_pair(u, v);
+                        if seen_endpoints.contains(&key) {
+                            continue;
+                        }
+                        seen_endpoints.insert(key);
+
+                        let u_neighbors = self.index_to_neighbors.get(&u).unwrap();
+                        let v_neighbors = self.index_to_neighbors.get(&v).unwrap();
+                        if u_neighbors
+                            .intersection(&v_neighbors)
+                            .any(|n| inner_ring.contains(n))
+                        {
+                            continue;
+                        }
+
+                        // Use shortest path as combo per endpoints pair
+                        if let Some((path_len, path)) =
+                            astar(&subgraph, u_identifier, |f| f == v_identifier, |_| 1, |_| 0)
+                        {
+                            if path_len + 1 > ring_combo_cutoff[ring_idx] {
+                                continue;
+                            }
+
+                            let combo = IntSet::from_iter(path.iter().map(|n| n.index()));
+
+                            let combo_waypoints = combo
+                                .iter()
+                                .map(|&i| self.index_to_waypoint[&i])
+                                .collect::<Vec<_>>();
+                            println!("  path: {:?}", path);
+                            println!(
+                                "  phase2 descending on {} {} {:?} => {:?} {:?} {:?}",
+                                u,
+                                v,
+                                combo,
+                                self.index_to_waypoint[&u],
+                                self.index_to_waypoint[&v],
+                                combo_waypoints
+                            );
+                            self.descend_to_yield_bridges(
+                                &mut s,
+                                ring_idx,
+                                &combo,
+                                combo.clone(),
+                                &rings,
+                                &mut yielded_hashes,
+                                &mut seen_candidate_pairs,
+                            );
+                        }
+                    }
+                }
+            }
+            done!();
+        })
+    }
+
+    fn descend_to_yield_bridges<'scope>(
+        &self,
+        s: &mut Scope<'scope, '_, (), IntSet<usize>>,
+        ring_idx: usize,
+        current_nodes: &IntSet<usize>,
+        bridge: IntSet<usize>,
+        rings: &Vec<IntSet<usize>>,
+        yielded: &mut IntSet<u64>,
+        seen_candidate_pairs: &mut RapidHashSet<(usize, usize)>,
+    ) {
+        // Base case (Settlement Frontier): yield and return
+        if ring_idx == 1 {
+            let bridge_hash = hash_intset(&bridge);
+            if !yielded.contains(&bridge_hash) {
+                let s_neighbors: IntSet<usize> = current_nodes
+                    .iter()
+                    .flat_map(|&v| self.index_to_neighbors.get(&v).unwrap())
+                    .filter(|n| rings[0].contains(n))
+                    .copied()
+                    .collect();
+
+                if s_neighbors.len() >= 2 {
+                    yielded.insert(bridge_hash);
+                    s.yield_with(bridge);
+                }
+            }
+            return;
+        }
+
+        // Collect and process pairwise combinations of current_node candidates...
+        // Candidates are current_nodes neighbors in ring_idx - 1
+        let current_nodes_waypoints: Vec<_> = current_nodes
+            .iter()
+            .map(|&n| self.index_to_waypoint[&n])
+            .collect();
+        println!(
+            "  *descending to yield with current_nodes: {:?} => {:?}",
+            current_nodes, current_nodes_waypoints
+        );
+        println!(
+            "num seen_candidate_pairs upon entry: {}",
+            seen_candidate_pairs.len()
+        );
+
+        let inner_ring = &rings[ring_idx - 1];
+        let mut candidates: Vec<usize> = current_nodes
+            .iter()
+            .flat_map(|&n| self.index_to_neighbors.get(&n).unwrap())
+            .filter(|x| inner_ring.contains(x))
+            .copied()
+            .collect::<IntSet<_>>()
+            .into_iter()
+            .collect();
+        candidates.sort_unstable();
+
+        for i in 0..(candidates.len() - 1) {
+            let u = candidates[i];
+            for j in (i + 1)..candidates.len() {
+                let v = candidates[j];
+
+                // This filter works for all depths, which is fine for a small planar graph with
+                // limited max ring depth. It may be too restrictive with higher max ring depth.
+                let candidate_pair = sort_pair(u, v);
+                if candidate_pair == (774, 775) || candidate_pair == (775, 774) {
+                    println!("  *********** Inserting (774, 775)")
+                }
+
+                println!(
+                    "    checking candiate_pair: {:?} from u {} v {}\ncandidates are {:?}",
+                    candidate_pair, u, v, candidates
+                );
+                if !seen_candidate_pairs.insert(candidate_pair) {
+                    println!(
+                        "************ candidate pair seend before: {:?}",
+                        candidate_pair
+                    );
+                    continue;
+                }
+
+                let mut new_current = IntSet::default();
+                new_current.insert(u);
+                new_current.insert(v);
+
+                let mut new_bridge = bridge.clone();
+                new_bridge.insert(u);
+                new_bridge.insert(v);
+
+                self.descend_to_yield_bridges(
+                    s,
+                    ring_idx - 1,
+                    &new_current,
+                    new_bridge,
+                    rings,
+                    yielded,
+                    seen_candidate_pairs,
+                );
+            }
+        }
     }
 }
 
@@ -38,21 +353,7 @@ fn hash_intset(set: &IntSet<usize>) -> u64 {
     rapidhash_v3(&buf)
 }
 
-pub(crate) struct BridgeState {
-    pub rings: Vec<IntSet<usize>>,
-    pub yielded_hashes: IntSet<u64>,
-    pub search_state: VecDeque<SearchState>,
-    pub seen_nodes: IntSet<usize>,
-    pub current_ring_idx: usize,
-}
-
-pub(crate) struct SearchState {
-    ring_idx: usize,
-    current_nodes: IntSet<usize>,
-    bridge: IntSet<usize>,
-}
-
-pub type ExplorationGraphData = HashMap<usize, ExplorationNodeData>;
+pub type ExplorationGraphData = BTreeMap<usize, ExplorationNodeData>;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ExplorationNodeData {
@@ -124,7 +425,7 @@ impl NodeRouter {
     #[new]
     pub fn py_new(exploration_json: &str) -> NodeRouter {
         use std::str::FromStr;
-        let str_map: HashMap<String, ExplorationNodeData> =
+        let str_map: BTreeMap<String, ExplorationNodeData> =
             serde_json::from_str(exploration_json).unwrap();
         let exploration_data: ExplorationGraphData = str_map
             .into_iter()
@@ -148,12 +449,17 @@ impl NodeRouter {
         let mut index_to_waypoint: IntMap<usize, usize> = IntMap::default();
         let mut index_to_weight: IntMap<usize, usize> = IntMap::default();
         let mut index_to_neighbors: IntMap<usize, IntSet<usize>> = IntMap::default();
+        let mut ref_graph = StableUnGraph::<usize, usize>::default();
 
         // First we populate the translation mappings...
         if DO_DBG {
             println!("Populating translation mappings...");
         }
         for (i, (&waypoint_key, node_data)) in exploration_data.iter().enumerate() {
+            let ref_i = ref_graph.add_node(node_data.need_exploration_point);
+            assert_eq!(i, ref_i.index());
+            println!("ref_i={:?} => waypoint_key={:?}", ref_i, waypoint_key);
+            index_to_waypoint.insert(i, waypoint_key);
             waypoint_to_index.insert(waypoint_key, i);
             index_to_waypoint.insert(i, waypoint_key);
             if node_data.is_base_town {
@@ -179,39 +485,45 @@ impl NodeRouter {
             }
         }
 
-        // Testing... print the neighbors of waypoint 1
-        let waypoint = 1;
-        let tmp_index = waypoint_to_index.get(&waypoint).unwrap();
-        let tmp_neighbors = index_to_neighbors.get(&tmp_index).unwrap();
-        let tmp_neighbor_waypoints: Vec<_> = tmp_neighbors
-            .into_iter()
-            .map(|n| index_to_waypoint.get(n).unwrap())
-            .collect();
         if DO_DBG {
+            println!("Testing neighbors of waypoint...");
+            let waypoint = 1852;
+            let tmp_index = waypoint_to_index.get(&waypoint).unwrap();
+            let tmp_neighbors = index_to_neighbors.get(&tmp_index).unwrap();
+            let tmp_neighbor_waypoints: Vec<_> = tmp_neighbors
+                .into_iter()
+                .map(|n| index_to_waypoint.get(n).unwrap())
+                .collect();
             println!(
                 "  neighbors of waypoint 1 at index {:?} are {:?} at indices {:?}",
                 tmp_index, tmp_neighbor_waypoints, tmp_neighbors
             );
         }
+
         // Then we generate all of the edges for the ref_graph...
         if DO_DBG {
-            println!("Generating ref_graph...");
+            println!("Generating ref_graph edges...");
         }
-        let edges: HashSet<(u32, u32)> = index_to_neighbors
+        index_to_neighbors
             .iter()
             .flat_map(|(i, neighbors)| {
                 neighbors
                     .iter()
                     .map(move |&neighbor| sort_pair(*i as u32, neighbor as u32))
             })
-            .collect();
-        let ref_graph = StableUnGraph::<usize, usize>::from_edges(edges);
+            .for_each(|(u, v)| {
+                _ = ref_graph.add_edge(
+                    NodeIndex::new(u as usize),
+                    NodeIndex::new(v as usize),
+                    *index_to_weight.get(&(v as usize)).unwrap(),
+                );
+            });
 
         // Lastly, initialize the IDTree...
         if DO_DBG {
-            println!("Initializing IDTree...");
+            println!("Initializing IDTree with isolated nodes...");
         }
-        // self.dtree: IDTree = IDTree({v: [] for v in self.ref_graph.node_indices()})
+
         let mut initialization_adj_dict = IntMap::default();
         for i in ref_graph.node_indices() {
             initialization_adj_dict.insert(i.index(), IntSet::default());
@@ -730,8 +1042,15 @@ impl NodeRouter {
         while improved {
             improved = false;
 
-            let mut bridge_state = self.init_bridge_generator(&incumbent_indices);
-            while let Some(bridge) = self.next_bridge(&mut bridge_state) {
+            // let mut bridge_state = self.init_bridge_generator(&incumbent_indices);
+            // while let Some(bridge) = self.next_bridge(&mut bridge_state) {
+            let bridge_generator = BridgeGenerator::new(
+                self.ref_graph.clone(),
+                self.index_to_neighbors.clone(),
+                self.index_to_waypoint.clone(),
+            );
+            let mut bridge_gen = bridge_generator.bridge_generator(incumbent_indices.clone());
+            while let Some(bridge) = bridge_gen.next() {
                 let tmp_bridge_as_waypoints = bridge
                     .iter()
                     .map(|&v| self.index_to_waypoint[&v])
@@ -790,7 +1109,7 @@ impl NodeRouter {
                 if is_improved {
                     incumbent_indices = self.idtree._active_nodes();
                     self.idtree_active_indices = incumbent_indices.clone();
-                    bridge_state = self.init_bridge_generator(&incumbent_indices);
+                    bridge_gen = bridge_generator.bridge_generator(incumbent_indices.clone());
                     improved = true;
 
                     ordered_removables.retain(|v| !freed.contains(v));
@@ -808,555 +1127,6 @@ impl NodeRouter {
             }
         }
     }
-
-    fn init_bridge_generator(&self, settlement: &IntSet<usize>) -> BridgeState {
-        let rings: Vec<IntSet<usize>> = vec![settlement.clone()];
-        let seen_nodes = settlement.clone();
-        let current_ring_idx = 0;
-
-        if DO_DBG {
-            println!("Initializing bridge generator...");
-            let settlement_waypoints = settlement
-                .iter()
-                .map(|&v| self.index_to_waypoint[&v])
-                .collect::<Vec<_>>();
-            println!("  settlement: {:?}", settlement_waypoints);
-        }
-        BridgeState {
-            rings,
-            yielded_hashes: IntSet::default(),
-            search_state: VecDeque::new(),
-            seen_nodes,
-            current_ring_idx,
-        }
-    }
-
-    fn next_bridge(&self, state: &mut BridgeState) -> Option<IntSet<usize>> {
-        let max_frontier_rings = 3;
-        let ring_combo_cutoff = [0, 3, 2, 2];
-
-        // Process existing search states
-        while let Some(search) = state.search_state.pop_front() {
-            let ring_idx = search.ring_idx;
-            if ring_idx == 1 {
-                let nodes_to_check = &search.current_nodes;
-                let s_neighbors: IntSet<usize> = nodes_to_check
-                    .iter()
-                    .flat_map(|v| self.index_to_neighbors.get(v).unwrap().iter())
-                    .copied()
-                    .filter(|v| state.rings[0].contains(v))
-                    .collect();
-
-                let mut s_neighbors_waypoints: Vec<usize> = s_neighbors
-                    .iter()
-                    .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-                    .collect();
-                s_neighbors_waypoints.sort();
-
-                if DO_DBG {
-                    let mut bridge_waypoints: Vec<usize> = search
-                        .bridge
-                        .iter()
-                        .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-                        .collect();
-                    bridge_waypoints.sort();
-                    println!(
-                        "Checking bridge {:?} (waypoints {:?}) at ring_idx 1 with inner-ring neighbors {:?} (waypoints {:?})",
-                        search.bridge, bridge_waypoints, s_neighbors, s_neighbors_waypoints
-                    );
-                }
-
-                if s_neighbors.len() >= 2 {
-                    let bridge_hash = hash_intset(&search.bridge);
-                    if state.yielded_hashes.insert(bridge_hash) {
-                        return Some(search.bridge);
-                    } else if DO_DBG {
-                        println!("Bridge {:?} discarded: already yielded", search.bridge);
-                    }
-                } else if DO_DBG {
-                    println!(
-                        "Bridge {:?} discarded: insufficient settlement neighbors ({})",
-                        search.bridge,
-                        s_neighbors.len()
-                    );
-                }
-                continue;
-            }
-
-            let inner_ring = &state.rings[ring_idx - 1];
-            let candidates: Vec<usize> = search
-                .current_nodes
-                .iter()
-                .flat_map(|n| self.index_to_neighbors.get(n).unwrap().iter())
-                .copied()
-                .filter(|v| inner_ring.contains(v))
-                .collect::<RapidHashSet<_>>()
-                .into_iter()
-                .collect();
-
-            let mut candidates_waypoints: Vec<usize> = candidates
-                .iter()
-                .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-                .collect();
-            candidates_waypoints.sort();
-
-            if DO_DBG {
-                let mut bridge_waypoints: Vec<usize> = search
-                    .bridge
-                    .iter()
-                    .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-                    .collect();
-                bridge_waypoints.sort();
-                println!(
-                    "Ring_idx {}: Candidates for bridge {:?} (waypoints {:?}): {:?} (waypoints {:?})",
-                    ring_idx, search.bridge, bridge_waypoints, candidates, candidates_waypoints
-                );
-            }
-
-            let mut seen_candidate_pairs = RapidHashSet::default();
-            for i in 0..(candidates.len() - 1) {
-                let u = candidates[i];
-                for j in (i + 1)..candidates.len() {
-                    let v = candidates[j];
-                    let candidate_pair = sort_pair(u, v);
-                    if seen_candidate_pairs.contains(&candidate_pair) {
-                        if DO_DBG {
-                            let u_waypoint = self.index_to_waypoint.get(&u).copied().unwrap_or(u);
-                            let v_waypoint = self.index_to_waypoint.get(&v).copied().unwrap_or(v);
-                            println!(
-                                "  skipping candidate pair {} {} => {} {}",
-                                u, u_waypoint, v, v_waypoint
-                            );
-                        }
-                        continue;
-                    }
-                    seen_candidate_pairs.insert(candidate_pair);
-
-                    let mut new_bridge = search.bridge.clone();
-                    new_bridge.insert(u);
-                    new_bridge.insert(v);
-
-                    let new_current_nodes = IntSet::from_iter([u, v]);
-                    state.search_state.push_back(SearchState {
-                        ring_idx: ring_idx - 1,
-                        current_nodes: new_current_nodes,
-                        bridge: new_bridge,
-                    });
-                }
-            }
-        }
-
-        // Generate new bridges by advancing to the next ring
-        if state.current_ring_idx < max_frontier_rings {
-            state.current_ring_idx += 1;
-            let new_nodes = self.find_frontier_nodes(&state.seen_nodes, Some(2));
-            if !new_nodes.is_empty() {
-                state.seen_nodes.extend(new_nodes.iter());
-                state.rings.push(new_nodes.clone());
-                let ring_idx = state.current_ring_idx;
-                let inner_ring = &state.rings[ring_idx - 1];
-                let mut seen_endpoints = RapidHashSet::default();
-
-                // Phase 1: Single-node bridges
-                for &node in new_nodes.iter() {
-                    let neighbors: IntSet<usize> = self
-                        .index_to_neighbors
-                        .get(&node)
-                        .unwrap()
-                        .intersection(inner_ring)
-                        .copied()
-                        .collect();
-
-                    let mut neighbors_waypoints: Vec<usize> = neighbors
-                        .iter()
-                        .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-                        .collect();
-                    neighbors_waypoints.sort();
-
-                    if neighbors.len() < 2 {
-                        continue;
-                    }
-
-                    let neighbors_vec: Vec<_> = neighbors.iter().copied().collect();
-                    let first = neighbors_vec[0];
-                    let rest = &neighbors_vec[1..];
-                    let inner_ring_neighbors: IntSet<usize> = self
-                        .index_to_neighbors
-                        .get(&first)
-                        .unwrap()
-                        .intersection(inner_ring)
-                        .copied()
-                        .collect();
-
-                    if !rest.iter().any(|n| {
-                        inner_ring_neighbors
-                            .intersection(self.index_to_neighbors.get(n).unwrap())
-                            .next()
-                            .is_some()
-                    }) {
-                        let bridge = IntSet::from_iter([node]);
-                        state.search_state.push_back(SearchState {
-                            ring_idx,
-                            current_nodes: IntSet::from_iter([node]),
-                            bridge,
-                        });
-                    }
-                }
-
-                // Phase 2: Multi-node bridges
-                let subgraph = self.ref_graph.filter_map(
-                    |node_idx, _| {
-                        if new_nodes.contains(&node_idx.index()) {
-                            Some(())
-                        } else {
-                            None
-                        }
-                    },
-                    |_, edge_idx| Some(*edge_idx),
-                );
-
-                let node_indentifiers: Vec<_> = subgraph.node_identifiers().collect();
-                let mut node_indices: Vec<usize> =
-                    node_indentifiers.iter().map(|&v| v.index()).collect();
-                node_indices.sort_unstable();
-
-                if DO_DBG {
-                    let node_indices_waypoints = node_indentifiers
-                        .iter()
-                        .map(|&v| self.index_to_waypoint.get(&v.index()))
-                        .collect::<Vec<_>>();
-                    println!(
-                        "  subgraph nodes {:?} (waypoints {:?})",
-                        node_indentifiers, node_indices_waypoints
-                    );
-                }
-
-                for u in node_indices.iter() {
-                    for v in node_indices.iter().skip(1) {
-                        let u_identifier = NodeIndex::new(*u);
-                        let v_identifier = NodeIndex::new(*v);
-                        if !has_path_connecting(&subgraph, u_identifier, v_identifier, None) {
-                            continue;
-                        }
-                        let u_waypoint = self.index_to_waypoint.get(&u).unwrap();
-                        let v_waypoint = self.index_to_waypoint.get(&v).unwrap();
-
-                        let u_neighbors = self.index_to_neighbors.get(&u).unwrap();
-                        let v_neighbors = self.index_to_neighbors.get(&v).unwrap();
-                        if u_neighbors
-                            .intersection(&v_neighbors)
-                            .any(|n| inner_ring.contains(n))
-                        {
-                            if DO_DBG {
-                                println!(
-                                    "  phase2 neighbor check: skipping {} {} => {} {}",
-                                    u, u_waypoint, v, v_waypoint
-                                );
-                            }
-                            continue;
-                        }
-
-                        let key = sort_pair(u, v);
-                        if seen_endpoints.contains(&key) {
-                            if DO_DBG {
-                                println!(
-                                    "  pase2 seen_endpoints: skipping {} {} => {} {}",
-                                    u, u_waypoint, v, v_waypoint
-                                );
-                            }
-                            continue;
-                        }
-
-                        for path_len in 2..=ring_combo_cutoff[ring_idx] {
-                            let mut path_iter = all_simple_paths::<Vec<NodeIndex>, _, RandomState>(
-                                &subgraph,
-                                u_identifier,
-                                v_identifier,
-                                path_len - 2,
-                                Some(path_len),
-                            )
-                            .take(1);
-
-                            if let Some(path) = path_iter.next() {
-                                let combo = IntSet::from_iter(path.iter().map(|n| n.index()));
-                                let combo_waypoints: Vec<usize> = combo
-                                    .iter()
-                                    .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-                                    .collect();
-                                if seen_endpoints.contains(&key) {
-                                    if DO_DBG {
-                                        println!(
-                                            "  pase2 seen_endpoints: skipping {} {} => {} {}",
-                                            u, u_waypoint, v, v_waypoint
-                                        );
-                                    }
-                                    continue;
-                                }
-                                seen_endpoints.insert(key);
-                                println!(
-                                    "  phase2 pushing state on {} {} combo {:?} => {} {} [{:?}])",
-                                    u, v, combo, u_waypoint, v_waypoint, combo_waypoints
-                                );
-
-                                state.search_state.push_back(SearchState {
-                                    ring_idx,
-                                    current_nodes: combo.clone(),
-                                    bridge: combo,
-                                });
-                            }
-                        }
-                    }
-                }
-
-                if DO_DBG {
-                    println!(
-                        "Search_state size after ring {}: {}",
-                        ring_idx,
-                        state.search_state.len()
-                    );
-                }
-            }
-            // Re-run to process new states
-            return self.next_bridge(state);
-        }
-
-        None
-    }
-    // fn next_bridge(&self, state: &mut BridgeState) -> Option<IntSet<usize>> {
-    //     let max_frontier_rings = 3;
-    //     let ring_combo_cutoff = [0, 3, 2, 2]; // Match Python's bridge size limits
-
-    //     // Process existing search states
-    //     while let Some(search) = state.search_state.pop_back() {
-    //         let ring_idx = search.ring_idx;
-    //         if ring_idx == 1 {
-    //             let nodes_to_check = &search.current_nodes;
-    //             let s_neighbors: IntSet<usize> = nodes_to_check
-    //                 .iter()
-    //                 .flat_map(|v| self.index_to_neighbors.get(v).unwrap().iter())
-    //                 .copied()
-    //                 .filter(|v| state.rings[0].contains(v))
-    //                 .collect();
-
-    //             if DO_DBG {
-    //                 let s_neighbors_waypoints: Vec<usize> = s_neighbors
-    //                     .iter()
-    //                     .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-    //                     .collect();
-    //                 println!(
-    //                     "Checking bridge {:?} at ring_idx 1 with inner-ring neighbors {:?} (waypoints {:?})",
-    //                     search.bridge, s_neighbors, s_neighbors_waypoints
-    //                 );
-    //             }
-
-    //             if s_neighbors.len() >= 2 {
-    //                 let bridge_hash = hash_intset(&search.bridge);
-    //                 if state.yielded_hashes.insert(bridge_hash) {
-    //                     return Some(search.bridge);
-    //                 }
-    //             } else if DO_DBG {
-    //                 println!(
-    //                     "Bridge {:?} discarded: insufficient settlement neighbors ({})",
-    //                     search.bridge, s_neighbors.len()
-    //                 );
-    //             }
-    //             continue;
-    //         }
-
-    //         let inner_ring = &state.rings[ring_idx - 1];
-    //         let candidates: Vec<usize> = search
-    //             .current_nodes
-    //             .iter()
-    //             .flat_map(|n| self.index_to_neighbors.get(n).unwrap().iter())
-    //             .copied()
-    //             .filter(|v| inner_ring.contains(v))
-    //             .collect::<RapidHashSet<_>>()
-    //             .into_iter()
-    //             .collect();
-
-    //         if DO_DBG {
-    //             let candidates_waypoints: Vec<usize> = candidates
-    //                 .iter()
-    //                 .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-    //                 .collect();
-
-    //             println!(
-    //                 "Ring_idx {}: Candidates for bridge {:?} (waypoints {:?}): {:?} (waypoints {:?})",
-    //                 ring_idx, search.bridge,
-    //                 search.bridge.iter().map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v)).collect::<Vec<_>>(),
-    //                 candidates, candidates_waypoints
-    //             );
-    //         }
-
-    //         let mut seen_candidate_pairs = RapidHashSet::default();
-    //         for i in 0..(candidates.len() - 1) {
-    //             let u = candidates[i];
-    //             for j in (i + 1)..candidates.len() {
-    //                 let v = candidates[j];
-    //                 let candidate_pair = sort_pair(u, v);
-    //                 if seen_candidate_pairs.contains(&candidate_pair) {
-    //                     continue;
-    //                 }
-    //                 seen_candidate_pairs.insert(candidate_pair);
-
-    //                 let mut new_bridge = search.bridge.clone();
-    //                 new_bridge.insert(u);
-    //                 new_bridge.insert(v);
-
-    //                 let new_current_nodes = IntSet::from_iter([u, v]);
-    //                 state.search_state.push_back(SearchState {
-    //                     ring_idx: ring_idx - 1,
-    //                     current_nodes: new_current_nodes,
-    //                     bridge: new_bridge,
-    //                 });
-    //             }
-    //         }
-    //     }
-
-    //     // Generate new bridges by advancing to the next ring
-    //     if state.current_ring_idx < max_frontier_rings {
-    //         state.current_ring_idx += 1;
-    //         let new_nodes = self.find_frontier_nodes(&state.seen_nodes, Some(2));
-    //         if !new_nodes.is_empty() {
-    //             if DO_DBG {
-    //                 println!("Ring {}: {:?}", state.current_ring_idx, new_nodes);
-    //             }
-    //             state.seen_nodes.extend(new_nodes.iter());
-    //             state.rings.push(new_nodes.clone());
-    //             let ring_idx = state.current_ring_idx;
-    //             let inner_ring = &state.rings[ring_idx - 1];
-
-    //             // Phase 1: Single-node bridges
-    //             for &node in new_nodes.iter() {
-    //                 let neighbors: IntSet<usize> = self
-    //                     .index_to_neighbors
-    //                     .get(&node)
-    //                     .unwrap()
-    //                     .intersection(inner_ring)
-    //                     .copied()
-    //                     .collect();
-
-    //                 if DO_DBG {
-    //                     let neighbors_waypoints: Vec<usize> = neighbors
-    //                         .iter()
-    //                         .map(|&v| self.index_to_waypoint.get(&v).copied().unwrap_or(v))
-    //                         .collect();
-
-    //                     println!(
-    //                         "Node {} has inner-ring neighbors {:?} (waypoints {:?})",
-    //                         node, neighbors, neighbors_waypoints
-    //                     );
-    //                 }
-
-    //                 if neighbors.len() < 2 {
-    //                     continue;
-    //                 }
-
-    //                 let neighbors_vec: Vec<_> = neighbors.iter().copied().collect();
-    //                 let first = neighbors_vec[0];
-    //                 let rest = &neighbors_vec[1..];
-    //                 let inner_ring_neighbors: IntSet<usize> = self
-    //                     .index_to_neighbors
-    //                     .get(&first)
-    //                     .unwrap()
-    //                     .intersection(inner_ring)
-    //                     .copied()
-    //                     .collect();
-
-    //                 if !rest.iter().any(|n| {
-    //                     inner_ring_neighbors
-    //                         .intersection(self.index_to_neighbors.get(n).unwrap())
-    //                         .next()
-    //                         .is_some()
-    //                 }) {
-    //                     let bridge = IntSet::from_iter([node]);
-    //                     state.search_state.push_back(SearchState {
-    //                         ring_idx,
-    //                         current_nodes: IntSet::from_iter([node]),
-    //                         bridge,
-    //                     });
-    //                 } else if DO_DBG {
-    //                     println!("Node {} discarded: inner-ring neighbors are adjacent", node);
-    //                 }
-    //             }
-
-    //             // Phase 2: Multi-node bridges
-    //             let subgraph = self.ref_graph.filter_map(
-    //                 |node_idx, _| {
-    //                     if new_nodes.contains(&node_idx.index()) {
-    //                         Some(())
-    //                     } else {
-    //                         None
-    //                     }
-    //                 },
-    //                 |_, edge_idx| Some(*edge_idx),
-    //             );
-
-    //             let node_indices: Vec<_> = subgraph.node_identifiers().collect();
-    //             let mut seen_endpoints = RapidHashSet::default();
-
-    //             for i in 0..node_indices.len() {
-    //                 let u = node_indices[i].index();
-    //                 for j in (i + 1)..node_indices.len() {
-    //                     let v = node_indices[j].index();
-
-    //                     let u_neighbors = self.index_to_neighbors.get(&u).unwrap();
-    //                     let v_neighbors = self.index_to_neighbors.get(&v).unwrap();
-    //                     if u_neighbors.intersection(&v_neighbors).any(|n| inner_ring.contains(n)) {
-    //                         if DO_DBG {
-    //                             let u_waypoint = self.index_to_waypoint.get(&u).unwrap();
-    //                             let v_waypoint = self.index_to_waypoint.get(&v).unwrap();
-    //                             println!("  skipping {} {} => {} {}", u, u_waypoint, v, v_waypoint);
-    //                         }
-    //                         continue;
-    //                     }
-
-    //                     let key = sort_pair(u, v);
-    //                     if seen_endpoints.contains(&key) {
-    //                         if DO_DBG {
-    //                             let u_waypoint = self.index_to_waypoint.get(&u).unwrap();
-    //                             let v_waypoint = self.index_to_waypoint.get(&v).unwrap();
-    //                             println!("  skipping {} {} => {} {}", u, u_waypoint, v, v_waypoint);
-    //                         }
-    //                         continue;
-    //                     }
-    //                     seen_endpoints.insert(key);
-
-    //                     let mut path_iter = all_simple_paths::<Vec<NodeIndex>, _, RandomState>(
-    //                         &subgraph,
-    //                         node_indices[i],
-    //                         node_indices[j],
-    //                         0,
-    //                         Some(ring_combo_cutoff[ring_idx]),
-    //                     ).take(1);
-
-    //                     if let Some(path) = path_iter.next() {
-    //                         let combo = IntSet::from_iter(path.iter().map(|n| n.index()));
-    //                         state.search_state.push_back(SearchState {
-    //                             ring_idx,
-    //                             current_nodes: combo.clone(),
-    //                             bridge: combo,
-    //                         });
-    //                     } else {
-    //                         if DO_DBG {
-    //                             let u_waypoint = self.index_to_waypoint.get(&u).unwrap();
-    //                             let v_waypoint = self.index_to_waypoint.get(&v).unwrap();
-    //                             println!("  skipping {} {} => {} {}", u, u_waypoint, v, v_waypoint);
-    //                         }
-    //                     }
-    //                 }
-    //             }
-
-    //             if DO_DBG {
-    //                 println!("Search_state size after ring {}: {}", ring_idx, state.search_state.len());
-    //             }
-    //         }
-    //         // Re-run to process new states
-    //         return self.next_bridge(state);
-    //     }
-
-    //     None
-    // }
 
     /// Applies bridge to idtree active nodes
     fn connect_bridge(&mut self, bridge: &IntSet<usize>) {
