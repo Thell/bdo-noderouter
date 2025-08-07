@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::vec;
 
 use nohash_hasher::{IntMap, IntSet};
-use rapidhash::fast::{RandomState, RapidHashSet};
+use rapidhash::fast::RapidHashSet;
 use rapidhash::v3::rapidhash_v3;
 
 use petgraph::algo::{astar, tarjan_scc};
@@ -34,7 +34,6 @@ pub struct WeightedRangeComboGenerator {
     bridge_cost: usize,
     bridge_nodes: usize,
     max_node_weight: usize,
-    combo_gen_direction: bool, // true for descending, false for ascending
 }
 
 impl WeightedRangeComboGenerator {
@@ -45,11 +44,11 @@ impl WeightedRangeComboGenerator {
         max_node_weight: usize,
         combo_gen_direction: bool,
     ) -> Self {
-        println!("  Creating new generator with items {:?}", items);
-        println!(
-            "    bridge_cost: {}, bridge_nodes: {}, max_node_weight: {}",
-            bridge_cost, bridge_nodes, max_node_weight
-        );
+        // println!("  Creating new generator with items {:?}", items);
+        // println!(
+        //     "    bridge_cost: {}, bridge_nodes: {}, max_node_weight: {}",
+        //     bridge_cost, bridge_nodes, max_node_weight
+        // );
         let mut items = items.to_vec();
         items.sort_by(|a, b| {
             if combo_gen_direction {
@@ -63,7 +62,6 @@ impl WeightedRangeComboGenerator {
             bridge_cost,
             bridge_nodes,
             max_node_weight,
-            combo_gen_direction,
         }
     }
 
@@ -72,10 +70,10 @@ impl WeightedRangeComboGenerator {
         let bridge_cost = self.bridge_cost;
         let max_removal_weight = self.bridge_nodes * self.max_node_weight;
         let total_available_weight: usize = self.items.iter().map(|item| item.1).sum();
-        println!(
-            "    max_removal_weight: {}, total_available_weight: {}",
-            max_removal_weight, total_available_weight
-        );
+        // println!(
+        //     "    max_removal_weight: {}, total_available_weight: {}",
+        //     max_removal_weight, total_available_weight
+        // );
 
         Gn::new_scoped(move |mut scope| {
             fn backtrack<'scope>(
@@ -87,21 +85,21 @@ impl WeightedRangeComboGenerator {
                 target_weight: usize,
                 total_available_weight: usize,
             ) {
-                println!("      backtrack: index={}, current_weight={}, target_weight={}, total_available_weight={}",
-                         index, current_weight, target_weight, total_available_weight);
+                // println!("      backtrack: index={}, current_weight={}, target_weight={}, total_available_weight={}",
+                //          index, current_weight, target_weight, total_available_weight);
                 if current_weight >= target_weight {
-                    println!("      yielding {:?}", current_combination);
+                    // println!("      yielding {:?}", current_combination);
                     scope.yield_(current_combination.iter().map(|item| item.0).collect());
                     return;
                 }
                 if index == items.len() {
-                    println!("      end of items");
+                    // println!("      end of items");
                     return;
                 }
                 if current_weight + total_available_weight < target_weight {
-                    println!(
-                        "      pruning: current_weight + total_available_weight < target_weight"
-                    );
+                    // println!(
+                    //     "      pruning: current_weight + total_available_weight < target_weight"
+                    // );
                     return;
                 }
                 // Include current item
@@ -131,7 +129,7 @@ impl WeightedRangeComboGenerator {
             }
 
             for target_weight in bridge_cost..=max_removal_weight {
-                println!("    calling backtrack with target_weight {}", target_weight);
+                // println!("    calling backtrack with target_weight {}", target_weight);
                 backtrack(
                     &mut scope,
                     &items,
@@ -150,19 +148,16 @@ impl WeightedRangeComboGenerator {
 struct BridgeGenerator {
     ref_graph: StableUnGraph<usize, usize>,
     index_to_neighbors: IntMap<usize, IntSet<usize>>,
-    index_to_waypoint: IntMap<usize, usize>,
 }
 
 impl BridgeGenerator {
     fn new(
         ref_graph: StableUnGraph<usize, usize>,
         index_to_neighbors: IntMap<usize, IntSet<usize>>,
-        index_to_waypoint: IntMap<usize, usize>,
     ) -> Self {
         Self {
             ref_graph,
             index_to_neighbors,
-            index_to_waypoint,
         }
     }
 
@@ -551,21 +546,6 @@ impl NodeRouter {
             }
         }
 
-        if DO_DBG {
-            println!("Testing neighbors of waypoint...");
-            let waypoint = 1852;
-            let tmp_index = waypoint_to_index.get(&waypoint).unwrap();
-            let tmp_neighbors = index_to_neighbors.get(&tmp_index).unwrap();
-            let tmp_neighbor_waypoints: Vec<_> = tmp_neighbors
-                .into_iter()
-                .map(|n| index_to_waypoint.get(n).unwrap())
-                .collect();
-            println!(
-                "  neighbors of waypoint 1 at index {:?} are {:?} at indices {:?}",
-                tmp_index, tmp_neighbor_waypoints, tmp_neighbors
-            );
-        }
-
         // Then we generate all of the edges for the ref_graph...
         if DO_DBG {
             println!("Generating ref_graph edges...");
@@ -667,20 +647,62 @@ impl NodeRouter {
         }
 
         if DO_DBG {
-            println!("Approximating...");
+            println!("Forward pass approximating...");
         }
-        self.approximate();
+        let ordered_removables = self.approximate();
+        self.bridge_heuristics(&mut ordered_removables.clone());
+        let forward_weight: usize = self
+            .idtree
+            .active_nodes()
+            .iter()
+            .map(|&i| self.index_to_weight[&i])
+            .sum();
+        let forward_result = self.idtree_active_indices.clone();
+        println!(
+            "Forward pass completed... terminals_connected: {:?} weight: {}",
+            self.terminal_pairs_connected(),
+            forward_weight
+        );
 
-        self.bridge_heuristics(self.ordered_removables.clone().as_mut());
+        if DO_DBG {
+            println!("Reverse pass approximating...");
+        }
+        self.combo_gen_direction = false;
+        self.bridge_affected_base_towns.clear();
+        self.bridge_affected_indices.clear();
+        self.bridge_affected_terminals.clear();
+        self.connected_pairs.clear();
+        self.ordered_removables.clear();
+        let ordered_removables = self.approximate();
+        println!(
+            "Approximation connectivity: {:?}",
+            self.terminal_pairs_connected()
+        );
+        self.bridge_heuristics(&mut ordered_removables.clone());
+        let reverse_weight: usize = self
+            .idtree
+            .active_nodes()
+            .iter()
+            .map(|&i| self.index_to_weight[&i])
+            .sum();
+        let reverse_result = self.idtree_active_indices.clone();
+        println!(
+            "Reverse pass completed... terminals_connected: {:?} weight: {}",
+            self.terminal_pairs_connected(),
+            reverse_weight
+        );
 
         // Convert all remaining active indices in idtree to waypoints and return
         if DO_DBG {
             println!("Translating results...");
         }
-        self.idtree_active_indices
-            .iter()
-            .map(|&i| self.index_to_waypoint[&i])
-            .collect()
+        let winner = if forward_weight < reverse_weight {
+            forward_result
+        } else {
+            reverse_result
+        };
+        println!("Final connectivity: {:?}", self.terminal_pairs_connected());
+        winner.iter().map(|&i| self.index_to_waypoint[&i]).collect()
     }
 
     /// Set of all terminals, fixed roots and leaf terminal parents
@@ -708,13 +730,17 @@ impl NodeRouter {
     /////
 
     /// Solves the routing problem and returns a list of active nodes in solution
-    fn approximate(&mut self) {
+    fn approximate(&mut self) -> Vec<usize> {
         let x = self.untouchables.clone();
 
         if DO_DBG {
             println!("Starting PD Approximation...");
         }
         let (x, mut ordered_removables) = self.primal_dual_approximation(x);
+        if DO_DBG {
+            assert!(self.terminal_pairs_connected());
+            println!("  ... ok")
+        }
 
         // Transfer the solution to IDTree using a ref_graph subgraph's edges.
         if DO_DBG {
@@ -743,13 +769,17 @@ impl NodeRouter {
             println!("Pruning...");
         }
         self.prune_approximation(&mut ordered_removables);
+        if DO_DBG {
+            assert!(self.terminal_pairs_connected());
+            println!("  ... ok")
+        }
 
         // Ordered removables are in temporal order of going tight, sub ordered structurally
         // by sorting by waypoint key.  When removing the nodes they should be processed in
         // reverse order to facilitate the removal of the latest nodes to 'go tight' first.
         // The list is reversed here and processed in forward order thoughout the remainder
         // of the algorithm and bridge heuristic processing.
-        self.ordered_removables = ordered_removables.iter().rev().cloned().collect();
+        ordered_removables = ordered_removables.iter().rev().cloned().collect();
 
         // remove_removables is setup to primarily handle 'bridged' components in the Bridge
         // Heuristic. To simplify the code the bridge related variables are set here to
@@ -759,21 +789,25 @@ impl NodeRouter {
         if DO_DBG {
             println!("Removing removables...");
         }
-        let (freed, _freed_edges) = self.remove_removables(None);
+        let (freed, _freed_edges) = self.remove_removables(&ordered_removables);
         if DO_DBG {
             println!("  freed {} nodes", freed.len());
+            assert!(self.terminal_pairs_connected());
+            println!("  ... ok")
         }
 
         self.idtree_active_indices.retain(|&v| !freed.contains(&v));
-        self.ordered_removables.retain(|&v| !freed.contains(&v));
+        ordered_removables.retain(|&v| !freed.contains(&v));
         if DO_DBG {
             println!(
                 "Result: num active nodes is {} num active indices is {} num removables is {}",
                 self.idtree.active_nodes().len(),
                 self.idtree_active_indices.len(),
-                self.ordered_removables.len()
+                ordered_removables.len()
             );
         }
+
+        ordered_removables
     }
 
     /// Node Weighted Primal Dual Approximation (Demaine et al.)
@@ -1021,6 +1055,9 @@ impl NodeRouter {
 
     /// Updates self._bridge_* variables with relevant bridged component nodes.
     fn update_bridge_affected_nodes(&mut self, affected_component: IntSet<usize>) {
+        if DO_DBG {
+            println!("Updating bridge affected nodes...");
+        }
         self.bridge_affected_indices = affected_component;
         self.bridge_affected_terminals = self
             .terminal_to_root
@@ -1044,19 +1081,22 @@ impl NodeRouter {
     /// NOTE: This function should only be entered after terminal pairs connected check succeeds.
     fn remove_removables(
         &mut self,
-        removables: Option<&Vec<usize>>,
+        ordered_removables: &Vec<usize>,
     ) -> (IntSet<usize>, Vec<(usize, usize)>) {
+        if DO_DBG {
+            println!(
+                "Performing removals on {} added nodes...",
+                ordered_removables.len()
+            );
+        }
         let mut freed = IntSet::default();
         let mut freed_edges = Vec::new();
 
-        let mut active_removables = self.ordered_removables.clone();
-        if let Some(removables) = removables {
-            active_removables = removables.clone();
-        }
-        for &v in active_removables.iter() {
+        for &v in ordered_removables {
             if !self.bridge_affected_indices.contains(&v) {
                 continue;
             }
+
             // Simulate removal by isolating the node
             let mut deleted_edges = Vec::new();
             for &u in self.index_to_neighbors[&v].intersection(&self.bridge_affected_indices) {
@@ -1116,24 +1156,10 @@ impl NodeRouter {
         while improved {
             improved = false;
 
-            // let mut bridge_state = self.init_bridge_generator(&incumbent_indices);
-            // while let Some(bridge) = self.next_bridge(&mut bridge_state) {
-            let bridge_generator = BridgeGenerator::new(
-                self.ref_graph.clone(),
-                self.index_to_neighbors.clone(),
-                self.index_to_waypoint.clone(),
-            );
+            let bridge_generator =
+                BridgeGenerator::new(self.ref_graph.clone(), self.index_to_neighbors.clone());
             let mut bridge_gen = bridge_generator.bridge_generator(incumbent_indices.clone());
             while let Some(bridge) = bridge_gen.next() {
-                let tmp_bridge_as_waypoints = bridge
-                    .iter()
-                    .map(|&v| self.index_to_waypoint[&v])
-                    .collect::<Vec<_>>();
-                println!(
-                    "Processing bridge: {:?} => {:?}",
-                    bridge, tmp_bridge_as_waypoints
-                );
-
                 let reisolate_bridge_nodes: Vec<usize> = bridge
                     .iter()
                     .filter(|&&v| !incumbent_indices.contains(&v))
@@ -1149,7 +1175,7 @@ impl NodeRouter {
                 };
 
                 if self.was_seen_before(&bridge, &bridge_rooted_cycles, &mut seen_before_cache) {
-                    println!("  skipping as seen before...");
+                    // println!("  skipping as seen before...");
                     self.idtree.isolate_nodes(reisolate_bridge_nodes);
                     self.idtree_active_indices = incumbent_indices.clone();
                     continue;
@@ -1163,13 +1189,13 @@ impl NodeRouter {
                     continue;
                 };
 
-                let (is_improved, removal_attempts, freed) =
+                let (is_improved, _removal_attempts, freed) =
                     self.improve_component(&bridge, &removal_candidates, ordered_removables);
 
                 if is_improved {
                     incumbent_indices = self.idtree._active_nodes();
                     self.idtree_active_indices = incumbent_indices.clone();
-                    bridge_gen = bridge_generator.bridge_generator(incumbent_indices.clone());
+                    // bridge_gen = bridge_generator.bridge_generator(incumbent_indices.clone());
                     improved = true;
 
                     ordered_removables.retain(|v| !freed.contains(v));
@@ -1216,9 +1242,24 @@ impl NodeRouter {
                 }
             }
         }
+
+        if DO_DBG {
+            let bridge_node = *bridge.iter().next().unwrap();
+            let component_len = self.idtree.node_connected_component(bridge_node).len();
+            println!(
+                "Bridged component of len {} generated from bridge {:?}...",
+                component_len, bridge
+            );
+        }
     }
 
     fn bridge_rooted_cycles(&mut self, bridge: &IntSet<usize>) -> Option<Vec<IntSet<usize>>> {
+        if DO_DBG {
+            let bridge_waypoints: Vec<_> =
+                bridge.iter().map(|&v| self.index_to_waypoint[&v]).collect();
+            println!("Processing bridge {:?}... {:?}", bridge, bridge_waypoints);
+        }
+
         let root = *bridge.iter().next()?;
         let all_cycles = self.idtree.cycle_basis(Some(root));
 
@@ -1266,6 +1307,14 @@ impl NodeRouter {
         bridge: &IntSet<usize>,
         cycles: &[IntSet<usize>],
     ) -> Option<Vec<(usize, usize)>> {
+        if DO_DBG {
+            let bridge_waypoints: Vec<_> =
+                bridge.iter().map(|&v| self.index_to_waypoint[&v]).collect();
+            println!(
+                "Finding removal candidates for bridge={:?}... {:?}",
+                bridge, bridge_waypoints
+            );
+        }
         let threshold = cycles.len() + 1;
         let mut candidates = IntSet::default();
         for cycle in cycles {
@@ -1285,115 +1334,27 @@ impl NodeRouter {
         }
     }
 
-    /// Test the removal of filtered combinations of removal candidates.
-    // fn improve_component(
-    //     &mut self,
-    //     bridge: &IntSet<usize>,
-    //     removal_candidates: &[(usize, usize)],
-    //     ordered_removables: &mut Vec<usize>,
-    // ) -> (bool, usize, IntSet<usize>) {
-    //     println!("  improving component...");
-    //     // NOTE: Each node removal alters the connected components of the graph.
-    //     let mut removal_attempts = 0; // not using yet
-    //     let max_removal_attempts = self.max_removal_attempts; // not using yet
-    //     let bridged_component = self.idtree_active_indices.clone();
-    //     self.update_bridge_affected_nodes(bridged_component.clone());
-    //     let bridge_weight: usize = self
-    //         .idtree_active_indices
-    //         .iter()
-    //         .map(|&v| self.index_to_weight[&v])
-    //         .sum();
-    //     let incumbent_weight: usize = bridge.iter().map(|&v| self.index_to_weight[&v]).sum();
-    //     let incumbent_component_count = self.idtree.num_connected_components();
-
-    //     let removal_set_generator = WeightedRangeComboGenerator::new(
-    //         removal_candidates,
-    //         bridge_weight,
-    //         bridge.len(),
-    //         self.max_node_weight,
-    //         self.combo_gen_direction,
-    //     );
-
-    //     let mut gen = removal_set_generator.generate();
-    //     let mut removal_attempts = 0;
-
-    //     while let Some(removal_set) = gen.resume() {
-    //         removal_attempts += 1;
-    //         println!("    testing removal_set: {:?}", removal_set);
-
-    //         // Mutate the bridged component by isolating removal set node(s)...
-    //         let mut deleted_edges = Vec::new();
-    //         for &v in &removal_set {
-    //             let neighbors = self.index_to_neighbors[&v].intersection(&bridged_component);
-    //             for &u in neighbors {
-    //                 if self.idtree.delete_edge(v, u) != -1 {
-    //                     deleted_edges.push((v, u));
-    //                 }
-    //             }
-    //         }
-
-    //         // Connectivity testing for the removal_set.
-    //         if !self.terminal_pairs_connected() {
-    //             for &(v, u) in &deleted_edges {
-    //                 self.idtree.insert_edge(v, u);
-    //             }
-    //             println!("      connectivity broke...");
-    //             continue;
-    //         }
-
-    //         let mut active_component_indices = bridged_component.clone();
-    //         active_component_indices.retain(|&v| !removal_set.contains(&v));
-    //         self.update_bridge_affected_nodes(active_component_indices.clone());
-    //         ordered_removables.retain(|&v| !removal_set.contains(&v));
-
-    //         // Attempt to remove additional nodes using the ordered set.
-    //         let mut tmp_removables = ordered_removables.clone();
-    //         tmp_removables.extend(bridge.iter().copied());
-    //         let tmp_removables_waypoints = tmp_removables
-    //             .iter()
-    //             .map(|&v| self.index_to_waypoint[&v])
-    //             .collect::<Vec<_>>();
-    //         println!(
-    //             "      attempting to remove removables {:?} => {:?}",
-    //             tmp_removables, tmp_removables_waypoints
-    //         );
-    //         let (freed, freed_edges) = self.remove_removables(Some(&tmp_removables));
-    //         active_component_indices.retain(|&v| !freed.contains(&v));
-    //         let new_weight = active_component_indices
-    //             .iter()
-    //             .map(|&v| self.index_to_weight[&v])
-    //             .sum();
-
-    //         // Test if mutated dominates incumbent.
-    //         // mutated started as incumbent (a single component) and may have split a terminal
-    //         // set cluster while retaining the same (or improving) the cost.
-    //         if incumbent_weight < new_weight
-    //             || (incumbent_weight == new_weight
-    //                 && self.idtree.num_connected_components() == incumbent_component_count)
-    //         {
-    //             for &(v, u) in &deleted_edges {
-    //                 self.idtree.insert_edge(v, u);
-    //             }
-    //             for &(v, u) in &freed_edges {
-    //                 self.idtree.insert_edge(v, u);
-    //             }
-    //             continue;
-    //         }
-
-    //         let mut ret_val = freed.clone();
-    //         ret_val.extend(removal_set.clone());
-    //         return (true, removal_attempts, ret_val);
-    //     }
-
-    //     (false, removal_attempts, IntSet::default())
-    // }
     fn improve_component(
         &mut self,
         bridge: &IntSet<usize>,
         removal_candidates: &[(usize, usize)],
-        ordered_removables: &mut Vec<usize>,
+        ordered_removables: &Vec<usize>,
     ) -> (bool, usize, IntSet<usize>) {
-        println!("  improving component...");
+        if DO_DBG {
+            let bridge_waypoints = bridge
+                .iter()
+                .map(|&v| self.index_to_waypoint[&v])
+                .collect::<Vec<_>>();
+            let removal_set_waypoints = removal_candidates
+                .iter()
+                .map(|&(v, _)| self.index_to_waypoint[&v])
+                .collect::<Vec<_>>();
+            println!(
+                "Improving component for bridge {:?} => {:?}... using removal candidates {:?} => {:?}...",
+                bridge, bridge_waypoints, removal_candidates, removal_set_waypoints
+            );
+        }
+        let mut ordered_removables = ordered_removables.clone();
         let mut removal_attempts = 0;
         let max_removal_attempts = self.max_removal_attempts;
         let bridged_component = self.idtree_active_indices.clone();
@@ -1406,10 +1367,6 @@ impl NodeRouter {
             .sum::<usize>()
             - bridge_weight;
         let incumbent_component_count = self.idtree.num_connected_components();
-        println!(
-            "    bridge_weight: {}, incumbent_weight: {}, incumbent_component_count: {}",
-            bridge_weight, incumbent_weight, incumbent_component_count
-        );
 
         let removal_set_generator = WeightedRangeComboGenerator::new(
             removal_candidates,
@@ -1422,7 +1379,9 @@ impl NodeRouter {
         let mut gen = removal_set_generator.generate();
         while let Some(removal_set) = gen.resume() {
             removal_attempts += 1;
-            println!("    testing removal_set: {:?}", removal_set);
+            if removal_attempts > max_removal_attempts {
+                break;
+            }
 
             let mut deleted_edges = Vec::new();
             for &v in &removal_set {
@@ -1438,7 +1397,16 @@ impl NodeRouter {
                 for &(v, u) in &deleted_edges {
                     self.idtree.insert_edge(v, u);
                 }
-                println!("      connectivity broke...");
+                if DO_DBG {
+                    let removal_set_waypoints = removal_set
+                        .iter()
+                        .map(|&v| self.index_to_waypoint[&v])
+                        .collect::<Vec<_>>();
+                    println!(
+                        "Skipping removal set {:?} => {:?}...",
+                        removal_set, removal_set_waypoints
+                    );
+                }
                 continue;
             }
 
@@ -1447,17 +1415,9 @@ impl NodeRouter {
             self.update_bridge_affected_nodes(active_component_indices.clone());
             ordered_removables.retain(|&v| !removal_set.contains(&v));
 
-            let mut tmp_removables = ordered_removables.clone();
-            tmp_removables.extend(bridge.iter().copied());
-            let tmp_removables_waypoints = tmp_removables
-                .iter()
-                .map(|&v| self.index_to_waypoint[&v])
-                .collect::<Vec<_>>();
-            println!(
-                "      attempting to remove removables {:?} => {:?}",
-                tmp_removables, tmp_removables_waypoints
-            );
-            let (freed, freed_edges) = self.remove_removables(Some(&tmp_removables));
+            // let mut tmp_removables = ordered_removables.clone();
+            // tmp_removables.extend(bridge.iter().copied());
+            let (freed, freed_edges) = self.remove_removables(&ordered_removables);
             active_component_indices.retain(|&v| !freed.contains(&v));
             let new_weight = active_component_indices
                 .iter()
@@ -1477,7 +1437,6 @@ impl NodeRouter {
                 continue;
             }
 
-            println!("*** Improved component! ***");
             let mut ret_val = freed.clone();
             ret_val.extend(removal_set.clone());
             return (true, removal_attempts, ret_val);
