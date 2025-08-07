@@ -611,12 +611,6 @@ class PrimalDualNWSF:
                 total_iter += 1
                 reisolate_bridge_nodes = [v for v in bridge if v not in incumbent_indices]
 
-                # Test output to compare the Rust implementation to...
-                logger.warning(
-                        f"Processing bridge {bridge}... {[self.index_to_waypoint[v] for v in bridge]}"
-                )
-                continue
-
                 if self._do_debug:
                     logger.debug(
                         f"Processing bridge {bridge}... {[self.index_to_waypoint[v] for v in bridge]}"
@@ -624,6 +618,12 @@ class PrimalDualNWSF:
                     if self._do_debug:
                         self.validate_state(ordered_removables)
                     assert not any(v in incumbent_indices for v in bridge)
+
+
+                # Test output to compare the Rust implementation to...
+                logger.warning(
+                        f"Processing bridge {bridge}... {[self.index_to_waypoint[v] for v in bridge]}"
+                )
 
                 # Produce a candidate by inserting bridge into incumbent tree
                 self._connect_bridge(bridge)
@@ -639,6 +639,7 @@ class PrimalDualNWSF:
 
                 # Skip processing repeated bridge/cycle sets, the result will be the same.
                 if self._was_seen_before(bridge, bridge_rooted_cycles, seen_before_cache):
+                    print("  skipping as seen before...")
                     self.dtree.isolate_nodes(reisolate_bridge_nodes)
                     self.dtree_active_indices = incumbent_indices.copy()
                     num_skipped_seen_before += 1
@@ -742,16 +743,10 @@ class PrimalDualNWSF:
                     if len(s_neighbors) >= 2:
                         yielded.add(bridge)
                         yield bridge
-                    else:
-                        logger.warning("  too few neighbors: skipping...")
-                else:
-                    logger.warning(f"  previously yielded:skipping...")
                 return
 
             # Collect and process pairwise combinations of current_node candidates...
             # Candidates are current_nodes neighbors in ring_idx - 1
-            logger.warning(f"  *descending to yield with current_nodes={current_nodes} => {[self.index_to_waypoint[v] for v in current_nodes]}")
-            print("num seen candidate pairs upon entry: ", len(seen_candidate_pairs))
             inner_ring = rings[ring_idx - 1]
             candidates = list(
                 set.union(*(self.index_to_neighbors[n] for n in current_nodes)) & inner_ring
@@ -765,14 +760,9 @@ class PrimalDualNWSF:
                     # This filter works for all depths, which is fine for a small planar graph with
                     # limited max ring depth. It may be too restrictive with higher max ring depth.
                     candidate_pair = (u, v) if u < v else (v, u)
-                    print("    checking candidate pair: ", candidate_pair)
                     if candidate_pair not in seen_candidate_pairs:
-                        if candidate_pair == (774, 775):
-                            print("*********** Inserting candidate pair (774, 775)")
                         seen_candidate_pairs.add(candidate_pair)
                         yield from descend_to_yield_bridges(ring_idx - 1, {u, v}, bridge | frozenset({u, v}))
-                    else:
-                        logger.warning("  candidate pair seen before: skipping...")
 
 
         # Populate ring0 (Settlement border)
@@ -783,7 +773,6 @@ class PrimalDualNWSF:
         while len(rings) <= max_frontier_rings:
             # Populate the new outermost ring
             nodes = self._find_frontier_nodes(seen_nodes, min_degree=2)
-            logger.warning(f"  {nodes=} \n=> {[self.index_to_waypoint[v] for v in nodes]}")
             seen_nodes |= nodes
             ring_idx = len(rings)
             nodes = sorted(list(nodes))
@@ -839,9 +828,7 @@ class PrimalDualNWSF:
                     if not path or len(path[v]) > ring_combo_cutoff[ring_idx]:
                         continue
 
-                    print(f"  path: {path[v]}")
                     combo = frozenset(path[v])
-                    logger.warning(f"  phase2 descending on {u} {v} {combo=} => {self.index_to_waypoint[u]} {self.index_to_waypoint[v]} {[self.index_to_waypoint[i] for i in combo]}")
                     yield from descend_to_yield_bridges(ring_idx, combo, combo)
 
 
@@ -935,41 +922,6 @@ class PrimalDualNWSF:
 
         threshold = len(cycles) + 1
         candidates = set().union(*cycles) - self.untouchables - bridge
-
-        # # MARK: TESTBLOCK
-        # if bridge == frozenset({611, 612, 654, 656, 657, 659, 660, 662, 665, 604, 605, 606, 607}):
-        #     print("dbg")
-
-        #     # Remove candidates one-by-one and validate connectivity
-        #     # Regardless of connectivity restore the node
-        #     def __terminal_connected(terminal, root):
-        #         return (
-        #             self.dtree.query(terminal, root)
-        #             if root != SUPER_ROOT
-        #             else any(self.dtree.query(terminal, b) for b in self.base_towns)
-        #         )
-
-        #     def __terminals_pairs_connected():
-        #         for terminal, root in self.terminal_to_root.items():
-        #             if not __terminal_connected(terminal, root):
-        #                 return False
-        #         return True
-
-        #     validated_candidates = []
-        #     for v in candidates:
-        #         deleted_edges = []
-        #         for u in self.index_to_neighbors[v] & self.dtree_active_indices:
-        #             if self.dtree.delete_edge(v, u) != -1:
-        #                 deleted_edges.append((v, u))
-        #         if __terminals_pairs_connected():
-        #             validated_candidates.append(v)
-        #         for v, u in deleted_edges:
-        #             self.dtree.insert_edge(v, u)
-
-        #     dtree_candidates: list[tuple[int, int]] = [(v, self.index_to_weight[v]) for v in validated_candidates]
-        #     print("dbg")
-        # # MARK: TESTCLOCK_END
-
         dtree_candidates: list[tuple[int, int]] = [
             (v, self.index_to_weight[v]) for v in candidates if self.dtree.degree(v) <= threshold
         ]
@@ -1115,12 +1067,16 @@ class PrimalDualNWSF:
         max_removal_weight = bridge_nodes * self.max_node_weight
 
         def backtrack(index, current_combination, current_weight, target_weight, total_available_weight):
+            print(f"      backtrack: {index=}, {current_weight=}, {target_weight=}, {total_available_weight=}")
             if current_weight >= target_weight:
+                print(f"      yielding {current_combination}")
                 yield [item[0] for item in current_combination]
                 return
             if index == len(items):
+                print("      end of items")
                 return
             if current_weight + total_available_weight < target_weight:
+                print("      pruning: current_weight + total_available_weight < target_weight")
                 return
             # Include
             yield from backtrack(
@@ -1141,6 +1097,7 @@ class PrimalDualNWSF:
 
         total_available_weight = sum(item[1] for item in items)
         for target_weight in range(bridge_cost, max_removal_weight + 1):
+            print(f"    calling backtrack with target_weight {target_weight}")
             yield from backtrack(0, [], 0, target_weight, total_available_weight)
 
     def _update_bridge_affected_nodes(self, affected_component: set[int]) -> None:
@@ -1272,7 +1229,7 @@ if __name__ == "__main__":
         total_time_start = time.perf_counter()
         # for budget in [415]:
         # for budget in range(5, 555, 5):
-        for budget in [100]:
+        for budget in [505]:
             print("\n" + "*" * 100)
             print(f"Test: optimal terminals for budget of {budget}")
             test.workerman_terminals(optimize_with_terminals, config, budget, False)
