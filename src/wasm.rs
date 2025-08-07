@@ -1,34 +1,12 @@
-mod bridge_generator;
-mod helpers_common;
-mod idtree;
-mod node_router;
-mod weighted_combo_generator;
+use wasm_bindgen::prelude::*;
 
-pub use crate::idtree::IDTree;
-pub use crate::node_router::NodeRouter;
+use crate::node_router::NodeRouter;
 
-// IDTree is exposed by PyO3 for testing/benchmarking
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
-#[cfg(feature = "python")]
-#[pymodule]
-fn nwsf_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<IDTree>()?;
-    m.add_class::<NodeRouter>()?;
-    Ok(())
-}
-
-#[cfg(target_arch = "wasm32")]
-mod wasm;
-
-#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub struct WasmNodeRouter {
     inner: NodeRouter,
 }
 
-#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 impl WasmNodeRouter {
     #[wasm_bindgen(constructor)]

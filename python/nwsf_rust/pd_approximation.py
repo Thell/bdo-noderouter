@@ -28,7 +28,6 @@ from loguru import logger
 
 import data_store as ds
 from api_common import set_logger, ResultDict, SUPER_ROOT
-from api_exploration_graph import get_exploration_graph
 from api_rx_pydigraph import set_graph_terminal_sets_attribute
 from nwsf_rust import IDTree, NodeRouter
 
@@ -64,6 +63,9 @@ class PrimalDualNWSF:
         self.index_to_waypoint: dict[int, int] = dict({
             i: exploration_graph[i]["waypoint_key"] for i in exploration_graph.node_indices()
         })
+        self.waypoint_to_index: dict[int, int] = {
+            v: k for k, v in self.index_to_waypoint.items()
+        }
         self.index_to_weight: dict[int, int] = {
             i: self.ref_graph[i]["need_exploration_point"] for i in self.ref_graph.node_indices()
         }
@@ -205,63 +207,50 @@ class PrimalDualNWSF:
 
     def solve(self) -> rx.PyDiGraph:
         """Runs the Steiner Forest approximation algorithm..."""
-        # if self._do_debug:
-        #     logger.debug("Running Steiner Forest approximation...")
-        from api_common import get_clean_exploration_data
-        import json
-        # Manual testing of NodeRouter PDApproximation...
-        waypoint_to_index = {v: i for i, v in enumerate(self.index_to_waypoint.values())}
-        exploration_data = get_clean_exploration_data(config)
-        exploration_json_dumps = json.dumps(exploration_data)
-        NR = NodeRouter(exploration_json_dumps)
+        if self._do_debug:
+            logger.debug("Running Steiner Forest approximation...")
 
-        # We know the approximation is accurate so moving on to total improvement...
         start_time = time.perf_counter()
         ordered_removables = self._approximate()
 
         # Processing order matters! Use both forward and reverse
         # removal combos in distinct passes for improved solutions.
-        idtree_ORIG = self.idtree.py_clone()
-        removables_ORIG = ordered_removables.copy()
-        active_indices_ORIG = self.idtree_active_indices.copy()
+        ORIG_idtree = self.idtree.clone()
+        ORIG_removables = ordered_removables.copy()
+        ORIG_active_indices = self.idtree_active_indices.copy()
 
         self._combo_gen_direction = False
         self._bridge_heuristics(ordered_removables)
-        idtree_incumbentA = self.idtree.py_clone()
-        print("----------------------------------------------")
-        self.idtree = idtree_ORIG
-        ordered_removables = removables_ORIG
-        self.idtree_active_indices = active_indices_ORIG
+        forward_pass_incumbent = self.idtree.clone()
+        forward_pass_weight = sum(self.index_to_weight[v] for v in forward_pass_incumbent.active_nodes())
+
+        self.idtree = ORIG_idtree
+        ordered_removables = ORIG_removables
+        self.idtree_active_indices = ORIG_active_indices
 
         self._combo_gen_direction = True
         self._bridge_heuristics(ordered_removables)
+        reverse_pass_incumbent = self.idtree.clone()
+        reverse_pass_weight = sum(self.index_to_weight[v] for v in reverse_pass_incumbent.active_nodes())
 
-        if idtree_incumbentA is not None:
+        if forward_pass_incumbent is not None:
             # Test which incumbent dominates
-            incumbentA_weight = sum(self.index_to_weight[v] for v in idtree_incumbentA.active_nodes())
-            incumbentA_component_count = idtree_incumbentA.num_connected_components()
-            incumbent_weight = sum(self.index_to_weight[v] for v in self.idtree.active_nodes())
-            incumbent_component_count = self.idtree.num_connected_components()
-            print(f"Python: pass1 weight: {incumbentA_weight} pass2 weight: {incumbent_weight}")
-            if incumbentA_weight < incumbent_weight or (
-                incumbentA_weight == incumbent_weight
-                and incumbentA_component_count > incumbent_component_count
-            ):
-                self.idtree = idtree_incumbentA
-                dominant_cost = incumbentA_weight
-            else:
-                dominant_cost = incumbent_weight
+            forward_pass_weight = sum(self.index_to_weight[v] for v in forward_pass_incumbent.active_nodes())
+            forward_pass_num_cc = forward_pass_incumbent.num_connected_components()
+            reverse_pass_weight = sum(self.index_to_weight[v] for v in self.idtree.active_nodes())
+            reverse_pass_num_cc = self.idtree.num_connected_components()
 
-            app1_time = time.perf_counter() - start_time
-            start_time = time.perf_counter()
-            test_result = NR.py_solve_for_terminal_pairs(list(self.testing_orig_terminals.items()))
-            app2_time = time.perf_counter() - start_time
-            test_cost = sum(self.index_to_weight[waypoint_to_index[v]] for v in test_result)
-            if test_cost == dominant_cost:
-                logger.success(f"Python: {app1_time} Rust: {app2_time}")
+            if self._do_debug:
+                logger.debug(f"Python: forward pass weight: {forward_pass_weight} reverse pass weight: {reverse_pass_weight}")
+
+            if forward_pass_weight < reverse_pass_weight or (
+                forward_pass_weight == reverse_pass_weight
+                and forward_pass_num_cc > reverse_pass_num_cc
+            ):
+                self.idtree = forward_pass_incumbent
+                dominant_cost = forward_pass_weight
             else:
-                logger.error(f"Python: {app1_time} {dominant_cost} Rust: {app2_time} {test_cost}")
-                logger.warning(f"{test_result=}")
+                dominant_cost = reverse_pass_weight
 
         self._bridge_affected_indices = set(self.idtree.active_nodes())
         self._bridge_affected_terminals = set(self.terminal_to_root.items())
@@ -279,7 +268,7 @@ class PrimalDualNWSF:
 
         - re-assigns original terminal roots pairs to pairs from the approximation clusters.
         """
-        subgraph = self._pyGraph_subgraph_stable(list(self.idtree.active_nodes()))
+        subgraph = self._pyGraph_subgraph_stable(list(self._bridge_affected_indices))
         if self._do_info:
             logger.info("Finalizing solution...")
             self._dump_graph_specs(subgraph)
@@ -690,8 +679,144 @@ class PrimalDualNWSF:
                 break
         return
 
+    # def _bridge_generator(self, settlement: set[int]) -> Generator[frozenset[int], None, None]:
+    #     """Finds bridging spans of settlement border nodes within frontier and wild frontier."""
+
+    #     # ref_graph => full reference graph of all nodes and edges.
+    #     # Contains potentially topologically constrained expansion of Settlement
+    #     # Settlement potentially contains disjoint connected components
+
+    #     # S => Settlement (induced subgraph of currently 'active' nodes of ref_graph)
+    #     # B => Border (nodes in Settlement with ref_graph neighbors in Frontier)
+    #     # F => Frontier (non-settled nodes with ref_graph neighbors in Settlement)
+    #     # W => Wild Frontier (non-settled nodes with no settled ref_graph neighbors)
+
+    #     # 𝓕 => Fringe edges (edges in ref_graph connecting border and frontier nodes)
+    #     # 𝓑 => bridging span of nodes not in S that connect distinct nodes in S.
+
+    #     # Let ring 0 => B (in most cases B == S since S is most commonly a Steiner Forest/Tree)
+    #     # Let ring 1 => F0 be an eccentric ring around {B}
+    #     # Let ring 2 => F1 be an eccentric ring around {F0|B}
+    #     # Let ring 3 => F2 be an eccentric ring around {F1|F0|B}
+    #     # ...
+
+    #     max_frontier_rings = 3  # number rings around settlement
+    #     ring_combo_cutoff = [0, 3, 2, 2]  # max width of connected run _along_ outermost ring.
+
+    #     rings: list[set[int]] = []
+    #     seen_candidate_pairs: set[tuple[int, int]] = set()
+    #     yielded: set[frozenset[int]] = set()
+
+    #     def descend_to_yield_bridges(
+    #         ring_idx: int, current_nodes: set[int] | frozenset[int], bridge: frozenset[int]
+    #     ) -> Generator[frozenset[int], None, None]:
+    #         """Descend from current ring to settlement frontier (F0), yielding bridges connecting ≥2 S nodes."""
+    #         nonlocal seen_candidate_pairs
+    #         assert ring_idx > 0
+
+    #         # Base case (Settlement Frontier): yield and return
+    #         if ring_idx == 1:
+    #             if bridge not in yielded:
+    #                 s_neighbors = set().union(*(self.index_to_neighbors[v] for v in current_nodes)) & rings[0]
+    #                 if len(s_neighbors) >= 2:
+    #                     yielded.add(bridge)
+    #                     yield bridge
+    #             return
+
+    #         # Collect and process pairwise combinations of current_node candidates...
+    #         # Candidates are current_nodes neighbors in ring_idx - 1
+    #         inner_ring = rings[ring_idx - 1]
+    #         candidates = list(
+    #             set.union(*(self.index_to_neighbors[n] for n in current_nodes)) & inner_ring
+    #         )
+    #         candidates = sorted(list(candidates))
+
+    #         for i in range(len(candidates) - 1):
+    #             u = candidates[i]
+    #             for j in range(i + 1, len(candidates)):
+    #                 v = candidates[j]
+    #                 # This filter works for all depths, which is fine for a small planar graph with
+    #                 # limited max ring depth. It may be too restrictive with higher max ring depth.
+    #                 candidate_pair = (u, v) if u < v else (v, u)
+    #                 if candidate_pair not in seen_candidate_pairs:
+    #                     seen_candidate_pairs.add(candidate_pair)
+    #                     yield from descend_to_yield_bridges(ring_idx - 1, {u, v}, bridge | frozenset({u, v}))
+
+
+    #     # Populate ring0 (Settlement border)
+    #     rings.append(settlement.copy())
+    #     seen_nodes = settlement.copy()
+    #     # logger.warning(f"{settlement=} => {[self.index_to_waypoint[v] for v in settlement]}")
+
+    #     while len(rings) <= max_frontier_rings:
+    #         # Populate the new outermost ring
+    #         nodes = self._find_frontier_nodes(seen_nodes, min_degree=2)
+    #         seen_nodes |= nodes
+    #         ring_idx = len(rings)
+    #         nodes = sorted(list(nodes))
+    #         rings.append(set(nodes))
+
+    #         # Phase 1:
+    #         # Yield single node bridges from outermost ring connecting with >=2 neighbors in inner ring.
+    #         # NOTE: Validating inner ring neighbors does not strictly need to be done but reduces workload.
+    #         inner_ring = rings[ring_idx - 1]
+    #         for node in nodes:
+    #             neighbors = self.index_to_neighbors[node] & inner_ring
+    #             if len(neighbors) < 2:
+    #                 continue
+
+    #             first, *rest = neighbors
+    #             inner_ring_neighbors = self.index_to_neighbors[first] & inner_ring
+    #             if not any(inner_ring_neighbors & self.index_to_neighbors[n] for n in rest):
+    #                 yield from descend_to_yield_bridges(ring_idx, {node}, frozenset({node}))
+
+    #         # Phase 2:
+    #         # Yield multi-node bridges from outermost ring.
+
+    #         # NOTE: Each ring is only a single node 'thick' so the `all_pairs_all_simple_paths`
+    #         # is an efficient way to obtain all size constrained connected runs within the ring
+    #         # along with the associated endpoint nodes.
+    #         subgraph = self._pyGraph_subgraph_stable(nodes)
+    #         node_indices = sorted(list(nodes))
+    #         # tmp = rx.all_pairs_dijkstra_shortest_paths(subgraph, lambda x: 1.0)
+    #         seen_endpoints: set[tuple[int, int]] = set()
+
+    #         # Connected runs within the current outer ring make up the multi-node bridges for the ring.
+    #         # They exist as connected runs between u and v.
+
+    #         # NOTE: These runs can be accumulated and made available to the descend function to increase
+    #         # the spread along the inner rings while descending but since each ring consists only of
+    #         # F nodes each node in the span would have corresponding nodes in the inner ring and the
+    #         # span would need to have a lower weight to improve the incumbent solution which wouldn't
+    #         # happen based on the PD approximation.
+    #         for i in range(len(nodes) - 1):
+    #             u = node_indices[i]
+    #             for j in range(i + 1, len(nodes)):
+    #                 v = node_indices[j]
+
+    #                 key = (u, v) if u < v else (v, u)
+    #                 if key in seen_endpoints:
+    #                     continue
+    #                 seen_endpoints.add(key)
+
+    #                 if self.index_to_neighbors[u] & self.index_to_neighbors[v] & inner_ring:
+    #                     continue
+
+    #                 path = rx.dijkstra_shortest_paths(subgraph, u, v, lambda x: 1.0)
+    #                 if not path or len(path[v]) > ring_combo_cutoff[ring_idx]:
+    #                     continue
+
+    #                 combo = frozenset(path[v])
+    #                 yield from descend_to_yield_bridges(ring_idx, combo, combo)
+
     def _bridge_generator(self, settlement: set[int]) -> Generator[frozenset[int], None, None]:
-        """Finds bridging spans of settlement border nodes within frontier and wild frontier."""
+        """Finds bridging spans of settlement border nodes within frontier and wild frontier.
+
+        Yields:
+            - frozenset[int] bridges
+        """
+        if self._do_debug:
+            logger.debug("Initializing bridge generator...")
 
         # ref_graph => full reference graph of all nodes and edges.
         # Contains potentially topologically constrained expansion of Settlement
@@ -730,22 +855,22 @@ class PrimalDualNWSF:
                 if bridge not in yielded:
                     s_neighbors = set().union(*(self.index_to_neighbors[v] for v in current_nodes)) & rings[0]
                     if len(s_neighbors) >= 2:
+                        if self._do_debug:
+                            logger.debug(
+                                f"Emitting bridge {bridge}... {[self.index_to_waypoint[n] for n in bridge]}"
+                            )
                         yielded.add(bridge)
                         yield bridge
                 return
 
             # Collect and process pairwise combinations of current_node candidates...
             # Candidates are current_nodes neighbors in ring_idx - 1
-            inner_ring = rings[ring_idx - 1]
             candidates = list(
-                set.union(*(self.index_to_neighbors[n] for n in current_nodes)) & inner_ring
+                set.union(*(self.index_to_neighbors[n] for n in current_nodes)) & rings[ring_idx - 1]
             )
-            candidates = sorted(list(candidates))
-
             for i in range(len(candidates) - 1):
                 u = candidates[i]
-                for j in range(i + 1, len(candidates)):
-                    v = candidates[j]
+                for v in candidates[i + 1 :]:
                     # This filter works for all depths, which is fine for a small planar graph with
                     # limited max ring depth. It may be too restrictive with higher max ring depth.
                     candidate_pair = (u, v) if u < v else (v, u)
@@ -753,11 +878,9 @@ class PrimalDualNWSF:
                         seen_candidate_pairs.add(candidate_pair)
                         yield from descend_to_yield_bridges(ring_idx - 1, {u, v}, bridge | frozenset({u, v}))
 
-
         # Populate ring0 (Settlement border)
-        rings.append(settlement.copy())
         seen_nodes = settlement.copy()
-        # logger.warning(f"{settlement=} => {[self.index_to_waypoint[v] for v in settlement]}")
+        rings.append(settlement)
 
         while len(rings) <= max_frontier_rings:
             # Populate the new outermost ring
@@ -769,9 +892,10 @@ class PrimalDualNWSF:
 
             # Phase 1:
             # Yield single node bridges from outermost ring connecting with >=2 neighbors in inner ring.
+
             # NOTE: Validating inner ring neighbors does not strictly need to be done but reduces workload.
             inner_ring = rings[ring_idx - 1]
-            for node in nodes:
+            for node in sorted(list(nodes)):
                 neighbors = self.index_to_neighbors[node] & inner_ring
                 if len(neighbors) < 2:
                     continue
@@ -784,41 +908,59 @@ class PrimalDualNWSF:
             # Phase 2:
             # Yield multi-node bridges from outermost ring.
 
-            # NOTE: Each ring is only a single node 'thick' so the `all_pairs_all_simple_paths`
-            # is an efficient way to obtain all size constrained connected runs within the ring
-            # along with the associated endpoint nodes.
+            # # NOTE: Each ring is only a single node 'thick' so the `all_pairs_all_simple_paths`
+            # # is an efficient way to obtain all size constrained connected runs within the ring
+            # # along with the associated endpoint nodes.
+            # subgraph = self._pyGraph_subgraph_stable(nodes)
+            # tmp = rx.all_pairs_dijkstra_shortest_paths(subgraph, lambda x: 1.0)
+            # seen_endpoints: set[tuple[int, int]] = set()
+
+            # # Connected runs within the current outer ring make up the multi-node bridges for the ring.
+            # # They exist as connected runs between u and v.
+
+            # # NOTE: These runs can be accumulated and made available to the descend function to increase
+            # # the spread along the inner rings while descending but since each ring consists only of
+            # # F nodes each node in the span would have corresponding nodes in the inner ring and the
+            # # span would need to have a lower weight to improve the incumbent solution which wouldn't
+            # # happen based on the PD approximation.
+            # for u in tmp:
+            #     for v in tmp[u]:
+            #         if len(tmp[u][v]) > ring_combo_cutoff[ring_idx]:
+            #             continue
+            #         if self.index_to_neighbors[u] & self.index_to_neighbors[v] & inner_ring:
+            #             continue
+            #         # Use one representative combo per endpoints pair
+            #         key = (u, v) if u < v else (v, u)
+            #         if key not in seen_endpoints:
+            #             seen_endpoints.add(key)
+            #             combo = frozenset(tmp[u][v])
+            #             yield from descend_to_yield_bridges(ring_idx, combo, combo)
+
+            # # NOTE: This is the same final result on the test suite but much slower...
             subgraph = self._pyGraph_subgraph_stable(nodes)
             node_indices = sorted(list(nodes))
-            # tmp = rx.all_pairs_dijkstra_shortest_paths(subgraph, lambda x: 1.0)
             seen_endpoints: set[tuple[int, int]] = set()
-
-            # Connected runs within the current outer ring make up the multi-node bridges for the ring.
-            # They exist as connected runs between u and v.
-
-            # NOTE: These runs can be accumulated and made available to the descend function to increase
-            # the spread along the inner rings while descending but since each ring consists only of
-            # F nodes each node in the span would have corresponding nodes in the inner ring and the
-            # span would need to have a lower weight to improve the incumbent solution which wouldn't
-            # happen based on the PD approximation.
             for i in range(len(nodes) - 1):
                 u = node_indices[i]
                 for j in range(i + 1, len(nodes)):
                     v = node_indices[j]
-
                     key = (u, v) if u < v else (v, u)
                     if key in seen_endpoints:
                         continue
                     seen_endpoints.add(key)
-
                     if self.index_to_neighbors[u] & self.index_to_neighbors[v] & inner_ring:
                         continue
-
                     path = rx.dijkstra_shortest_paths(subgraph, u, v, lambda x: 1.0)
                     if not path or len(path[v]) > ring_combo_cutoff[ring_idx]:
                         continue
-
                     combo = frozenset(path[v])
                     yield from descend_to_yield_bridges(ring_idx, combo, combo)
+
+        # # Test bridge for removal_set rework/testing
+        # yield frozenset({611, 612, 654, 656, 657, 659, 660, 662, 665, 604, 605, 606, 607})
+
+        if self._do_debug:
+            logger.warning(f"Total bridges yielded: {len(yielded)}")
 
 
     def _connect_bridge(self, bridge: set[int] | frozenset[int]) -> None:
@@ -1216,7 +1358,7 @@ if __name__ == "__main__":
     if config.get("actions", {}).get("scaling_tests", False):
         total_time_start = time.perf_counter()
         # for budget in [415]:
-        # for budget in [155]:
+        # for budget in [405]:
         for budget in range(5, 555, 5):
             print("\n" + "*" * 100)
             print(f"Test: optimal terminals for budget of {budget}")
@@ -1224,12 +1366,12 @@ if __name__ == "__main__":
             print("-" * 72)
             test.workerman_terminals(optimize_with_terminals, config, budget, True)
         # for percent in [9, 100]:
-        # for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
-        #     print("\n" + "*" * 100)
-        #     print(f"Test: random terminals representing {percent} percent coverage:")
-        #     test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
-        #     print("-" * 72)
-        #     test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
+        for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
+            print("\n" + "*" * 100)
+            print(f"Test: random terminals representing {percent} percent coverage:")
+            test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
+            print("-" * 72)
+            test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
 
     # # fmt:off
