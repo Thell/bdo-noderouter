@@ -1,13 +1,16 @@
+#![feature(coroutines, coroutine_trait)]
+
 mod bridge_generator;
 mod helpers_common;
 mod idtree;
 mod node_router;
 mod weighted_combo_generator;
 
+// Core exports, available for all builds
 pub use crate::idtree::IDTree;
 pub use crate::node_router::NodeRouter;
 
-// IDTree is exposed by PyO3 for testing/benchmarking
+// PyO3 binding
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
@@ -19,29 +22,9 @@ fn nwsf_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[cfg(target_arch = "wasm32")]
-mod wasm;
+// WASM binding
+#[cfg(feature = "wasm")]
+mod wasm_node_router;
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-pub struct WasmNodeRouter {
-    inner: NodeRouter,
-}
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-impl WasmNodeRouter {
-    #[wasm_bindgen(constructor)]
-    pub fn new(json: &str) -> WasmNodeRouter {
-        WasmNodeRouter {
-            inner: NodeRouter::wasm_new(json),
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn solve_for_terminal_pairs(&mut self, pairs: JsValue) -> JsValue {
-        let terminal_pairs: Vec<(usize, usize)> = pairs.into_serde().unwrap();
-        let result = self.inner.solve_for_terminal_pairs(terminal_pairs);
-        JsValue::from_serde(&result).unwrap()
-    }
-}
+#[cfg(feature = "wasm")]
+pub use wasm_node_router::WasmNodeRouter;

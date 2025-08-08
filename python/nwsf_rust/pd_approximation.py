@@ -248,9 +248,6 @@ class PrimalDualNWSF:
                 and forward_pass_num_cc > reverse_pass_num_cc
             ):
                 self.idtree = forward_pass_incumbent
-                dominant_cost = forward_pass_weight
-            else:
-                dominant_cost = reverse_pass_weight
 
         self._bridge_affected_indices = set(self.idtree.active_nodes())
         self._bridge_affected_terminals = set(self.terminal_to_root.items())
@@ -679,136 +676,6 @@ class PrimalDualNWSF:
                 break
         return
 
-    # def _bridge_generator(self, settlement: set[int]) -> Generator[frozenset[int], None, None]:
-    #     """Finds bridging spans of settlement border nodes within frontier and wild frontier."""
-
-    #     # ref_graph => full reference graph of all nodes and edges.
-    #     # Contains potentially topologically constrained expansion of Settlement
-    #     # Settlement potentially contains disjoint connected components
-
-    #     # S => Settlement (induced subgraph of currently 'active' nodes of ref_graph)
-    #     # B => Border (nodes in Settlement with ref_graph neighbors in Frontier)
-    #     # F => Frontier (non-settled nodes with ref_graph neighbors in Settlement)
-    #     # W => Wild Frontier (non-settled nodes with no settled ref_graph neighbors)
-
-    #     # 𝓕 => Fringe edges (edges in ref_graph connecting border and frontier nodes)
-    #     # 𝓑 => bridging span of nodes not in S that connect distinct nodes in S.
-
-    #     # Let ring 0 => B (in most cases B == S since S is most commonly a Steiner Forest/Tree)
-    #     # Let ring 1 => F0 be an eccentric ring around {B}
-    #     # Let ring 2 => F1 be an eccentric ring around {F0|B}
-    #     # Let ring 3 => F2 be an eccentric ring around {F1|F0|B}
-    #     # ...
-
-    #     max_frontier_rings = 3  # number rings around settlement
-    #     ring_combo_cutoff = [0, 3, 2, 2]  # max width of connected run _along_ outermost ring.
-
-    #     rings: list[set[int]] = []
-    #     seen_candidate_pairs: set[tuple[int, int]] = set()
-    #     yielded: set[frozenset[int]] = set()
-
-    #     def descend_to_yield_bridges(
-    #         ring_idx: int, current_nodes: set[int] | frozenset[int], bridge: frozenset[int]
-    #     ) -> Generator[frozenset[int], None, None]:
-    #         """Descend from current ring to settlement frontier (F0), yielding bridges connecting ≥2 S nodes."""
-    #         nonlocal seen_candidate_pairs
-    #         assert ring_idx > 0
-
-    #         # Base case (Settlement Frontier): yield and return
-    #         if ring_idx == 1:
-    #             if bridge not in yielded:
-    #                 s_neighbors = set().union(*(self.index_to_neighbors[v] for v in current_nodes)) & rings[0]
-    #                 if len(s_neighbors) >= 2:
-    #                     yielded.add(bridge)
-    #                     yield bridge
-    #             return
-
-    #         # Collect and process pairwise combinations of current_node candidates...
-    #         # Candidates are current_nodes neighbors in ring_idx - 1
-    #         inner_ring = rings[ring_idx - 1]
-    #         candidates = list(
-    #             set.union(*(self.index_to_neighbors[n] for n in current_nodes)) & inner_ring
-    #         )
-    #         candidates = sorted(list(candidates))
-
-    #         for i in range(len(candidates) - 1):
-    #             u = candidates[i]
-    #             for j in range(i + 1, len(candidates)):
-    #                 v = candidates[j]
-    #                 # This filter works for all depths, which is fine for a small planar graph with
-    #                 # limited max ring depth. It may be too restrictive with higher max ring depth.
-    #                 candidate_pair = (u, v) if u < v else (v, u)
-    #                 if candidate_pair not in seen_candidate_pairs:
-    #                     seen_candidate_pairs.add(candidate_pair)
-    #                     yield from descend_to_yield_bridges(ring_idx - 1, {u, v}, bridge | frozenset({u, v}))
-
-
-    #     # Populate ring0 (Settlement border)
-    #     rings.append(settlement.copy())
-    #     seen_nodes = settlement.copy()
-    #     # logger.warning(f"{settlement=} => {[self.index_to_waypoint[v] for v in settlement]}")
-
-    #     while len(rings) <= max_frontier_rings:
-    #         # Populate the new outermost ring
-    #         nodes = self._find_frontier_nodes(seen_nodes, min_degree=2)
-    #         seen_nodes |= nodes
-    #         ring_idx = len(rings)
-    #         nodes = sorted(list(nodes))
-    #         rings.append(set(nodes))
-
-    #         # Phase 1:
-    #         # Yield single node bridges from outermost ring connecting with >=2 neighbors in inner ring.
-    #         # NOTE: Validating inner ring neighbors does not strictly need to be done but reduces workload.
-    #         inner_ring = rings[ring_idx - 1]
-    #         for node in nodes:
-    #             neighbors = self.index_to_neighbors[node] & inner_ring
-    #             if len(neighbors) < 2:
-    #                 continue
-
-    #             first, *rest = neighbors
-    #             inner_ring_neighbors = self.index_to_neighbors[first] & inner_ring
-    #             if not any(inner_ring_neighbors & self.index_to_neighbors[n] for n in rest):
-    #                 yield from descend_to_yield_bridges(ring_idx, {node}, frozenset({node}))
-
-    #         # Phase 2:
-    #         # Yield multi-node bridges from outermost ring.
-
-    #         # NOTE: Each ring is only a single node 'thick' so the `all_pairs_all_simple_paths`
-    #         # is an efficient way to obtain all size constrained connected runs within the ring
-    #         # along with the associated endpoint nodes.
-    #         subgraph = self._pyGraph_subgraph_stable(nodes)
-    #         node_indices = sorted(list(nodes))
-    #         # tmp = rx.all_pairs_dijkstra_shortest_paths(subgraph, lambda x: 1.0)
-    #         seen_endpoints: set[tuple[int, int]] = set()
-
-    #         # Connected runs within the current outer ring make up the multi-node bridges for the ring.
-    #         # They exist as connected runs between u and v.
-
-    #         # NOTE: These runs can be accumulated and made available to the descend function to increase
-    #         # the spread along the inner rings while descending but since each ring consists only of
-    #         # F nodes each node in the span would have corresponding nodes in the inner ring and the
-    #         # span would need to have a lower weight to improve the incumbent solution which wouldn't
-    #         # happen based on the PD approximation.
-    #         for i in range(len(nodes) - 1):
-    #             u = node_indices[i]
-    #             for j in range(i + 1, len(nodes)):
-    #                 v = node_indices[j]
-
-    #                 key = (u, v) if u < v else (v, u)
-    #                 if key in seen_endpoints:
-    #                     continue
-    #                 seen_endpoints.add(key)
-
-    #                 if self.index_to_neighbors[u] & self.index_to_neighbors[v] & inner_ring:
-    #                     continue
-
-    #                 path = rx.dijkstra_shortest_paths(subgraph, u, v, lambda x: 1.0)
-    #                 if not path or len(path[v]) > ring_combo_cutoff[ring_idx]:
-    #                     continue
-
-    #                 combo = frozenset(path[v])
-    #                 yield from descend_to_yield_bridges(ring_idx, combo, combo)
-
     def _bridge_generator(self, settlement: set[int]) -> Generator[frozenset[int], None, None]:
         """Finds bridging spans of settlement border nodes within frontier and wild frontier.
 
@@ -848,7 +715,6 @@ class PrimalDualNWSF:
         ) -> Generator[frozenset[int], None, None]:
             """Descend from current ring to settlement frontier (F0), yielding bridges connecting ≥2 S nodes."""
             nonlocal seen_candidate_pairs
-            assert ring_idx > 0
 
             # Base case (Settlement Frontier): yield and return
             if ring_idx == 1:
@@ -1373,17 +1239,3 @@ if __name__ == "__main__":
             print("-" * 72)
             test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
-
-    # # fmt:off
-    # tst_set = {1826: 1795, 1827: 1795, 1828: 1795, 1829: 1795, 1879: 1857, 1880: 1857, 1882: 1857, 132: 1, 176: 1, 175: 1, 488: 301, 905: 608, 1821: 1781, 1822: 1781, 1830: 1781, 1886: 1857, 1881: 1853, 1884: 1853, 1885: 1853, 1889: 1857, 1893: 1858, 1894: 1853, 464: 301, 1820: 1781, 1890: 1853, 1891: 1858, 1892: 1858, 1895: 1853, 1896: 1853, 1815: 1781, 1813: 1795, 136: 1, 160: 1, 439: 301, 440: 301, 1513: 1319, 1527: 1319, 1538: 1301, 1537: 1301, 1904: 1834, 1899: 1834, 1883: 1853, 1897: 1853, 1535: 1301, 1565: 1301, 1887: 1853, 1888: 1853, 1913: 602, 1912: 602, 1209: 1101, 1206: 1141, 1510: 1319, 1514: 1314, 1555: 1380, 1642: 1623, 1645: 1623, 1909: 1843, 852: 601, 853: 601, 842: 601, 840: 601, 908: 608, 1515: 1314, 1902: 1843, 1903: 1843, 1907: 1843, 1906: 1843, 443: 301, 1522: 1319, 1523: 1319, 455: 301, 476: 301, 480: 301, 1521: 1319, 952: 602, 1778: 1750, 184: 1, 183: 1, 144: 1, 1911: 602, 1208: 1101, 1561: 1301, 1562: 1301, 1558: 1301, 1556: 1301, 1516: 1314, 1636: 1623, 1637: 1623, 1771: 1750, 1772: 1750, 1517: 1314, 903: 601, 914: 601, 1687: 1649, 913: 601, 912: 601, 1685: 301, 1686: 301, 1713: 1691, 1681: 1649, 1688: 1649, 1220: 301, 1201: 301, 1213: 301, 1219: 301, 1212: 301, 1216: 301, 901: 601, 902: 601, 907: 608, 1683: 302, 1684: 302}
-    # exploration_graph = get_exploration_graph(config)
-    # result = optimize_with_terminals(exploration_graph, tst_set, config)
-    # result_graph = result["solution_graph"]
-    # cost = sum([n["need_exploration_point"] for n in result_graph.nodes()])
-    # print(f"node graph cost: {cost}")
-
-    # workerman_plantzones = [n["need_exploration_point"] for n in result_graph.nodes() if n["is_workerman_plantzone"]]
-    # print(f"There are {len(workerman_plantzones)} plantzones with cost: {sum(workerman_plantzones)}")
-
-    # nonworkerman_plantzones = [n["need_exploration_point"] for n in result_graph.nodes() if not n["is_workerman_plantzone"] and not n["is_base_town"]]
-    # print(f"There are {len(nonworkerman_plantzones)} non-plantzone/non-base-twon nodes with cost: {sum(nonworkerman_plantzones)}")

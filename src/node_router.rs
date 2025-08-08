@@ -1,9 +1,8 @@
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
-use wasm_bindgen::prelude::*;
-
 use std::collections::{BTreeMap, HashMap};
+use std::ops::CoroutineState;
 
 use nohash_hasher::{IntMap, IntSet};
 use petgraph::algo::tarjan_scc;
@@ -37,7 +36,6 @@ pub struct ExplorationNodeData {
 /// Solves Node-Weighted Steiner Forest using primal-dual and bridge heuristics.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "python", pyclass(unsendable))]
-#[wasm_bindgen]
 pub struct NodeRouter {
     // Used in the _combinations_with_weight_range_generator to limit combo generation.
     max_node_weight: usize,
@@ -71,17 +69,6 @@ pub struct NodeRouter {
     bridge_affected_base_towns: IntSet<usize>,
     bridge_affected_indices: IntSet<usize>,
     bridge_affected_terminals: RapidHashSet<(usize, usize)>,
-}
-
-#[wasm_bindgen]
-impl NodeRouter {
-    // Should be made to mimic the py_new and py_solver_for_terminal_pairs
-    #[wasm_bindgen(constructor)]
-    pub fn wasm_new(exploration_json: &str) -> NodeRouter {
-        let exploration_data: ExplorationGraphData =
-            serde_json::from_str(exploration_json).unwrap();
-        Self::new(&exploration_data)
-    }
 }
 
 #[cfg(feature = "python")]
@@ -202,138 +189,6 @@ impl NodeRouter {
         }
     }
 
-    // /// Solve for a list of terminal pairs [(terminal, root), ...]
-    // /// where root is an exploration data waypoint with attribute `is_base_town`
-    // /// or `99999` to indicate a super-terminal that can connect to any base town.
-    // pub fn solve_for_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) -> Vec<usize> {
-    //     for node in self.idtree.active_nodes() {
-    //         self.idtree.isolate_node(node);
-    //     }
-    //     self.idtree_active_indices.clear();
-    //     self.terminal_to_root.clear();
-    //     self.untouchables.clear();
-    //     self.connected_pairs.clear();
-    //     self.bridge_affected_base_towns.clear();
-    //     self.bridge_affected_indices.clear();
-    //     self.bridge_affected_terminals.clear();
-
-    //     // Set terminal_to_root and untouchable for both directional passes...
-    //     if DO_DBG {
-    //         println!("solve for terminal pairs: {:?}", terminal_pairs);
-    //     }
-    //     let tmp_indices: Vec<_> = terminal_pairs
-    //         .iter()
-    //         .map(|(t, r)| {
-    //             let t_idx = self.waypoint_to_index.get(&t).unwrap();
-    //             let r_idx = if r == &SUPER_ROOT {
-    //                 SUPER_ROOT
-    //             } else {
-    //                 *self.waypoint_to_index.get(&r).unwrap()
-    //             };
-    //             (t_idx, r_idx)
-    //         })
-    //         .collect();
-    //     if DO_DBG {
-    //         println!("at indices: {:?}", tmp_indices);
-    //     }
-
-    //     for (t, r) in terminal_pairs {
-    //         let t_idx = *self.waypoint_to_index.get(&t).unwrap();
-    //         let r_idx = if r == SUPER_ROOT {
-    //             SUPER_ROOT
-    //         } else {
-    //             *self.waypoint_to_index.get(&r).unwrap()
-    //         };
-    //         self.terminal_to_root.insert(t_idx, r_idx);
-    //     }
-
-    //     if DO_DBG {
-    //         println!("Generating untouchables...");
-    //     }
-    //     self.generate_untouchables();
-    //     if DO_DBG {
-    //         println!("  untouchables len {}", self.untouchables.len());
-    //     }
-
-    //     // Obtain a single approximation for use in both directional bridge passes...
-    //     if DO_DBG {
-    //         println!("Running PD Approximation...");
-    //     }
-    //     let ordered_removables = self.approximate();
-
-    //     // Store needed states for second pass.
-    //     let approximation_idtree = self.idtree.clone();
-    //     let approximation_active_indices = self.idtree_active_indices.clone();
-    //     let approximation_affected_base_towns = self.bridge_affected_base_towns.clone();
-    //     let approximation_affected_indices = self.bridge_affected_indices.clone();
-    //     let approximation_affected_terminals = self.bridge_affected_terminals.clone();
-    //     let approximation_ordered_removables = ordered_removables.clone();
-
-    //     if DO_DBG {
-    //         println!("Running Bridge Heuristic...\n forward pass...");
-    //     }
-    //     self.bridge_heuristics(&mut ordered_removables.clone());
-    //     let forward_weight: usize = self
-    //         .idtree
-    //         .active_nodes()
-    //         .iter()
-    //         .map(|&i| self.index_to_weight[&i])
-    //         .sum();
-    //     let forward_result = self.idtree_active_indices.clone();
-    //     if DO_DBG {
-    //         println!(
-    //             "Forward pass completed... terminals_connected: {:?} weight: {}",
-    //             self.terminal_pairs_connected(),
-    //             forward_weight
-    //         );
-    //     }
-
-    //     // No need to redo the approximation...
-    //     // Restore post-approximation state...
-    //     self.combo_gen_direction = false;
-    //     self.idtree = approximation_idtree;
-    //     self.idtree_active_indices = approximation_active_indices;
-    //     self.bridge_affected_base_towns = approximation_affected_base_towns;
-    //     self.bridge_affected_indices = approximation_affected_indices;
-    //     self.bridge_affected_terminals = approximation_affected_terminals;
-    //     let ordered_removables = approximation_ordered_removables;
-    //     self.bridge_heuristics(&mut ordered_removables.clone());
-
-    //     if DO_DBG {
-    //         println!(
-    //             "Validating connectivity: {:?}",
-    //             self.terminal_pairs_connected()
-    //         );
-    //     }
-    //     let reverse_weight: usize = self
-    //         .idtree
-    //         .active_nodes()
-    //         .iter()
-    //         .map(|&i| self.index_to_weight[&i])
-    //         .sum();
-    //     let reverse_result = self.idtree_active_indices.clone();
-    //     if DO_DBG {
-    //         println!(
-    //             "Reverse pass completed... terminals_connected: {:?} weight: {}",
-    //             self.terminal_pairs_connected(),
-    //             reverse_weight
-    //         );
-    //     }
-
-    //     // Convert all remaining active indices in idtree to waypoints and return
-    //     if DO_DBG {
-    //         println!("Translating results...");
-    //     }
-    //     let winner = if forward_weight < reverse_weight {
-    //         forward_result
-    //     } else {
-    //         reverse_result
-    //     };
-    //     if DO_DBG {
-    //         println!("Final connectivity: {:?}", self.terminal_pairs_connected());
-    //     }
-    //     winner.iter().map(|&i| self.index_to_waypoint[&i]).collect()
-    // }
     /// Solve for a list of terminal pairs [(terminal, root), ...]
     /// where root is an exploration data waypoint with attribute `is_base_town`
     /// or `99999` to indicate a super-terminal that can connect to any base town.
@@ -916,58 +771,66 @@ impl NodeRouter {
 
             let bridge_generator =
                 BridgeGenerator::new(self.ref_graph.clone(), self.index_to_neighbors.clone());
-            let mut bridge_gen = bridge_generator.bridge_generator(incumbent_indices.clone());
-            while let Some(bridge) = bridge_gen.next() {
-                let reisolate_bridge_nodes: Vec<usize> = bridge
-                    .iter()
-                    .filter(|&&v| !incumbent_indices.contains(&v))
-                    .copied()
-                    .collect();
+            let mut bridge_gen = bridge_generator.generate_bridges(incumbent_indices.clone());
+            loop {
+                match bridge_gen.as_mut().resume(()) {
+                    CoroutineState::Yielded(bridge) => {
+                        let reisolate_bridge_nodes: Vec<usize> = bridge
+                            .iter()
+                            .filter(|&&v| !incumbent_indices.contains(&v))
+                            .copied()
+                            .collect();
 
-                self.connect_bridge(&bridge);
+                        self.connect_bridge(&bridge);
 
-                let Some(bridge_rooted_cycles) = self.bridge_rooted_cycles(&bridge) else {
-                    self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                    self.idtree_active_indices = incumbent_indices.clone();
-                    continue;
-                };
+                        let Some(bridge_rooted_cycles) = self.bridge_rooted_cycles(&bridge) else {
+                            self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                            self.idtree_active_indices = incumbent_indices.clone();
+                            continue;
+                        };
 
-                if self.was_seen_before(&bridge, &bridge_rooted_cycles, &mut seen_before_cache) {
-                    // println!("  skipping as seen before...");
-                    self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                    self.idtree_active_indices = incumbent_indices.clone();
-                    continue;
+                        if self.was_seen_before(
+                            &bridge,
+                            &bridge_rooted_cycles,
+                            &mut seen_before_cache,
+                        ) {
+                            // println!("  skipping as seen before...");
+                            self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                            self.idtree_active_indices = incumbent_indices.clone();
+                            continue;
+                        }
+
+                        let Some(removal_candidates) =
+                            self.removal_candidates(&bridge, &bridge_rooted_cycles)
+                        else {
+                            self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                            self.idtree_active_indices = incumbent_indices.clone();
+                            continue;
+                        };
+
+                        let (is_improved, _removal_attempts, freed) = self.improve_component(
+                            &bridge,
+                            &removal_candidates,
+                            ordered_removables,
+                        );
+
+                        if is_improved {
+                            incumbent_indices = self.idtree._active_nodes();
+                            self.idtree_active_indices = incumbent_indices.clone();
+                            improved = true;
+
+                            ordered_removables.retain(|v| !freed.contains(v));
+                            let tmp: Vec<usize> = bridge.iter().copied().collect();
+                            ordered_removables.extend(self.sort_by_weights(tmp.as_slice(), None));
+                            // Break to restart with new incumbent_indices
+                            break;
+                        }
+
+                        self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                        self.idtree_active_indices = incumbent_indices.clone();
+                    }
+                    CoroutineState::Complete(_) => break,
                 }
-
-                let Some(removal_candidates) =
-                    self.removal_candidates(&bridge, &bridge_rooted_cycles)
-                else {
-                    self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                    self.idtree_active_indices = incumbent_indices.clone();
-                    continue;
-                };
-
-                let (is_improved, _removal_attempts, freed) =
-                    self.improve_component(&bridge, &removal_candidates, ordered_removables);
-
-                if is_improved {
-                    incumbent_indices = self.idtree._active_nodes();
-                    self.idtree_active_indices = incumbent_indices.clone();
-                    // bridge_gen = bridge_generator.bridge_generator(incumbent_indices.clone());
-                    improved = true;
-
-                    ordered_removables.retain(|v| !freed.contains(v));
-                    let tmp: Vec<usize> = bridge.iter().copied().collect();
-                    ordered_removables.extend(self.sort_by_weights(tmp.as_slice(), None));
-                    break;
-                }
-
-                self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                self.idtree_active_indices = incumbent_indices.clone();
-            }
-
-            if !improved {
-                break;
             }
         }
     }
@@ -1134,8 +997,9 @@ impl NodeRouter {
             self.combo_gen_direction,
         );
 
-        let mut gen = removal_set_generator.generate();
-        while let Some(removal_set) = gen.resume() {
+        let mut rs_gen = removal_set_generator.generate();
+        while let Some(removal_set) = rs_gen.next() {
+            // while let Some(removal_set) = gen.resume() {
             removal_attempts += 1;
             if removal_attempts > max_removal_attempts {
                 break;

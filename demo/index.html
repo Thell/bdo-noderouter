@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Wasm NodeRouter Demo</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <h1>NodeRouter WASM Demo</h1>
+
+    <label>Load exploration.json:</label>
+    <input type="file" id="fileInput" accept=".json" />
+
+    <label>Terminal pairs (comma-separated, e.g., 1,2 3,4):</label>
+    <textarea id="terminalPairs" rows="4" cols="40"></textarea>
+
+    <button id="solveBtn">Solve</button>
+
+    <h3>Output</h3>
+    <pre id="output"></pre>
+
+    <script type="module" src="index.js"></script>
+</body>
+
+</html>
