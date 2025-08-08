@@ -11,6 +11,7 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+
 dependencies = [
     "bidict>=0.23.1",
     "deepdiff>=8.5.0",
@@ -26,34 +27,15 @@ dependencies = [
     "types-networkx>=3.5.0.20250728",
     "vulture>=2.14",
 ]
+
 [project.optional-dependencies]
 tests = ["pytest"]
+
 [tool.maturin]
 python-source = "python"
-features = ["pyo3/extension-module"]
-
-
-# [project]
-# name = "bdo_node_router"
-# version = "0.1.0"
-# description = "Add your description here"
-# readme = "README.md"
-# requires-python = ">=3.12"
-# dependencies = [
-#     "bidict>=0.23.1",
-#     "deepdiff>=8.5.0",
-#     "folium>=0.20.0",
-#     "highspy==1.11.0",
-#     "loguru>=0.7.3",
-#     "maturin>=1.9.2",
-#     "natsort>=8.4.0",
-#     "networkx>=3.5",
-#     "pyoptinterface[highs]>=0.4.1",
-#     "rustworkx>=0.16.0",
-#     "tabulate>=0.9.0",
-#     "types-networkx>=3.5.0.20250728",
-#     "vulture>=2.14",
-# ]
+features = ["pyo3/extension-module", "python"]
+bindings = "pyo3"
+profile = "release"
 
 # [dependency-groups]
 # dev = []
@@ -64,13 +46,3 @@ features = ["pyo3/extension-module"]
 #     { file = "nwsf_rust/Cargo.toml" },
 #     { file = "nwsf_rust/src/lib.rs" },
 # ]
-
-# [build-system]
-# requires = ["maturin>=1.8"]
-# build-backend = "maturin"
-
-# [tool.maturin]
-# bindings = "pyo3"
-# manifest-path = "nwsf_rust/Cargo.toml"
-# name = "nwsf_rust"
-# # profile = "release"

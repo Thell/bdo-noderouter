@@ -13,7 +13,7 @@ scaling_tests = true
 [logger]
 # My common format string.
 # Basic output no timestamp, no filename
-level = "INFO"
+level = "SUCCESS"
 format = "<level>{message}</level>"
 
 # The loguru default format string.
