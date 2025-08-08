@@ -36,13 +36,3 @@ python-source = "python"
 features = ["pyo3/extension-module", "python"]
 bindings = "pyo3"
 profile = "release"
-
-# [dependency-groups]
-# dev = []
-
-# [tool.uv]
-# cache-keys = [
-#     { file = "pyproject.toml" },
-#     { file = "nwsf_rust/Cargo.toml" },
-#     { file = "nwsf_rust/src/lib.rs" },
-# ]
