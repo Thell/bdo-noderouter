@@ -1,5 +1,7 @@
 [package]
 name = "nwsf_rust"
+description = "Primal Dual Approximations for Node Weighted Steiner Forest"
+license = "UNLICENSE"
 version = "0.1.0"
 edition = "2021"
 

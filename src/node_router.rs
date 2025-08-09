@@ -12,10 +12,10 @@ use rapidhash::fast::RapidHashSet;
 use rapidhash::v3::rapidhash_v3;
 use serde::Deserialize;
 
-use crate::bridge_generator::BridgeGenerator;
+use crate::generator_bridge::BridgeGenerator;
+use crate::generator_weighted_combo::WeightedRangeComboGenerator;
 use crate::helpers_common::sort_pair;
 use crate::idtree::IDTree;
-use crate::weighted_combo_generator::WeightedRangeComboGenerator;
 
 const SUPER_ROOT: usize = 99_999;
 const DO_DBG: bool = false;
@@ -127,11 +127,11 @@ impl NodeRouter {
             println!("Populating neighbor cache...");
         }
         for (waypoint_key, node_data) in exploration_data.iter() {
-            let waypoint_idx = waypoint_to_index.get(&waypoint_key).unwrap();
+            let waypoint_idx = waypoint_to_index.get(waypoint_key).unwrap();
             index_to_neighbors.insert(*waypoint_idx, IntSet::default());
             for &neighbor in &node_data.link_list {
                 index_to_neighbors
-                    .get_mut(&waypoint_idx)
+                    .get_mut(waypoint_idx)
                     .unwrap()
                     .insert(*waypoint_to_index.get(&neighbor).unwrap());
             }
@@ -210,11 +210,11 @@ impl NodeRouter {
         let tmp_indices: Vec<_> = terminal_pairs
             .iter()
             .map(|(t, r)| {
-                let t_idx = self.waypoint_to_index.get(&t).unwrap();
+                let t_idx = self.waypoint_to_index.get(t).unwrap();
                 let r_idx = if r == &SUPER_ROOT {
                     SUPER_ROOT
                 } else {
-                    *self.waypoint_to_index.get(&r).unwrap()
+                    *self.waypoint_to_index.get(r).unwrap()
                 };
                 (t_idx, r_idx)
             })
@@ -273,10 +273,12 @@ impl NodeRouter {
         self.connected_pairs.clear();
         // self.ordered_removables.clear();
         let ordered_removables = self.approximate();
-        println!(
-            "Approximation connectivity: {:?}",
-            self.terminal_pairs_connected()
-        );
+        if DO_DBG {
+            println!(
+                "Approximation connectivity: {:?}",
+                self.terminal_pairs_connected()
+            );
+        }
         self.bridge_heuristics(&mut ordered_removables.clone());
         let reverse_weight: usize = self
             .idtree
@@ -302,8 +304,9 @@ impl NodeRouter {
         } else {
             reverse_result
         };
-        println!("Final connectivity: {:?}", self.terminal_pairs_connected());
-
+        if DO_DBG {
+            println!("Final connectivity: {:?}", self.terminal_pairs_connected());
+        }
         self.terminal_to_root.clear();
         self.connected_pairs.clear();
         self.bridge_affected_base_towns.clear();
@@ -338,9 +341,7 @@ impl NodeRouter {
         }
     }
 
-    /////
-    /// MARK: PD Approximation
-    /////
+    // MARK: PD Approximation
 
     /// Solves the routing problem and returns a list of active nodes in solution
     fn approximate(&mut self) -> Vec<usize> {
@@ -598,7 +599,7 @@ impl NodeRouter {
             frontier.retain(|v| {
                 self.index_to_neighbors
                     .get(v)
-                    .map_or(false, |nbrs| nbrs.len() >= min_degree)
+                    .is_some_and(|nbrs| nbrs.len() >= min_degree)
             });
         }
         if DO_DBG {
@@ -675,7 +676,7 @@ impl NodeRouter {
         self.bridge_affected_terminals = self
             .terminal_to_root
             .iter()
-            .filter(|p| self.bridge_affected_indices.contains(&p.0))
+            .filter(|p| self.bridge_affected_indices.contains(p.0))
             .map(|p| (*p.0, *p.1))
             .collect();
         self.bridge_affected_base_towns = self
@@ -754,13 +755,11 @@ impl NodeRouter {
         }
     }
 
-    /////
-    /// MARK: Bridge Heuristic
-    /////
+    // MARK: Bridge Heuristic
 
     /// Bridge heuristic: find and utilize potential bridges to _increase_
-    /// cycle counts and then identify removable articulation points that can
-    /// improve the solution.
+    /// cycle counts and then identify removable non-articulation points
+    /// that can improve the solution.
     fn bridge_heuristics(&mut self, ordered_removables: &mut Vec<usize>) {
         let mut incumbent_indices: IntSet<usize> = self.idtree_active_indices.clone();
         let mut seen_before_cache: IntSet<u64> = IntSet::default();
@@ -772,65 +771,52 @@ impl NodeRouter {
             let bridge_generator =
                 BridgeGenerator::new(self.ref_graph.clone(), self.index_to_neighbors.clone());
             let mut bridge_gen = bridge_generator.generate_bridges(incumbent_indices.clone());
-            loop {
-                match bridge_gen.as_mut().resume(()) {
-                    CoroutineState::Yielded(bridge) => {
-                        let reisolate_bridge_nodes: Vec<usize> = bridge
-                            .iter()
-                            .filter(|&&v| !incumbent_indices.contains(&v))
-                            .copied()
-                            .collect();
 
-                        self.connect_bridge(&bridge);
+            while let CoroutineState::Yielded(bridge) = bridge_gen.as_mut().resume(()) {
+                let reisolate_bridge_nodes: Vec<usize> = bridge
+                    .iter()
+                    .filter(|&&v| !incumbent_indices.contains(&v))
+                    .copied()
+                    .collect();
 
-                        let Some(bridge_rooted_cycles) = self.bridge_rooted_cycles(&bridge) else {
-                            self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                            self.idtree_active_indices = incumbent_indices.clone();
-                            continue;
-                        };
+                self.connect_bridge(&bridge);
 
-                        if self.was_seen_before(
-                            &bridge,
-                            &bridge_rooted_cycles,
-                            &mut seen_before_cache,
-                        ) {
-                            // println!("  skipping as seen before...");
-                            self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                            self.idtree_active_indices = incumbent_indices.clone();
-                            continue;
-                        }
+                let Some(bridge_rooted_cycles) = self.bridge_rooted_cycles(&bridge) else {
+                    self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                    self.idtree_active_indices = incumbent_indices.clone();
+                    continue;
+                };
 
-                        let Some(removal_candidates) =
-                            self.removal_candidates(&bridge, &bridge_rooted_cycles)
-                        else {
-                            self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                            self.idtree_active_indices = incumbent_indices.clone();
-                            continue;
-                        };
-
-                        let (is_improved, _removal_attempts, freed) = self.improve_component(
-                            &bridge,
-                            &removal_candidates,
-                            ordered_removables,
-                        );
-
-                        if is_improved {
-                            incumbent_indices = self.idtree._active_nodes();
-                            self.idtree_active_indices = incumbent_indices.clone();
-                            improved = true;
-
-                            ordered_removables.retain(|v| !freed.contains(v));
-                            let tmp: Vec<usize> = bridge.iter().copied().collect();
-                            ordered_removables.extend(self.sort_by_weights(tmp.as_slice(), None));
-                            // Break to restart with new incumbent_indices
-                            break;
-                        }
-
-                        self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                        self.idtree_active_indices = incumbent_indices.clone();
-                    }
-                    CoroutineState::Complete(_) => break,
+                if self.was_seen_before(&bridge, &bridge_rooted_cycles, &mut seen_before_cache) {
+                    self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                    self.idtree_active_indices = incumbent_indices.clone();
+                    continue;
                 }
+
+                let Some(removal_candidates) =
+                    self.removal_candidates(&bridge, &bridge_rooted_cycles)
+                else {
+                    self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                    self.idtree_active_indices = incumbent_indices.clone();
+                    continue;
+                };
+
+                let (is_improved, _removal_attempts, freed) =
+                    self.improve_component(&bridge, &removal_candidates, ordered_removables);
+
+                if is_improved {
+                    incumbent_indices = self.idtree._active_nodes();
+                    self.idtree_active_indices = incumbent_indices.clone();
+                    improved = true;
+
+                    ordered_removables.retain(|v| !freed.contains(v));
+                    let tmp: Vec<usize> = bridge.iter().copied().collect();
+                    ordered_removables.extend(self.sort_by_weights(tmp.as_slice(), None));
+                    break;
+                }
+
+                self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                self.idtree_active_indices = incumbent_indices.clone();
             }
         }
     }
@@ -959,7 +945,7 @@ impl NodeRouter {
         &mut self,
         bridge: &IntSet<usize>,
         removal_candidates: &[(usize, usize)],
-        ordered_removables: &Vec<usize>,
+        ordered_removables: &[usize],
     ) -> (bool, usize, IntSet<usize>) {
         if DO_DBG {
             let bridge_waypoints = bridge
@@ -975,7 +961,7 @@ impl NodeRouter {
                 bridge, bridge_waypoints, removal_candidates, removal_set_waypoints
             );
         }
-        let mut ordered_removables = ordered_removables.clone();
+        let mut ordered_removables = ordered_removables.to_owned();
         let mut removal_attempts = 0;
         let max_removal_attempts = self.max_removal_attempts;
         let bridged_component = self.idtree_active_indices.clone();
@@ -997,9 +983,7 @@ impl NodeRouter {
             self.combo_gen_direction,
         );
 
-        let mut rs_gen = removal_set_generator.generate();
-        while let Some(removal_set) = rs_gen.next() {
-            // while let Some(removal_set) = gen.resume() {
+        for removal_set in removal_set_generator.generate() {
             removal_attempts += 1;
             if removal_attempts > max_removal_attempts {
                 break;

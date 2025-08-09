@@ -41,7 +41,7 @@ impl BridgeGenerator {
             frontier.retain(|v| {
                 self.index_to_neighbors
                     .get(v)
-                    .map_or(false, |nbrs| nbrs.len() >= min_degree)
+                    .is_some_and(|nbrs| nbrs.len() >= min_degree)
             });
         }
         frontier
@@ -72,7 +72,7 @@ impl BridgeGenerator {
                             .index_to_neighbors
                             .get(&node)
                             .unwrap()
-                            .intersection(&inner_ring)
+                            .intersection(inner_ring)
                             .copied()
                             .collect();
 
@@ -87,7 +87,7 @@ impl BridgeGenerator {
                             .index_to_neighbors
                             .get(&first)
                             .unwrap()
-                            .intersection(&inner_ring)
+                            .intersection(inner_ring)
                             .copied()
                             .collect();
 
@@ -132,8 +132,7 @@ impl BridgeGenerator {
                         let u = node_indices[i];
                         let u_identifier = NodeIndex::new(u);
 
-                        for j in (i + 1)..node_indices.len() {
-                            let v = node_indices[j];
+                        for &v in node_indices.iter().skip(i + 1) {
                             let v_identifier = NodeIndex::new(v);
 
                             let key = sort_pair(u, v);
@@ -145,7 +144,7 @@ impl BridgeGenerator {
                             let u_neighbors = self.index_to_neighbors.get(&u).unwrap();
                             let v_neighbors = self.index_to_neighbors.get(&v).unwrap();
                             if u_neighbors
-                                .intersection(&v_neighbors)
+                                .intersection(v_neighbors)
                                 .any(|n| inner_ring.contains(n))
                             {
                                 continue;
@@ -173,7 +172,7 @@ impl BridgeGenerator {
                         }
                     }
                 }
-                return IntSet::default();
+                IntSet::default()
             },
         )
     }
@@ -217,8 +216,7 @@ impl BridgeGenerator {
 
             for i in 0..(candidates.len() - 1) {
                 let u = candidates[i];
-                for j in (i + 1)..candidates.len() {
-                    let v = candidates[j];
+                for &v in candidates.iter().skip(i + 1) {
                     let candidate_pair = sort_pair(u, v);
                     if !seen_candidate_pairs.insert(candidate_pair) {
                         continue;

@@ -1,10 +1,10 @@
 #![feature(coroutines, coroutine_trait)]
 
-mod bridge_generator;
+mod generator_bridge;
+mod generator_weighted_combo;
 mod helpers_common;
 mod idtree;
 mod node_router;
-mod weighted_combo_generator;
 
 // Core exports, available for all builds
 pub use crate::idtree::IDTree;

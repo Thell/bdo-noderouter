@@ -1,3 +1,5 @@
+type StackState = (usize, Vec<(usize, usize)>, usize);
+
 pub struct WeightedRangeComboGenerator {
     items: Vec<(usize, usize)>, // (index, weight) pairs
     bridge_cost: usize,
@@ -46,7 +48,7 @@ pub struct WeightedComboIterator {
 struct BacktrackState {
     target_weight: usize,
     max_target_weight: usize,
-    stack: Vec<(usize, Vec<(usize, usize)>, usize)>, // (index, combination, current_weight)
+    stack: Vec<StackState>, // (index, combination, current_weight)
     done: bool,
 }
 

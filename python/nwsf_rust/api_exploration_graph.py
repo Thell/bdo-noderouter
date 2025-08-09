@@ -2,6 +2,7 @@
 
 import rustworkx as rx
 from bidict import bidict
+from loguru import logger
 
 from api_common import get_clean_exploration_data
 
@@ -14,9 +15,9 @@ def exploration_graph_nw(data: dict, directed: bool = False) -> rx.PyGraph | rx.
     Indices and keys of the node key map are integer values.
     """
     if directed:
-        print("Generating node weighted directed graph...")
+        logger.debug("Generating node weighted directed graph...")
     else:
-        print("Generating node weighted undirected graph...")
+        logger.debug("Generating node weighted undirected graph...")
 
     graph = rx.PyGraph(multigraph=False)
 
@@ -37,7 +38,7 @@ def exploration_graph_nw(data: dict, directed: bool = False) -> rx.PyGraph | rx.
         graph = graph.to_directed()
     graph.attrs = {"node_key_by_index": node_key_by_index}
 
-    print(f"  generated graph with {len(graph.nodes())} nodes and {len(graph.edges())} edges.")
+    logger.debug(f"  generated graph with {len(graph.nodes())} nodes and {len(graph.edges())} edges.")
     return graph
 
 
@@ -56,7 +57,7 @@ def exploration_graph_ew_directed(data) -> rx.PyGraph | rx.PyDiGraph:
     Indices of the node key map are integer values and keys are strings consisting of the
     original node's waypoint_key attribute with a suffix of '_in' or '_out'.
     """
-    print("Generating edge weighted directed graph...")
+    logger.debug("Generating edge weighted directed graph...")
 
     graph = rx.PyDiGraph(multigraph=False)
     node_key_by_index: bidict[int, str] = bidict({})

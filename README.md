@@ -47,3 +47,18 @@ For the full Rust implementation,
 
 Node: To see the terminal pairs and solution waypoints edit the
 `pd_approximation.toml` logger level to 'INFO'.
+
+----------------------
+
+This project uses:
+
+- Node Weighted Primal Dual Approximation as given in xxx by xxx.
+- IDTree data structure as presented in xxx by xxx.
+
+Pulsing-Bridge Spanners (PBS), an augmentation/pruning heuristic for
+node-weighted Steiner forests. It temporarily inserts targeted multi-node
+“spanning bridges” between nodes in the graph to induce beneficial cycles,
+then selectively prunes articulation points to reduce cost without
+breaking connectivity.
+
+----------------------
