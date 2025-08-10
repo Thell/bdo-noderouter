@@ -8,6 +8,25 @@ use rapidhash::fast::RapidHashSet;
 use std::ops::Coroutine;
 use std::pin::Pin;
 
+// ref_graph => full reference graph of all nodes and edges.
+// Contains potentially topologically constrained expansion of Settlement
+// Settlement potentially contains disjoint connected components
+//
+// S => Settlement (induced subgraph of currently 'active' nodes of ref_graph)
+// B => Border (nodes in Settlement with ref_graph neighbors in Frontier)
+// F => Frontier (non-settled nodes with ref_graph neighbors in Settlement)
+// W => Wild Frontier (non-settled nodes with no settled ref_graph neighbors)
+//
+// 𝓕 => Fringe edges (edges in ref_graph connecting border and frontier nodes)
+// 𝓑 => bridging span of nodes not in S that connect distinct nodes in S.
+//
+// Let ring 0 => B (in most cases B == S since S is most commonly a Steiner Forest/Tree)
+// Let ring 1 => F0 be an eccentric ring around {B}
+// Let ring 2 => F1 be an eccentric ring around {F0|B}
+// Let ring 3 => F2 be an eccentric ring around {F1|F0|B}
+// ...
+
+/// Finds bridging spans of settlement border nodes within frontier and wild frontier.
 pub struct BridgeGenerator {
     ref_graph: StableUnGraph<usize, usize>,
     index_to_neighbors: IntMap<usize, IntSet<usize>>,
@@ -24,6 +43,7 @@ impl BridgeGenerator {
         }
     }
 
+    /// Finds and returns nodes not in settlement with neighbors in settlement.
     fn find_frontier_nodes(
         &self,
         settlement: &IntSet<usize>,
@@ -52,6 +72,8 @@ impl BridgeGenerator {
         let ring_combo_cutoff = [0, 3, 2, 2];
         let mut seen_candidate_pairs = RapidHashSet::default();
         let mut yielded_hashes: IntSet<u64> = IntSet::default();
+
+        // Populate ring0 (Settlement border)
         let mut rings: Vec<IntSet<usize>> = vec![settlement.clone()];
         let mut seen_nodes = settlement.clone();
 
@@ -65,7 +87,8 @@ impl BridgeGenerator {
                     let ring_idx = rings.len();
                     rings.push(nodes.clone());
 
-                    // Phase 1: Single-node bridges
+                    // Phase 1:
+                    // Yield single node bridges from outermost ring connecting with >=2 neighbors in inner ring.
                     let inner_ring = &rings[ring_idx - 1];
                     for node in nodes.clone() {
                         let neighbors: IntSet<usize> = self
@@ -111,7 +134,18 @@ impl BridgeGenerator {
                         }
                     }
 
-                    // Phase 2: Multi-node bridges
+                    // Phase 2:
+                    // Yield multi-node bridges from outermost ring.
+
+                    // NOTE: Each ring is only a single node 'thick' and in the python implementation
+                    // the `rustworkx.all_pairs_all_simple_paths` is efficient at obtaining all size
+                    // constrained connected runs within the ring along with the endpoint nodes.
+                    // This Rust implementation utilizes petgraph's A* algorithm on a per pair
+                    // basis for because with the simple heuristic of node cost 1 and edge cost 0
+                    // A* behaves like Dijkstra but will return the path len and ordered path while
+                    // the path would need to be built by processing the Dijkstra returned values.
+                    // We get away with the node cost of 1 because of the single node 'thick'
+                    // ring, so we are simply counting hops to control the length of connected runs.
                     let subgraph = self.ref_graph.filter_map(
                         |node_idx, _| {
                             if nodes.contains(&node_idx.index()) {
@@ -177,6 +211,7 @@ impl BridgeGenerator {
         )
     }
 
+    /// Descend from current ring to settlement frontier (F0), yielding bridges connecting ≥2 S nodes.
     fn descend_to_yield_bridges(
         &self,
         ring_idx: usize,
@@ -187,6 +222,8 @@ impl BridgeGenerator {
         seen_candidate_pairs: &mut RapidHashSet<(usize, usize)>,
     ) -> impl Iterator<Item = IntSet<usize>> {
         let mut output = Vec::new();
+
+        // Base case (Settlement Frontier): yield and return
         if ring_idx == 1 {
             let bridge_hash = hash_intset(&bridge);
             if !yielded.contains(&bridge_hash) {
@@ -202,7 +239,11 @@ impl BridgeGenerator {
                     output.push(bridge);
                 }
             }
+
+        // Descending case:
         } else {
+            // Collect and process pairwise combinations of current_nodes candidates...
+            // Candidates are current_nodes neighbors in ring_idx - 1
             let inner_ring = &rings[ring_idx - 1];
             let mut candidates: Vec<usize> = current_nodes
                 .iter()

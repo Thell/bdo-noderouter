@@ -1,5 +1,17 @@
 type StackState = (usize, Vec<(usize, usize)>, usize);
 
+/// Generates combinations whose total weight is in [bridge_cost, bridge_nodes * max_node_weight].
+///
+/// NOTE: Changing of removal candidate generation alters outcomes...
+/// - The difference is in the order of removal_set removals
+/// - Results are all within +/- 1 on cost and #cc
+/// - Example difference of +1 cost on workerman incident 265
+/// - Example difference of -1 cost with +1 cc on workerman incident 410
+///
+/// This is why two passes are made in reverse directions.
+/// Even if all removal_sets get processed it is not assured an optimal value
+/// will be obtained because the order of application can improve the solution but
+/// cause an optimal removal set to not be connected when applied.
 pub struct WeightedRangeComboGenerator {
     items: Vec<(usize, usize)>, // (index, weight) pairs
     bridge_cost: usize,
