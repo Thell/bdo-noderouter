@@ -3,7 +3,7 @@ requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "nwsf_rust"
+name = "noderouter"
 requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Rust",

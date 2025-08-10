@@ -1,9 +1,8 @@
-use crate::helpers_common::{hash_intset, sort_pair};
+use crate::helpers_common::hash_intset;
 use nohash_hasher::{IntMap, IntSet};
 use petgraph::algo::astar;
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableUnGraph;
-use petgraph::visit::IntoNodeIdentifiers;
 use rapidhash::fast::RapidHashSet;
 use std::ops::Coroutine;
 use std::pin::Pin;
@@ -69,7 +68,7 @@ impl BridgeGenerator {
 
         // Populate ring0 (Settlement border)
         let mut rings: Vec<IntSet<usize>> = vec![settlement.clone()];
-        let mut seen_nodes = settlement.clone();
+        let mut seen_nodes = settlement;
 
         Box::pin(
             #[coroutine]
@@ -84,44 +83,24 @@ impl BridgeGenerator {
                     // Phase 1:
                     // Yield single node bridges from outermost ring connecting with >=2 neighbors in inner ring.
                     let inner_ring = &rings[ring_idx - 1];
-                    for node in nodes.clone() {
-                        let neighbors: IntSet<usize> = self
-                            .index_to_neighbors
-                            .get(&node)
-                            .unwrap()
+                    for &node in &nodes {
+                        if self.index_to_neighbors[&node]
                             .intersection(inner_ring)
-                            .copied()
-                            .collect();
-
-                        if neighbors.len() < 2 {
+                            .nth(1)
+                            .is_none()
+                        {
                             continue;
                         }
-
-                        let neighbors_vec: Vec<_> = neighbors.iter().copied().collect();
-                        let first = neighbors_vec[0];
-                        let rest = &neighbors_vec[1..];
-                        let inner_ring_neighbors: IntSet<usize> = self.index_to_neighbors[&first]
-                            .intersection(inner_ring)
-                            .copied()
-                            .collect();
-
-                        if !rest.iter().any(|n| {
-                            inner_ring_neighbors
-                                .intersection(&self.index_to_neighbors[n])
-                                .next()
-                                .is_some()
-                        }) {
-                            let bridge = IntSet::from_iter([node]);
-                            for bridge in self.descend_to_yield_bridges(
-                                ring_idx,
-                                &bridge,
-                                bridge.clone(),
-                                &rings,
-                                &mut yielded_hashes,
-                                &mut seen_candidate_pairs,
-                            ) {
-                                yield bridge;
-                            }
+                        let bridge = IntSet::from_iter([node]);
+                        for bridge in self.descend_to_yield_bridges(
+                            ring_idx,
+                            &bridge,
+                            bridge.clone(),
+                            &rings,
+                            &mut yielded_hashes,
+                            &mut seen_candidate_pairs,
+                        ) {
+                            yield bridge;
                         }
                     }
 
@@ -147,25 +126,14 @@ impl BridgeGenerator {
                         },
                         |_, edge_idx| Some(*edge_idx),
                     );
-                    let mut node_identifiers: Vec<_> = subgraph.node_identifiers().collect();
-                    node_identifiers.sort_unstable();
-                    let node_indices: Vec<_> =
-                        node_identifiers.iter().map(|&v| v.index()).collect();
+                    let mut node_indices: Vec<_> = nodes.iter().copied().collect();
+                    node_indices.sort_unstable();
 
-                    let mut seen_endpoints = RapidHashSet::default();
                     for i in 0..(node_indices.len() - 1) {
                         let u = node_indices[i];
                         let u_identifier = NodeIndex::new(u);
 
                         for &v in node_indices.iter().skip(i + 1) {
-                            let v_identifier = NodeIndex::new(v);
-
-                            let key = sort_pair(u, v);
-                            if seen_endpoints.contains(&key) {
-                                continue;
-                            }
-                            seen_endpoints.insert(key);
-
                             let u_neighbors = &self.index_to_neighbors[&u];
                             let v_neighbors = &self.index_to_neighbors[&v];
                             if u_neighbors
@@ -175,9 +143,13 @@ impl BridgeGenerator {
                                 continue;
                             }
 
-                            if let Some((path_len, path)) =
-                                astar(&subgraph, u_identifier, |f| f == v_identifier, |_| 1, |_| 0)
-                            {
+                            if let Some((path_len, path)) = astar(
+                                &subgraph,
+                                u_identifier,
+                                |f| f == NodeIndex::new(v),
+                                |_| 1,
+                                |_| 0,
+                            ) {
                                 if path_len + 1 > ring_combo_cutoff[ring_idx] {
                                     continue;
                                 }
@@ -218,11 +190,12 @@ impl BridgeGenerator {
         if ring_idx == 1 {
             let bridge_hash = hash_intset(&bridge);
             if !yielded.contains(&bridge_hash) {
-                if 2 <= current_nodes
+                if current_nodes
                     .iter()
                     .flat_map(|&v| &self.index_to_neighbors[&v])
                     .filter(|n| rings[0].contains(n))
-                    .count()
+                    .nth(1)
+                    .is_some()
                 {
                     yielded.insert(bridge_hash);
                     output.push(bridge);
@@ -234,15 +207,14 @@ impl BridgeGenerator {
             // Collect and process pairwise combinations of current_nodes candidates...
             // Candidates are current_nodes neighbors in ring_idx - 1
             let inner_ring = &rings[ring_idx - 1];
-            let mut candidates: Vec<usize> = current_nodes
+            let mut candidates: Vec<_> = current_nodes
                 .iter()
                 .flat_map(|&n| &self.index_to_neighbors[&n])
                 .filter(|x| inner_ring.contains(x))
                 .copied()
-                .collect::<IntSet<_>>()
-                .into_iter()
                 .collect();
             candidates.sort_unstable();
+            candidates.dedup();
 
             for i in 0..(candidates.len() - 1) {
                 let u = candidates[i];

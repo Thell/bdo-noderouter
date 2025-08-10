@@ -6,6 +6,7 @@ but could easily be modified to handle larger planar graphs.
 To see the graph and nodes as well as view the routing in action visit Shrddr's
 fantastic [Workerman](https://shrddr.github.io/workerman/) empire planner.
 
+\* Scroll to the bottom of this file to see the testing results.
 
 # Usage notes:
 
@@ -154,11 +155,10 @@ of the Python project's data folder and took multiple days of processing to
 produce.
 
 ![Workerman Empire Results](_workerman_results.png)
-
 The next image is the timings of random terminal, root assignments representing
 a percentage of coverage of all available terminals
 
-![Random Coverage Results](_random_coverage_results.png)]
+![Random Coverage Results](_random_coverage_results.png)
 
 ## TODO
 

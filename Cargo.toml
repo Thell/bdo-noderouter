@@ -1,19 +1,19 @@
 [package]
-name = "nwsf_rust"
+name = "noderouter"
 description = "Primal Dual Approximations for Node Weighted Steiner Forest"
 license = "UNLICENSE"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "nwsf_rust"
+name = "noderouter"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 petgraph = "0.8.2"
 pyo3 = { version = "0.25.0", optional = true }
 nohash-hasher = "0.2.0"
-rapidhash = "3.0.0"
+rapidhash = "3.1.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.142"
 wasm-bindgen = { version = "0.2.100", optional = true }
