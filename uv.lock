@@ -77,18 +77,6 @@ wheels = [
 ]
 
 [[package]]
-name = "deepdiff"
-version = "8.5.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "orderly-set" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/0f/9cd2624f7dcd755cbf1fa21fb7234541f19a1be96a56f387ec9053ebe220/deepdiff-8.5.0.tar.gz", hash = "sha256:a4dd3529fa8d4cd5b9cbb6e3ea9c95997eaa919ba37dac3966c1b8f872dc1cd1", size = 538517, upload-time = "2025-05-09T18:44:10.035Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/3b/2e0797200c51531a6d8c97a8e4c9fa6fb56de7e6e2a15c1c067b6b10a0b0/deepdiff-8.5.0-py3-none-any.whl", hash = "sha256:d4599db637f36a1c285f5fdfc2cd8d38bde8d8be8636b65ab5e425b67c54df26", size = 85112, upload-time = "2025-05-09T18:44:07.784Z" },
-]
-
-[[package]]
 name = "folium"
 version = "0.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -102,18 +90,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c7/76/84a1b1b00ce71f9c0c44af7d80f310c02e2e583591fe7d4cb03baecd0d3f/folium-0.20.0.tar.gz", hash = "sha256:a0d78b9d5a36ba7589ca9aedbd433e84e9fcab79cd6ac213adbcff922e454cb9", size = 109932, upload-time = "2025-06-16T20:22:51.803Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b5/a8/5f764f333204db0390362a4356d03a43626997f26818a0e9396f1b3bd8c9/folium-0.20.0-py2.py3-none-any.whl", hash = "sha256:f0bc2a92acde20bca56367aa5c1c376c433f450608d058daebab2fc9bf8198bf", size = 113394, upload-time = "2025-06-16T20:22:50.318Z" },
-]
-
-[[package]]
-name = "highsbox"
-version = "1.11.0"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/f8/f6b566a5ad37f3d3ddeea3fdaa79c080e287224efc2d525d7121bff3c297/highsbox-1.11.0-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:c8d1e54514eda80d7edff4ec2f24165efbeb91374fd0601a3229857a28691a94", size = 7013021, upload-time = "2025-06-06T14:58:55.831Z" },
-    { url = "https://files.pythonhosted.org/packages/4a/da/7e537ca846d46b7c1fffb2baa6af03592a10fb7cab18d6eab91cc7ae3c14/highsbox-1.11.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:21f362d99a58aff4f5a341bbadd29e8b3cb3f955deb43787979631740c4436b2", size = 5974738, upload-time = "2025-06-06T14:58:59Z" },
-    { url = "https://files.pythonhosted.org/packages/17/d3/1c4e971167d8f12e26dd2ff414564e36af44e5a6e74bee4417529d6f90c2/highsbox-1.11.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:71ff0a3c6f1eb9ae68d90297b5e2d564df4f669a8dd6fa5b6d9ff4042a77d37c", size = 6086172, upload-time = "2025-06-06T14:59:01.014Z" },
-    { url = "https://files.pythonhosted.org/packages/da/ec/5bc9fa541ea993eb11ecc90769bb90a3459231ee9dfac9ee9d3c3ca47532/highsbox-1.11.0-py3-none-manylinux2014_x86_64.whl", hash = "sha256:87a5da95026ec5475e19917c9406b3ed92027a9ef433117bf3aaa6a18154c997", size = 6565199, upload-time = "2025-06-06T14:59:02.541Z" },
-    { url = "https://files.pythonhosted.org/packages/33/7c/740567780dfb8839502afb23f3a917346851eacf748f7e3ca64bf8528c32/highsbox-1.11.0-py3-none-win_amd64.whl", hash = "sha256:601b9d8e5ba402ab06f901ce3fe8fb1ed5cac3913565dcacc99d5c5d5f1c87c4", size = 2835989, upload-time = "2025-06-06T14:59:04.468Z" },
 ]
 
 [[package]]
@@ -249,24 +225,6 @@ wheels = [
 ]
 
 [[package]]
-name = "natsort"
-version = "8.4.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e2/a9/a0c57aee75f77794adaf35322f8b6404cbd0f89ad45c87197a937764b7d0/natsort-8.4.0.tar.gz", hash = "sha256:45312c4a0e5507593da193dedd04abb1469253b601ecaf63445ad80f0a1ea581", size = 76575, upload-time = "2023-06-20T04:17:19.925Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ef/82/7a9d0550484a62c6da82858ee9419f3dd1ccc9aa1c26a1e43da3ecd20b0d/natsort-8.4.0-py3-none-any.whl", hash = "sha256:4732914fb471f56b5cce04d7bae6f164a592c7712e1c85f9ef585e197299521c", size = 38268, upload-time = "2023-06-20T04:17:17.522Z" },
-]
-
-[[package]]
-name = "networkx"
-version = "3.5"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/6c/4f/ccdb8ad3a38e583f214547fd2f7ff1fc160c43a75af88e6aec213404b96a/networkx-3.5.tar.gz", hash = "sha256:d4c6f9cf81f52d69230866796b82afbccdec3db7ae4fbd1b65ea750feed50037", size = 2471065, upload-time = "2025-05-29T11:35:07.804Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/eb/8d/776adee7bbf76365fdd7f2552710282c79a4ead5d2a46408c9043a2b70ba/networkx-3.5-py3-none-any.whl", hash = "sha256:0030d386a9a06dee3565298b4a734b68589749a544acbb6c412dc9e2489ec6ec", size = 2034406, upload-time = "2025-05-29T11:35:04.961Z" },
-]
-
-[[package]]
 name = "numpy"
 version = "2.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -312,18 +270,11 @@ name = "nwsf-rust"
 source = { editable = "." }
 dependencies = [
     { name = "bidict" },
-    { name = "deepdiff" },
     { name = "folium" },
     { name = "highspy" },
     { name = "loguru" },
     { name = "maturin" },
-    { name = "natsort" },
-    { name = "networkx" },
-    { name = "pyoptinterface", extra = ["highs"] },
     { name = "rustworkx" },
-    { name = "tabulate" },
-    { name = "types-networkx" },
-    { name = "vulture" },
 ]
 
 [package.optional-dependencies]
@@ -334,30 +285,14 @@ tests = [
 [package.metadata]
 requires-dist = [
     { name = "bidict", specifier = ">=0.23.1" },
-    { name = "deepdiff", specifier = ">=8.5.0" },
     { name = "folium", specifier = ">=0.20.0" },
     { name = "highspy", specifier = "==1.11.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "maturin", specifier = ">=1.9.2" },
-    { name = "natsort", specifier = ">=8.4.0" },
-    { name = "networkx", specifier = ">=3.5" },
-    { name = "pyoptinterface", extras = ["highs"], specifier = ">=0.4.1" },
     { name = "pytest", marker = "extra == 'tests'" },
     { name = "rustworkx", specifier = ">=0.16.0" },
-    { name = "tabulate", specifier = ">=0.9.0" },
-    { name = "types-networkx", specifier = ">=3.5.0.20250728" },
-    { name = "vulture", specifier = ">=2.14" },
 ]
 provides-extras = ["tests"]
-
-[[package]]
-name = "orderly-set"
-version = "5.5.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4a/88/39c83c35d5e97cc203e9e77a4f93bf87ec89cf6a22ac4818fdcc65d66584/orderly_set-5.5.0.tar.gz", hash = "sha256:e87185c8e4d8afa64e7f8160ee2c542a475b738bc891dc3f58102e654125e6ce", size = 27414, upload-time = "2025-07-10T20:10:55.885Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/27/fb8d7338b4d551900fa3e580acbe7a0cf655d940e164cb5c00ec31961094/orderly_set-5.5.0-py3-none-any.whl", hash = "sha256:46f0b801948e98f427b412fcabb831677194c05c3b699b80de260374baa0b1e7", size = 13068, upload-time = "2025-07-10T20:10:54.377Z" },
-]
 
 [[package]]
 name = "packaging"
@@ -384,23 +319,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631, upload-time = "2025-06-21T13:39:12.283Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217, upload-time = "2025-06-21T13:39:07.939Z" },
-]
-
-[[package]]
-name = "pyoptinterface"
-version = "0.4.1"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/1b/2b6dc9ed09c2b13bb4cab3957fc3fec000ed9b62df3488e62325d1218148/pyoptinterface-0.4.1-cp312-abi3-macosx_10_14_x86_64.whl", hash = "sha256:3a4d37a3f8a0f5de42ab1ccb5d6e92532eab668e26b95342b2e21b2528c10497", size = 1720969, upload-time = "2025-03-19T07:06:27.818Z" },
-    { url = "https://files.pythonhosted.org/packages/43/ed/b2006489b5037ab5c2df102bc01aefb255fa8f4239101c1797068600b299/pyoptinterface-0.4.1-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:ec318141d8b1a4c3c0ca38046a5a16949af6c7fe0bebbc824a39e143fe62f534", size = 1511773, upload-time = "2025-03-19T07:06:29.12Z" },
-    { url = "https://files.pythonhosted.org/packages/26/71/b62a49b9dd75f1f27eab5a0c80723b8f43b29b2b6c92d79614875790f76f/pyoptinterface-0.4.1-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e9d942d88a4fbb6e87e9efc3557021ebd4bd4393287c0932680f5bdd537bb5db", size = 1999183, upload-time = "2025-03-19T07:06:30.934Z" },
-    { url = "https://files.pythonhosted.org/packages/7f/65/45b27f2804a1c9bf5573f76aa6c1c33cf9a8cfb5ed3872d985e8aabd7968/pyoptinterface-0.4.1-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:05bea75bceda1c1098bd4b4d8cef4b029cbb8beecab1b1fad6974c6f9674a63a", size = 2156160, upload-time = "2025-03-19T07:06:32.259Z" },
-    { url = "https://files.pythonhosted.org/packages/46/f9/ca51aa04857ff480ca400b1554eada77b26fbf55b50a687dc0507e74a4e4/pyoptinterface-0.4.1-cp312-abi3-win_amd64.whl", hash = "sha256:d2d11f6e15655699e40741cf717796f3b88b6992ac7eacd9a61964f03d3110ac", size = 1365332, upload-time = "2025-03-19T07:06:34.027Z" },
-]
-
-[package.optional-dependencies]
-highs = [
-    { name = "highsbox" },
 ]
 
 [[package]]
@@ -456,42 +374,12 @@ wheels = [
 ]
 
 [[package]]
-name = "tabulate"
-version = "0.9.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ec/fe/802052aecb21e3797b8f7902564ab6ea0d60ff8ca23952079064155d1ae1/tabulate-0.9.0.tar.gz", hash = "sha256:0095b12bf5966de529c0feb1fa08671671b3368eec77d7ef7ab114be2c068b3c", size = 81090, upload-time = "2022-10-06T17:21:48.54Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/44/4a5f08c96eb108af5cb50b41f76142f0afa346dfa99d5296fe7202a11854/tabulate-0.9.0-py3-none-any.whl", hash = "sha256:024ca478df22e9340661486f85298cff5f6dcdba14f3813e8830015b9ed1948f", size = 35252, upload-time = "2022-10-06T17:21:44.262Z" },
-]
-
-[[package]]
-name = "types-networkx"
-version = "3.5.0.20250728"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9a/00/6865f9ea18e861eecc19356daeebb621cc5128355af67ffc67115a9897c9/types_networkx-3.5.0.20250728.tar.gz", hash = "sha256:966425589a0f0f4b3cf015029e5144a03e5ff7f04a32c8f6ba3695922e646cdc", size = 65690, upload-time = "2025-07-28T03:29:21.013Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/a0/261be2c077ecbd7351b53fd33b1c7146aed01f2685e84702408af0e58687/types_networkx-3.5.0.20250728-py3-none-any.whl", hash = "sha256:292a6060352e9c8b155b2e9c96a2ef392ed0142a018a09f08cecbe15bcee8da0", size = 153173, upload-time = "2025-07-28T03:29:19.73Z" },
-]
-
-[[package]]
 name = "urllib3"
 version = "2.5.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/15/22/9ee70a2574a4f4599c47dd506532914ce044817c7752a79b6a51286319bc/urllib3-2.5.0.tar.gz", hash = "sha256:3fc47733c7e419d4bc3f6b3dc2b4f890bb743906a30d56ba4a5bfa4bbff92760", size = 393185, upload-time = "2025-06-18T14:07:41.644Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/c2/fe1e52489ae3122415c51f387e221dd0773709bad6c6cdaa599e8a2c5185/urllib3-2.5.0-py3-none-any.whl", hash = "sha256:e6b01673c0fa6a13e374b50871808eb3bf7046c4b125b216f6bf1cc604cff0dc", size = 129795, upload-time = "2025-06-18T14:07:40.39Z" },
-]
-
-[[package]]
-name = "vulture"
-version = "2.14"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8e/25/925f35db758a0f9199113aaf61d703de891676b082bd7cf73ea01d6000f7/vulture-2.14.tar.gz", hash = "sha256:cb8277902a1138deeab796ec5bef7076a6e0248ca3607a3f3dee0b6d9e9b8415", size = 58823, upload-time = "2024-12-08T17:39:43.319Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/56/0cc15b8ff2613c1d5c3dc1f3f576ede1c43868c1bc2e5ccaa2d4bcd7974d/vulture-2.14-py2.py3-none-any.whl", hash = "sha256:d9a90dba89607489548a49d557f8bac8112bd25d3cbc8aeef23e860811bd5ed9", size = 28915, upload-time = "2024-12-08T17:39:40.573Z" },
 ]
 
 [[package]]

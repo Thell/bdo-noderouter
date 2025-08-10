@@ -1,4 +1,4 @@
-# node_router_approximation.py
+# node_router.py
 """
 Primal-dual Node-Weighted Steiner Forest approximation solver with bridge heuristics.
 """
@@ -47,7 +47,8 @@ def optimize_with_terminals(
 if __name__ == "__main__":
     import testing as test
 
-    config = ds.get_config("/home/thell/nwsf_rust/python/nwsf_rust/pd_approximation.toml")
+    config = ds.get_config("config")
+    config["name"] = "node_router"
     set_logger(config)
 
     if config.get("actions", {}).get("baseline_tests", False):

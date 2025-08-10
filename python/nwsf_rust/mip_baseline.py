@@ -1,4 +1,4 @@
-# ip_baseline.py
+# mip_baseline.py
 """
 This module formulates our integer baseline of the Steiner Forest problem solution
 from a multi-commodity flow problem with cumulative flow from the terminals to the roots.
@@ -12,18 +12,14 @@ Given:
 from __future__ import annotations
 from typing import TypedDict
 
-from bidict import bidict
-import highspy
 from loguru import logger
 import rustworkx as rx
 
 import data_store as ds
-import api_common as common_api
-import api_rx_pydigraph as rx_api
-import api_highs_model as highs_api
-import api_solution_handling as solution_api
-
-SUPER_ROOT = common_api.SUPER_ROOT
+from api_common import set_logger, SUPER_ROOT
+from api_rx_pydigraph import set_graph_terminal_sets_attribute, inject_super_root
+from api_highs_model import get_highs, create_model, solve
+from api_solution_handling import extract_solution_from_x_vars
 
 
 class ResultDict(TypedDict):
@@ -35,17 +31,14 @@ def optimize_with_terminals(exploration_graph: rx.PyDiGraph, terminals: dict, co
     G = exploration_graph
 
     if SUPER_ROOT in terminals.values():
-        rx_api.inject_super_root(config, G)
-    rx_api.set_graph_terminal_sets_attribute(G, terminals)
+        inject_super_root(config, G)
+    set_graph_terminal_sets_attribute(G, terminals)
 
-    model = highs_api.get_highs(config)
-    assert isinstance(model, highspy.Highs)
-    model, vars = highs_api.create_model(model, "ip_baseline_highspy", graph=G)
-    assert isinstance(model, highspy.Highs)
-    model = highs_api.solve(model, config)
-    assert isinstance(model, highspy.Highs)
+    model = get_highs(config)
+    model, vars = create_model(model, graph=G)
+    model = solve(model, config)
 
-    solution_graph = solution_api.extract_solution_from_x_vars_highspy(model, vars, G, config)
+    solution_graph = extract_solution_from_x_vars(model, vars, G, config)
 
     objective_value = model.getObjectiveValue()
     objective_value = round(objective_value) if objective_value else 0
@@ -63,8 +56,9 @@ if __name__ == "__main__":
     import time
     import testing as test
 
-    config = ds.get_config("/home/thell/nwsf_rust/python/nwsf_rust/mip_baseline.toml")
-    common_api.set_logger(config)
+    config = ds.get_config("python/nwsf_rust/config.toml")
+    config["name"] = "mip_baseline"
+    set_logger(config)
 
     if config.get("actions", {}).get("baseline_tests", False):
         success = test.baselines(optimize_with_terminals, config)
@@ -74,11 +68,12 @@ if __name__ == "__main__":
 
     if config.get("actions", {}).get("scaling_tests", False):
         total_time_start = time.perf_counter()
-        for budget in range(5, 555, 5):
-            print(f"Test: optimal terminals budget: {budget}")
-            test.workerman_terminals(optimize_with_terminals, config, budget, False)
-            test.workerman_terminals(optimize_with_terminals, config, budget, True)
-        for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
+        # for budget in range(5, 555, 5):
+        #     print(f"Test: optimal terminals budget: {budget}")
+        #     test.workerman_terminals(optimize_with_terminals, config, budget, False)
+        #     test.workerman_terminals(optimize_with_terminals, config, budget, True)
+        # for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
+        for percent in [50, 100]:
             print(f"Test: random terminals coverage percent: {percent}")
             test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
             test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)

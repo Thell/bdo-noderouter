@@ -1,15 +1,10 @@
 from bidict import bidict
 import highspy
 from loguru import logger
-import pyoptinterface as poi
-from pyoptinterface.highs import Model
 import rustworkx as rx
 
-import api_rx_pydigraph as rx_api
-import api_common as common_api
-
-
-SUPER_ROOT = common_api.SUPER_ROOT
+from api_rx_pydigraph import set_graph_terminal_sets_attribute
+from api_common import SUPER_ROOT
 
 
 def validate_solution(solution_graph: rx.PyDiGraph):
@@ -127,46 +122,7 @@ def cleanup_solution(solution_graph: rx.PyDiGraph):
             i: solution_graph[i]["waypoint_key"] for i in solution_graph.node_indices()
         })
 
-
-def extract_solution_from_x_vars(model: Model, vars: dict, G: rx.PyDiGraph, config: dict) -> rx.PyDiGraph:
-    """Create a subgraph from the graph consisting of the node x vars from the solved model."""
-    logger.info("Extracting solution from x vars...")
-
-    x_vars = vars["x"]
-
-    solution_nodes = []
-    status = model.get_model_attribute(poi.ModelAttribute.TerminationStatus)
-    if status == poi.TerminationStatusCode.OPTIMAL:
-        solution_nodes = [i for i in G.node_indices() if round(model.get_value(x_vars[i])) == 1]
-    else:
-        logger.error(f"ERROR: Non optimal result status of {status}!")
-        raise ValueError("Non optimal result status!")
-
-    solution_graph = G.subgraph(solution_nodes, preserve_attrs=False)
-    if len(solution_graph.node_indices()) == 0:
-        logger.warning("Result is an empty solution.")
-        return solution_graph
-
-    node_key_by_index = bidict({i: solution_graph[i]["waypoint_key"] for i in solution_graph.node_indices()})
-    solution_graph.attrs = {}
-    solution_graph.attrs["node_key_by_index"] = node_key_by_index
-
-    rx_api.set_graph_terminal_sets_attribute(solution_graph, G.attrs["terminals"])
-
-    solution_options = config.get("solution", {})
-    # Validation is done prior to cleanup becuase if SUPER_ROOT is present then it is needed for
-    # validation.
-    if solution_options.get("validate", False):
-        validate_solution(solution_graph)
-    if solution_options.get("cleanup", False):
-        cleanup_solution(solution_graph)
-
-    print(f"Solution: {[n['waypoint_key'] for n in solution_graph.nodes()]}")
-    print(f"Solution Cost: {sum(n['need_exploration_point'] for n in solution_graph.nodes())}")
-    return solution_graph
-
-
-def extract_solution_from_x_vars_highspy(
+def extract_solution_from_x_vars(
     model: highspy.Highs, vars: dict, G: rx.PyDiGraph, config: dict
 ) -> rx.PyDiGraph:
     """Create a subgraph from the graph consisting of the node x vars from the solved model."""
@@ -193,11 +149,11 @@ def extract_solution_from_x_vars_highspy(
     solution_graph.attrs = {}
     solution_graph.attrs["node_key_by_index"] = node_key_by_index
 
-    rx_api.set_graph_terminal_sets_attribute(solution_graph, G.attrs["terminals"])
+    set_graph_terminal_sets_attribute(solution_graph, G.attrs["terminals"])
 
     solution_options = config.get("solution", {})
-    # Validation is done prior to cleanup becuase if SUPER_ROOT is present then it is needed for
-    # validation.
+    # Validation is done prior to cleanup becuase if SUPER_ROOT
+    # is present then it is needed for validation.
     if solution_options.get("validate", False):
         validate_solution(solution_graph)
     if solution_options.get("cleanup", False):
@@ -206,73 +162,4 @@ def extract_solution_from_x_vars_highspy(
     if config.get("logger", {}).get("level", "INFO") in ["INFO", "DEBUG", "TRACE"]:
         logger.info(f"Solution: {[n['waypoint_key'] for n in solution_graph.nodes()]}")
         logger.info(f"Solution Cost: {sum(n['need_exploration_point'] for n in solution_graph.nodes())}")
-    return solution_graph
-
-
-def extract_solution_from_xy_vars(
-    model: Model, vars: dict, G: rx.PyDiGraph, G_prime: rx.PyDiGraph, **kwargs
-) -> rx.PyDiGraph:
-    """Create a subgraph from the graph consisting of the node x vars, edge y vars from the solved model.
-
-    NOTE: G_prime contains the solution to the possibly reduced problem and G contains the original graph.
-    Any selected node in G_prime must be translated to G because the ancestors will not exist in the
-    G_prime node indices.
-
-    - ancestors on any node or edge are also selected
-    """
-    logger.info("Extracting solution from x and y vars...")
-
-    x_vars = vars["x"]
-    y_vars = vars["y"]
-
-    status = model.get_model_attribute(poi.ModelAttribute.TerminationStatus)
-    if status != poi.TerminationStatusCode.OPTIMAL:
-        logger.error(f"ERROR: Non optimal result status of {status}!")
-        raise ValueError("Non optimal result status!")
-
-    # x_var extraction
-    selected_node_indices = [i for i in G_prime.node_indices() if round(model.get_value(x_vars[i])) == 1]
-    solution_nodes = [G_prime[i] for i in selected_node_indices]
-    solution_nodes += [G[a] for node in solution_nodes for a in node["ancestors"]]
-
-    # y_var extraction
-    selected_edges = [
-        e for e in G_prime.edge_indices() if e in y_vars and round(model.get_value(y_vars[e])) == 1
-    ]
-    for edge in selected_edges:
-        u, v = G_prime.get_edge_endpoints_by_index(edge)
-        if u in selected_node_indices and v in selected_node_indices:
-            solution_nodes += [G[a] for a in G_prime.get_edge_data_by_index(edge)["ancestors"]]
-        else:
-            u_waypoint_key = G[u]["waypoint_key"]
-            v_waypoint_key = G[v]["waypoint_key"]
-            ancestor_keys = [G[a]["waypoint_key"] for a in G_prime.get_edge_data_by_index(edge)["ancestors"]]
-            logger.warning(
-                f"  selected edge ({u}, {v}) => ({u_waypoint_key}, {v_waypoint_key}) with ancestors {ancestor_keys} missing endpoints in selected nodes, skipping..."
-            )
-
-    # Map the nodes to their G indices to induce solution subgraph
-    node_key_by_index = G.attrs["node_key_by_index"]
-    solution_node_indices = [node_key_by_index.inv[n["waypoint_key"]] for n in solution_nodes]
-
-    solution_graph = G.subgraph(solution_node_indices, preserve_attrs=False)
-    if len(solution_graph.node_indices()) == 0:
-        logger.warning("Result is an empty solution.")
-        return solution_graph
-
-    # solution_graph.reverse()
-
-    node_key_by_index = bidict({i: solution_graph[i]["waypoint_key"] for i in solution_graph.node_indices()})
-    solution_graph.attrs = {}
-    solution_graph.attrs["node_key_by_index"] = node_key_by_index
-    rx_api.set_graph_terminal_sets_attribute(solution_graph, G.attrs["terminals"])
-
-    if kwargs.get("validate_solution", False):
-        validate_solution(solution_graph)
-
-    if kwargs.get("cleanup_solution", False):
-        cleanup_solution(solution_graph)
-
-    print(f"Solution: {[n['waypoint_key'] for n in solution_graph.nodes()]}")
-    print(f"Solution Cost: {sum(n['need_exploration_point'] for n in solution_graph.nodes())}")
     return solution_graph

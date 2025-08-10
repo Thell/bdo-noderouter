@@ -56,8 +56,11 @@ def initialized(last_sha: str, filenames: list[str]) -> bool:
 
 def get_config(filename: str | Path) -> dict:
     if isinstance(filename, str) and not filename.endswith(".toml"):
+        project_path = path().parent
         filename = Path(filename).with_suffix(".toml")
-    filename = Path(filename)
+        filename = project_path / filename
+    else:
+        filename = Path(filename)
     if not filename.is_file():
         raise FileNotFoundError(f"Config file '{filename.as_posix()}' not found!")
     return read_toml(filename)

@@ -141,7 +141,7 @@ def get_neighboring_territories(exploration_data: dict):
     Note: territory is included in neighbors
 
     If it is desired to omit the great ocean nodes then that should be done when creating
-    the expxploration data.
+    the expploration data.
     """
     territories = set()
     territory_pairs = set()

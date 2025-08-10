@@ -34,9 +34,15 @@ def get_highs(config: dict) -> Highs:
     return highs
 
 
-def create_model(model: Highs, type: str, **kwargs) -> tuple[Highs, dict]:
-    """Populates the Model variables and constraints using a model of type and
+def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
+    """Populates model with variables and constraints using a model of type and
     arguments in kwargs which is passed to the create_model function.
+
+    - models:
+        - Node Weighted Steiner Forest problem.
+        - Reverse cumulative multi-commodity integer flow
+        - Optimal solution baseline reference
+        - Requires solution extractor for binary 'x_var' variables.
 
     Requires:
       - the kwarg 'graph'
@@ -44,12 +50,6 @@ def create_model(model: Highs, type: str, **kwargs) -> tuple[Highs, dict]:
       - all models require nodes with a payload contained 'need_exploration_point'
       - models with node and edge weights also require 'cost' attribute on edges
 
-    Available models types are:
-    - 'ip_baseline':
-        - Node Weighted Steiner Forest problem.
-        - optimal solution baseline reference
-        - reverse cumulative multi-commodity iteger flow
-        - Requires solution extractor for binary 'x_var' variables.
     """
     logger.debug("Creating MIP Baseline model using highspy...")
 
@@ -132,9 +132,10 @@ def create_model(model: Highs, type: str, **kwargs) -> tuple[Highs, dict]:
 
 
 def solve(model: Highs, config: dict) -> Highs:
-    mip_improvement_timeout = config.get("mip_improvement_timeout", 86400)
+    solver_config = config.get("solver", {})
+    mip_improvement_timeout = solver_config.get("mip_improvement_timeout", 86400)
     mip_improvement_timer = time.time()
-    num_threads = config.get("num_threads", cpu_count())
+    num_threads = solver_config.get("num_threads", max(1, cpu_count() // 2))
     result_queue = queue.Queue()
 
     clones = [model] + [Highs() for _ in range(num_threads - 1)]
@@ -157,6 +158,8 @@ def solve(model: Highs, config: dict) -> Highs:
         provided=[False] * num_threads,
     )
 
+    solution_gap = 0.03
+    solution_gap_abs = 2
     thread_log_capture = [[]] * num_threads
 
     if obj_sense == ObjSense.kMinimize:
@@ -169,7 +172,7 @@ def solve(model: Highs, config: dict) -> Highs:
         def is_better(a, b):
             return a > b
 
-    def capture_logs(e):
+    def cbLoggingHandler(e):
         """Follow and emit the output log of the incumbent..."""
         nonlocal incumbent, thread_log_capture, clones
         thread_id = int(e.user_data)
@@ -188,7 +191,10 @@ def solve(model: Highs, config: dict) -> Highs:
         nonlocal incumbent, clones, mip_improvement_timer
         value = e.data_out.objective_function_value
         value = int(value) if value != kHighsInf else value
-        if is_better(value, incumbent.value):
+        if is_better(value, incumbent.value) and (
+            abs(value - incumbent.value) / incumbent.value >= solution_gap
+            or abs(value - incumbent.value) >= solution_gap_abs
+        ):
             thread_id = int(e.user_data)
             with incumbent.lock:
                 mip_improvement_timer = time.time()
@@ -197,7 +203,7 @@ def solve(model: Highs, config: dict) -> Highs:
                 incumbent.provided = [False] * num_threads
                 incumbent.provided[thread_id] = True
                 incumbent.id = thread_id
-                # print(f"Incumbent supplanted by thread {clone_id} with {e_objective_value}")
+                logger.debug(f"Incumbent supplanted by thread {thread_id} with {value}")
                 return
 
     def cbMIPUserSolutionHandler(e):
@@ -207,12 +213,19 @@ def solve(model: Highs, config: dict) -> Highs:
         value = e.data_out.objective_function_value
         value = int(value) if value != kHighsInf else value
         thread_id = int(e.user_data)
-        if incumbent.provided[thread_id] is False and is_better(incumbent.value, value):
+        if (
+            incumbent.provided[thread_id] is False
+            and is_better(incumbent.value, value)
+            and (
+                abs(value - incumbent.value) / incumbent.value >= solution_gap
+                or abs(value - incumbent.value) >= solution_gap_abs
+            )
+        ):
             with incumbent.lock:
                 e.data_in.user_has_solution = True
                 e.data_in.user_solution[:] = incumbent.solution
                 incumbent.provided[thread_id] = True
-                # print(f"Provided incumbent to thread {clone_id} with {e_objective_value}")
+                logger.debug(f"Provided incumbent to thread {thread_id} with {value}")
                 return
 
     def cbMIPInterruptHandler(e):
@@ -222,7 +235,7 @@ def solve(model: Highs, config: dict) -> Highs:
     for i in range(num_threads):
         clones[i].cbMipImprovingSolution.subscribe(cbMIPImprovedSolutionHandler, i)
         clones[i].cbMipUserSolution.subscribe(cbMIPUserSolutionHandler, i)
-        clones[i].cbLogging.subscribe(capture_logs, i)
+        clones[i].cbLogging.subscribe(cbLoggingHandler, i)
         clones[i].cbMipInterrupt.subscribe(cbMIPInterruptHandler, i)
 
     def task(clone: Highs, i: int):

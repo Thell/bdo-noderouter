@@ -18,15 +18,14 @@ from loguru import logger
 
 import data_store as ds
 from api_common import get_clean_exploration_data, save_graph, set_logger, SUPER_ROOT
-from api_exploration_graph import get_exploration_graph
-from neighbor_territories import generate_territory_root_sets
+from api_exploration_graph import get_exploration_graph, generate_territory_root_sets
 
 
 class TestCaseConfig:
     """Configuration for test case generation."""
 
     def __init__(self, config: dict | None = None):
-        self.config = config or get_config("/home/thell/nwsf_rust/python/nwsf_rust/testing.toml")
+        self.config = config or get_config("config")
         self.exploration_data = None
         self.territory_root_sets = None
 
@@ -362,12 +361,7 @@ def baselines(
         ),
     ]
 
-    logger.info(f"*** Solving {config.get('name', 'unknown')} as {config.get('type', 'unknown')} ***")
-    logger.info(f"  using subgraph: {config.get('subgraph', False).get('generate_subgraph', False)}")
-    logger.info(f"  using reduction: {config.get('reduction', False).get('reduce_subgraph', False)}")
-    logger.info(
-        f"  using approximation: {config.get('approximation', False).get('approximate_solution', False)}"
-    )
+    logger.info(f"*** Solving {config.get('name', 'unknown')} ***")
 
     exploration_graph = get_exploration_graph(config)
     assert isinstance(exploration_graph, rx.PyDiGraph)
@@ -407,31 +401,15 @@ def _validate_baselines(
     logger.info(f"Expected Cost: {expected_objective_value}, Actual: {cost}")
     logger.info(f"Connected components: {len(rx.strongly_connected_components(solution_graph))}")
 
-    use_reduced_graph = any(
-        config.get(key, False).get(subkey, False)
-        for key, subkey in [
-            ("subgraph", "generate_subgraph"),
-            ("reduction", "reduce_subgraph"),
-            ("approximation", "approximate_solution"),
-        ]
-    )
-
     success = True
-    if use_reduced_graph:
-        if cost != expected_objective_value:
-            logger.error(f"❌ Test: {name}: fail extraction")
-            success = False
-        else:
-            logger.success(f"✅ Test: {name}: success")
+    if result["objective_value"] != expected_objective_value:
+        logger.error(f"❌ Test: {name}: fail optimization")
+        success = False
+    elif cost != expected_objective_value:
+        logger.warning(f"🟠 Test: {name}: fail extraction")
+        success = False
     else:
-        if result["objective_value"] != expected_objective_value:
-            logger.error(f"❌ Test: {name}: fail optimization")
-            success = False
-        elif cost != expected_objective_value:
-            logger.warning(f"🟠 Test: {name}: fail extraction")
-            success = False
-        else:
-            logger.success(f"✅ Test: {name}: success")
+        logger.success(f"✅ Test: {name}: success")
 
     logger.info("=" * 100)
     return success
@@ -439,6 +417,15 @@ def _validate_baselines(
 
 if __name__ == "__main__":
     config = TestCaseConfig()
+    for cost in range(5, 555, 5):
+        for include_danger in [False, True]:
+            src_dst, root_count, worker_count, danger_count = _generate_workerman_terminals(
+                cost, include_danger, config=config
+            )
+            logger.info(
+                f"Workerman Terminals - Cost: {cost}, Danger: {include_danger} - "
+                f"Roots: {root_count}, Workers: {worker_count}, Dangers: {danger_count}, Terminals: {src_dst}"
+            )
     for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
         for include_danger in [False, True]:
             src_dst, root_count, worker_count, danger_count = _generate_random_terminals(
@@ -449,12 +436,3 @@ if __name__ == "__main__":
                 f"Roots: {root_count}, Workers: {worker_count}, Dangers: {danger_count}, Terminals: {src_dst}"
             )
 
-    for cost in range(5, 555, 5):
-        for include_danger in [False, True]:
-            src_dst, root_count, worker_count, danger_count = _generate_workerman_terminals(
-                cost, include_danger, config=config
-            )
-            logger.info(
-                f"Workerman Terminals - Cost: {cost}, Danger: {include_danger} - "
-                f"Roots: {root_count}, Workers: {worker_count}, Dangers: {danger_count}, Terminals: {src_dst}"
-            )

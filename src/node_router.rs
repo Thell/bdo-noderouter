@@ -263,22 +263,16 @@ impl NodeRouter {
 
         // No need to redo the approximation...
         // Restore post-approximation state...
-        if DO_DBG {
-            println!("Reverse pass approximating...");
-        }
         self.combo_gen_direction = false;
         self.bridge_affected_base_towns.clear();
         self.bridge_affected_indices.clear();
         self.bridge_affected_terminals.clear();
         self.connected_pairs.clear();
-        // self.ordered_removables.clear();
-        let ordered_removables = self.approximate();
+
         if DO_DBG {
-            println!(
-                "Approximation connectivity: {:?}",
-                self.terminal_pairs_connected()
-            );
+            println!("Reverse pass approximating...");
         }
+        let ordered_removables = self.approximate();
         self.bridge_heuristics(&mut ordered_removables.clone());
         let reverse_weight: usize = self
             .idtree
@@ -304,9 +298,6 @@ impl NodeRouter {
         } else {
             reverse_result
         };
-        if DO_DBG {
-            println!("Final connectivity: {:?}", self.terminal_pairs_connected());
-        }
         self.terminal_to_root.clear();
         self.connected_pairs.clear();
         self.bridge_affected_base_towns.clear();

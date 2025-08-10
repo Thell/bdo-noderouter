@@ -530,10 +530,6 @@ class PrimalDualNWSF:
         cycle counts and then identify removable articulation points that can
         improve the solution.
         """
-        if not self.config.get("approximation", {}).get("post_process_bridges", False):
-            logger.info("Skipping bridge heuristics")
-            return
-
         if self.do_info:
             logger.info("Running bridge heuristics...")
         if self.do_trace:
@@ -1145,7 +1141,8 @@ def optimize_with_terminals(
 if __name__ == "__main__":
     import testing as test
 
-    config = ds.get_config("/home/thell/nwsf_rust/python/nwsf_rust/pd_approximation.toml")
+    config = ds.get_config("config")
+    config["name"] = "pd_approximation"
     set_logger(config)
 
     if config.get("actions", {}).get("baseline_tests", False):
@@ -1156,12 +1153,13 @@ if __name__ == "__main__":
 
     if config.get("actions", {}).get("scaling_tests", False):
         total_time_start = time.perf_counter()
-        for budget in range(5, 555, 5):
+        # for budget in range(5, 555, 5):
+        for budget in range(5, 15, 5):
             print(f"Test: optimal terminals budget: {budget}")
             test.workerman_terminals(optimize_with_terminals, config, budget, False)
             test.workerman_terminals(optimize_with_terminals, config, budget, True)
-        for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
-            print(f"Test: random terminals coverage percent: {percent}")
-            test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
-            test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
+        # for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
+        #     print(f"Test: random terminals coverage percent: {percent}")
+        #     test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
+        #     test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
