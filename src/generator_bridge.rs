@@ -49,20 +49,14 @@ impl BridgeGenerator {
         settlement: &IntSet<usize>,
         min_degree: Option<usize>,
     ) -> IntSet<usize> {
-        let mut frontier = IntSet::default();
-        for &v in settlement {
-            if let Some(neighbors) = self.index_to_neighbors.get(&v) {
-                frontier.extend(neighbors);
-            }
-        }
-        frontier.retain(|v| !settlement.contains(v));
-
+        let mut frontier = settlement
+            .iter()
+            .flat_map(|v| &self.index_to_neighbors[v])
+            .filter(|n| !settlement.contains(n))
+            .copied()
+            .collect::<IntSet<_>>();
         if let Some(min_degree) = min_degree {
-            frontier.retain(|v| {
-                self.index_to_neighbors
-                    .get(v)
-                    .is_some_and(|nbrs| nbrs.len() >= min_degree)
-            });
+            frontier.retain(|v| self.index_to_neighbors[v].len() >= min_degree);
         }
         frontier
     }
@@ -106,17 +100,14 @@ impl BridgeGenerator {
                         let neighbors_vec: Vec<_> = neighbors.iter().copied().collect();
                         let first = neighbors_vec[0];
                         let rest = &neighbors_vec[1..];
-                        let inner_ring_neighbors: IntSet<usize> = self
-                            .index_to_neighbors
-                            .get(&first)
-                            .unwrap()
+                        let inner_ring_neighbors: IntSet<usize> = self.index_to_neighbors[&first]
                             .intersection(inner_ring)
                             .copied()
                             .collect();
 
                         if !rest.iter().any(|n| {
                             inner_ring_neighbors
-                                .intersection(self.index_to_neighbors.get(n).unwrap())
+                                .intersection(&self.index_to_neighbors[n])
                                 .next()
                                 .is_some()
                         }) {
@@ -175,8 +166,8 @@ impl BridgeGenerator {
                             }
                             seen_endpoints.insert(key);
 
-                            let u_neighbors = self.index_to_neighbors.get(&u).unwrap();
-                            let v_neighbors = self.index_to_neighbors.get(&v).unwrap();
+                            let u_neighbors = &self.index_to_neighbors[&u];
+                            let v_neighbors = &self.index_to_neighbors[&v];
                             if u_neighbors
                                 .intersection(v_neighbors)
                                 .any(|n| inner_ring.contains(n))
@@ -227,14 +218,12 @@ impl BridgeGenerator {
         if ring_idx == 1 {
             let bridge_hash = hash_intset(&bridge);
             if !yielded.contains(&bridge_hash) {
-                let s_neighbors: IntSet<usize> = current_nodes
+                if 2 <= current_nodes
                     .iter()
-                    .flat_map(|&v| self.index_to_neighbors.get(&v).unwrap())
+                    .flat_map(|&v| &self.index_to_neighbors[&v])
                     .filter(|n| rings[0].contains(n))
-                    .copied()
-                    .collect();
-
-                if s_neighbors.len() >= 2 {
+                    .count()
+                {
                     yielded.insert(bridge_hash);
                     output.push(bridge);
                 }
@@ -247,7 +236,7 @@ impl BridgeGenerator {
             let inner_ring = &rings[ring_idx - 1];
             let mut candidates: Vec<usize> = current_nodes
                 .iter()
-                .flat_map(|&n| self.index_to_neighbors.get(&n).unwrap())
+                .flat_map(|&n| &self.index_to_neighbors[&n])
                 .filter(|x| inner_ring.contains(x))
                 .copied()
                 .collect::<IntSet<_>>()
@@ -258,26 +247,19 @@ impl BridgeGenerator {
             for i in 0..(candidates.len() - 1) {
                 let u = candidates[i];
                 for &v in candidates.iter().skip(i + 1) {
-                    let candidate_pair = sort_pair(u, v);
-                    if !seen_candidate_pairs.insert(candidate_pair) {
-                        continue;
+                    if seen_candidate_pairs.insert((u, v)) {
+                        let new_current = IntSet::from_iter([u, v]);
+                        let mut new_bridge = bridge.clone();
+                        new_bridge.extend([u, v]);
+                        output.extend(self.descend_to_yield_bridges(
+                            ring_idx - 1,
+                            &new_current,
+                            new_bridge,
+                            rings,
+                            yielded,
+                            seen_candidate_pairs,
+                        ));
                     }
-
-                    let mut new_current = IntSet::default();
-                    new_current.insert(u);
-                    new_current.insert(v);
-                    let mut new_bridge = bridge.clone();
-                    new_bridge.insert(u);
-                    new_bridge.insert(v);
-
-                    output.extend(self.descend_to_yield_bridges(
-                        ring_idx - 1,
-                        &new_current,
-                        new_bridge,
-                        rings,
-                        yielded,
-                        seen_candidate_pairs,
-                    ));
                 }
             }
         }

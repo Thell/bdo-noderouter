@@ -578,20 +578,15 @@ impl NodeRouter {
                 settlement.len()
             );
         }
-        let mut frontier = IntSet::default();
-        for &v in settlement {
-            if let Some(neighbors) = self.index_to_neighbors.get(&v) {
-                frontier.extend(neighbors);
-            }
-        }
-        frontier.retain(|v| !settlement.contains(v));
+        let mut frontier = settlement
+            .iter()
+            .flat_map(|v| &self.index_to_neighbors[v])
+            .filter(|n| !settlement.contains(n))
+            .copied()
+            .collect::<IntSet<_>>();
 
         if let Some(min_degree) = min_degree {
-            frontier.retain(|v| {
-                self.index_to_neighbors
-                    .get(v)
-                    .is_some_and(|nbrs| nbrs.len() >= min_degree)
-            });
+            frontier.retain(|v| self.index_to_neighbors[v].len() >= min_degree);
         }
         if DO_DBG {
             println!("  num frontier nodes {}", frontier.len());
