@@ -1,4 +1,5 @@
-# pd_approximation_best.py
+# pd_approximation.py
+
 """
 Primal-dual Node-Weighted Steiner Forest approximation solver with bridge heuristics.
 """
@@ -13,7 +14,7 @@ from loguru import logger
 import data_store as ds
 from api_common import set_logger, ResultDict, SUPER_ROOT
 from api_rx_pydigraph import set_graph_terminal_sets_attribute
-from nwsf_rust import IDTree
+from noderouter import IDTree
 
 
 class PrimalDualNWSF:
@@ -1153,13 +1154,12 @@ if __name__ == "__main__":
 
     if config.get("actions", {}).get("scaling_tests", False):
         total_time_start = time.perf_counter()
-        # for budget in range(5, 555, 5):
-        for budget in range(5, 15, 5):
+        for budget in range(5, 555, 5):
             print(f"Test: optimal terminals budget: {budget}")
             test.workerman_terminals(optimize_with_terminals, config, budget, False)
             test.workerman_terminals(optimize_with_terminals, config, budget, True)
-        # for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
-        #     print(f"Test: random terminals coverage percent: {percent}")
-        #     test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
-        #     test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
+        for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
+            print(f"Test: random terminals coverage percent: {percent}")
+            test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
+            test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")

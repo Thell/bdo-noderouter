@@ -1,6 +1,7 @@
 [package]
 name = "noderouter"
 description = "Primal Dual Approximations for Node Weighted Steiner Forest"
+repository = "https://github.com/Thell/bdo-noderouter"
 license = "UNLICENSE"
 version = "0.1.0"
 edition = "2021"

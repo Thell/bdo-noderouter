@@ -1,4 +1,4 @@
-import init, { WasmNodeRouter } from "./pkg/nwsf_rust.js";
+import init, { WasmNodeRouter } from "./pkg/noderouter.js";
 
 let router = null;
 

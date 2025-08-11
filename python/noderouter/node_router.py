@@ -11,7 +11,7 @@ from loguru import logger
 
 import data_store as ds
 from api_common import set_logger, ResultDict, get_clean_exploration_data
-from nwsf_rust import NodeRouter
+from noderouter import NodeRouter
 
 NR = None
 WAYPOINT_TO_INDEX: dict[int, int] = {}

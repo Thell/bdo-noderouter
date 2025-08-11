@@ -37,6 +37,14 @@ fantastic [Workerman](https://shrddr.github.io/workerman/) empire planner.
 > python -m http.server 8080
 ```
 
+or on Windows...
+
+```
+> Copy-Item -Path ".\pkg" -Destination ".\demo\pkg" -Recurse -Force
+> cd demo
+> python -m http.server 8080; Start-Process http://localhost:8080
+```
+
 Then load the clean exploration.json from `python/bdo_noderouter/data`.
 Lastly input terminal,root pairs (as waypoint ids) and hit solve.
 

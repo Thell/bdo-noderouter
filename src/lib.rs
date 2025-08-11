@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 
 #[cfg(feature = "python")]
 #[pymodule]
-fn nwsf_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn noderouter(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<IDTree>()?;
     m.add_class::<NodeRouter>()?;
     Ok(())

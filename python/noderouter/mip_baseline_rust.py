@@ -56,7 +56,7 @@ if __name__ == "__main__":
     import time
     import testing as test
 
-    config = ds.get_config("python/nwsf_rust/config.toml")
+    config = ds.get_config("python/bdo-noderouter/config.toml")
     config["name"] = "mip_baseline"
     set_logger(config)
 
