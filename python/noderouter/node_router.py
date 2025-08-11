@@ -1,4 +1,5 @@
 # node_router.py
+
 """
 Primal-dual Node-Weighted Steiner Forest approximation solver with bridge heuristics.
 """
@@ -15,6 +16,7 @@ from noderouter import NodeRouter
 
 NR = None
 WAYPOINT_TO_INDEX: dict[int, int] = {}
+
 
 def optimize_with_terminals(
     exploration_graph: rx.PyDiGraph, terminals: dict[int, int], config: dict
@@ -33,9 +35,7 @@ def optimize_with_terminals(
     logger.debug(f"Optimizing graph with {len(terminals)} terminals...")
     start_time = time.perf_counter()
 
-
     solution_waypoints = NR.solve_for_terminal_pairs(list(terminals.items()))
-
 
     logger.info(f"solution time (ms): {(time.perf_counter() - start_time) * 1000:.2f}")
     solution_indices = [WAYPOINT_TO_INDEX[w] for w in solution_waypoints]

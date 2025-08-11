@@ -437,4 +437,3 @@ if __name__ == "__main__":
                 f"Random Terminals - Percent: {percent}, Danger: {include_danger} - "
                 f"Roots: {root_count}, Workers: {worker_count}, Dangers: {danger_count}, Terminals: {src_dst}"
             )
-

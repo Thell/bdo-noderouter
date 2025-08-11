@@ -218,11 +218,12 @@ class PrimalDualNWSF:
             reverse_pass_num_cc = self.idtree.num_connected_components()
 
             if self.do_debug:
-                logger.debug(f"Python: forward pass weight: {forward_pass_weight} reverse pass weight: {reverse_pass_weight}")
+                logger.debug(
+                    f"Python: forward pass weight: {forward_pass_weight} reverse pass weight: {reverse_pass_weight}"
+                )
 
             if forward_pass_weight < reverse_pass_weight or (
-                forward_pass_weight == reverse_pass_weight
-                and forward_pass_num_cc > reverse_pass_num_cc
+                forward_pass_weight == reverse_pass_weight and forward_pass_num_cc > reverse_pass_num_cc
             ):
                 self.idtree = forward_pass_incumbent
 
@@ -434,7 +435,9 @@ class PrimalDualNWSF:
         untouchable_indices = terminal_indices | self.untouchables.intersection(self.idtree_active_indices)
 
         while indices := [
-            i for i in self.idtree_active_indices if self.idtree.degree(i) == 1 and i not in untouchable_indices
+            i
+            for i in self.idtree_active_indices
+            if self.idtree.degree(i) == 1 and i not in untouchable_indices
         ]:
             for i in indices:
                 self.idtree.isolate_node(i)
@@ -675,7 +678,7 @@ class PrimalDualNWSF:
         # Let ring 3 => F2 be an eccentric ring around {F1|F0|B}
         # ...
 
-        max_frontier_rings = self.max_frontier_rings - 1 # settlement counts as ring 0
+        max_frontier_rings = self.max_frontier_rings - 1  # settlement counts as ring 0
         ring_combo_cutoff = self.ring_combo_cutoff
 
         rings: list[set[int]] = []

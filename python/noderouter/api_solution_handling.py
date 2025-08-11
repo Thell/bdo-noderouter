@@ -124,6 +124,7 @@ def cleanup_solution(solution_graph: rx.PyDiGraph):
             i: solution_graph[i]["waypoint_key"] for i in solution_graph.node_indices()
         })
 
+
 def extract_solution_from_x_vars(
     model: highspy.Highs, vars: dict, G: rx.PyDiGraph, config: dict
 ) -> rx.PyDiGraph:
