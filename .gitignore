@@ -70,3 +70,6 @@ docs/_build/
 
 # Pyenv
 .python-version
+
+# Map-tiles which will only be updated in bulk
+python/noderouter/data/maptiles/
