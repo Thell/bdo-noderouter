@@ -230,6 +230,8 @@ def _run_test(
     metrics["time"] = f"{solve_time:.2f}s"
     num_components = _get_solution_metrics(solution_graph, objective_value, metrics)
 
+    logger.info(f"Solution nodes: {[n['waypoint_key'] for n in solution_graph.nodes()]}")
+
     logger.info(f"Solve time: {solve_time:.2f}s, Components: {num_components}, Cost: {objective_value}")
     return solve_time, solution_graph, objective_value
 

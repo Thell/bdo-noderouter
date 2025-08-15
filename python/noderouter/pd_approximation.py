@@ -284,9 +284,6 @@ class PrimalDualNWSF:
             logger.trace(f"Components: {final_components}")
             logger.info(f"Component terminal pairs: {terminal_pairs}")
             logger.info(f"Component terminal sets: {terminal_sets}")
-            logger.info(
-                f"Solution waypoints: {[subgraph[v]['waypoint_key'] for v in subgraph.node_indices()]}"
-            )
 
         subgraph = subgraph.to_directed()
         subgraph.attrs = {
