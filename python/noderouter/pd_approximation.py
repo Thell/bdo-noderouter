@@ -11,6 +11,7 @@ import rustworkx as rx
 from bidict import bidict
 from loguru import logger
 
+from api_exploration_graph import get_exploration_graph
 import data_store as ds
 from api_common import set_logger, ResultDict, SUPER_ROOT
 from api_rx_pydigraph import set_graph_terminal_sets_attribute
@@ -28,7 +29,6 @@ class PrimalDualNWSF:
         self.debug_iter = 0
         if self.do_debug:
             logger.debug("Initializing solver...")
-
         if self.do_debug:
             self.init_input_validation(exploration_graph, terminals)
 
@@ -1163,3 +1163,33 @@ if __name__ == "__main__":
             test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
             test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
+
+    # Direct Super-Terminal tests
+    test_sets = [
+        ({1132: 99999}, 5),
+        ({1152: 99999}, 7),
+        ({1154: 99999}, 6),
+        ({1160: 99999}, 6),
+        ({1162: 99999}, 5),
+        ({155: 1, 1132: 99999}, 9),
+        ({155: 1, 1151: 99999}, 10),
+        ({155: 1, 1152: 99999}, 11),
+        ({155: 1, 1154: 99999}, 10),
+        ({155: 1, 1160: 99999}, 10),
+        ({155: 1, 1162: 99999}, 9),
+        ({160: 1, 1132: 99999}, 8),
+        ({155: 1, 1132: 99999, 1152: 99999}, 11),
+        ({155: 1, 1132: 99999, 1136: 99999, 1152: 99999}, 14),
+    ]
+    graph = get_exploration_graph(config)
+    assert isinstance(graph, rx.PyDiGraph)
+    for terminals, optimal_cost in test_sets:
+        print(f"\nOptimizing graph with {terminals=} terminals...")
+        result = optimize_with_terminals(graph, terminals, config)
+        solution_graph = result["solution_graph"]
+        objective_value = result["objective_value"]
+        solution_waypoints = []
+        for node in solution_graph.nodes():
+            solution_waypoints.append(node["waypoint_key"])
+        print(solution_waypoints)
+        print(f"Solution cost: {objective_value} (pass: {objective_value == optimal_cost})")
