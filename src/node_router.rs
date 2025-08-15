@@ -356,48 +356,21 @@ impl NodeRouter {
 
     /// Solves the routing problem and returns a list of active nodes in solution
     fn approximate(&mut self) -> Vec<usize> {
-        let x = self.untouchables.clone();
-
         if DO_DBG {
             println!("Starting PD Approximation...");
         }
+
+        let mut x = self.untouchables.clone();
+        if self.has_super_terminal {
+            self.augment_superterminal_roots(&mut x);
+        }
+
         let (x, mut ordered_removables) = self.primal_dual_approximation(x);
         if DO_DBG {
             assert!(self.terminal_pairs_connected());
             println!("  ... ok")
         }
-
-        // Transfer the solution to IDTree using a ref_graph subgraph's edges.
-        if DO_DBG {
-            println!("Transferring solution of {} nodes to IDTree...", x.len());
-        }
-        self.ref_graph
-            .filter_map(
-                |node_idx, _| {
-                    if x.contains(&node_idx.index()) {
-                        Some(())
-                    } else {
-                        None
-                    }
-                },
-                |_, edge_idx| Some(*edge_idx),
-            )
-            .edge_indices()
-            .for_each(|edge_idx| {
-                let (u, v) = self.ref_graph.edge_endpoints(edge_idx).unwrap();
-                self.idtree.insert_edge(u.index(), v.index());
-            });
-        self.idtree_active_indices = self.idtree.active_nodes().into_iter().collect();
-
-        // Pruning is simply to reduce the ordered_removables in bulk on unambiguous nodes.
-        if DO_DBG {
-            println!("Pruning...");
-        }
-        self.prune_approximation(&mut ordered_removables);
-        if DO_DBG {
-            assert!(self.terminal_pairs_connected());
-            println!("  ... ok")
-        }
+        self.populate_idtree(&x);
 
         // Ordered removables are in temporal order of going tight, sub ordered structurally
         // by sorting by waypoint key.  When removing the nodes they should be processed in
@@ -435,6 +408,77 @@ impl NodeRouter {
         ordered_removables
     }
 
+    /// Augments initial approximation set with super-terminal potential roots when
+    /// that root is nearer than any existing rooted node in the current approximation set.
+    fn augment_superterminal_roots(&mut self, x: &mut IntSet<usize>) {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
+        let mut working_roots = self.terminal_to_root.clone();
+        let mut pending_super_terminals: IntSet<usize> = working_roots
+            .iter()
+            .filter_map(|(&t, &r)| if r == SUPER_ROOT { Some(t) } else { None })
+            .collect();
+
+        // Processes the super terminals such that the super-terminal nearest a fixed
+        // terminal or any base town is completed first and then becomes available to
+        // be a potential root until all super terminals have a potential root in x.
+        while !pending_super_terminals.is_empty() {
+            // (super_terminal, target_node, cost)
+            let mut super_terminal_distances: Vec<(usize, usize, usize)> = Vec::new();
+
+            for &terminal in &pending_super_terminals {
+                let mut heap = BinaryHeap::new();
+                let mut visited = IntSet::default();
+                heap.push((Reverse(0), terminal));
+
+                while let Some((Reverse(cost), node)) = heap.pop() {
+                    if !visited.insert(node) {
+                        continue;
+                    }
+
+                    if node != terminal {
+                        let is_rooted = match working_roots.get(&node) {
+                            Some(root) if root != &SUPER_ROOT => true,
+                            None => self.base_towns.contains(&node),
+                            _ => false,
+                        };
+
+                        if is_rooted {
+                            super_terminal_distances.push((terminal, node, cost));
+                            break;
+                        }
+                    }
+
+                    for &neighbor in &self.index_to_neighbors[&node] {
+                        if visited.contains(&neighbor) {
+                            continue;
+                        }
+                        let next_cost = if x.contains(&neighbor) {
+                            cost
+                        } else {
+                            cost + self.index_to_weight[&neighbor]
+                        };
+                        heap.push((Reverse(next_cost), neighbor));
+                    }
+                }
+            }
+
+            super_terminal_distances.sort_by_key(|&(_, _, cost)| cost);
+            let (terminal, target, cost) = super_terminal_distances[0];
+            x.insert(target);
+            working_roots.insert(terminal, target);
+            pending_super_terminals.remove(&terminal);
+
+            if DO_DBG {
+                println!(
+                    "  super-terminal {} should connect to {} (cost = {})",
+                    self.index_to_waypoint[&terminal], self.index_to_waypoint[&target], cost
+                );
+            }
+        }
+    }
+
     /// Node Weighted Primal Dual Approximation (Demaine et al.)
     fn primal_dual_approximation(&mut self, mut x: IntSet<usize>) -> (IntSet<usize>, Vec<usize>) {
         // The main loop operations and frontier node calculations are set based.
@@ -461,7 +505,7 @@ impl NodeRouter {
             let tight_nodes: Vec<_> = frontier_nodes
                 .iter()
                 .cloned()
-                .filter(|&v| y[v] == self.index_to_weight[&v])
+                .filter(|&v| y[v] >= self.index_to_weight[&v])
                 .collect();
 
             if DO_DBG {
@@ -474,10 +518,6 @@ impl NodeRouter {
 
             x.extend(&tight_nodes);
             ordered_removables.extend(self.sort_by_weights(&tight_nodes, None));
-
-            for &v in &frontier_nodes {
-                y[v] += 1;
-            }
         }
 
         (x, ordered_removables)
@@ -485,24 +525,6 @@ impl NodeRouter {
 
     /// Returns connected components violating connectivity constraints.
     fn violated_sets(&mut self, x: &IntSet<usize>) -> Option<Vec<IntSet<usize>>> {
-        // NOTE:It is fairly common in the smaller test incidents that a super terminal can
-        // be placed in a Terminal Cluster Set of a component with a higher cost simply
-        // because another (cheaper) component near it is non-violated. To avoid these
-        // situations reset the connected pairs cache and mark all components as violated
-        // until all super terminals are connected.
-
-        // NOTE: Another scenario where a super terminal can be put in a higher cost component
-        // is when it is nearer to a basetown that is a 'potential' super-terminal root but
-        // that basetown isn't a fixed root for any other terminal while the super-terminal
-        // is also near enough to a higher cost component's settlement that _is_ violated.
-        // Meaning the violated component and super-terminal component both grow while the
-        // potential super-terminal root basetown doesn't; leading to the super-terminal
-        // joining with the higher cost component prior to joining with the lower costing
-        // basetown. A possible fix for this is to include potential roots in the violated
-        // components until all super terminals are not violated where the potential roots
-        // are those that are nearest to the super-terminals, and if that basetown is already
-        // a fixed basetown for a terminal then nothing special needs to be done.
-
         if DO_DBG {
             println!("Checking for violated sets...");
         }
@@ -524,19 +546,23 @@ impl NodeRouter {
             .into_iter()
             .map(|comp| comp.iter().map(|nidx| nidx.index()).collect())
             .collect();
-
-        let mut violated = Vec::new();
-        let mut has_violated_super_terminal = false;
+        if DO_DBG {
+            let components_as_waypoints = components
+                .iter()
+                .map(|comp| {
+                    comp.iter()
+                        .map(|&i| self.index_to_waypoint[&i])
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            println!("components_as_waypoints {:?}", components_as_waypoints);
+        }
 
         // Here we test each iteration's current active terminals located with
         // the current component. This allows short-circuiting of testing once
         // all terminals are connected as well as per iteration reduction of
         // testable pairs.
-        // The only real downside is that when super terminals are last in the
-        // connected_pairs list the whole thing is cleared (as per the note above)
-        // and the work will be repeated on the next iteration. While there are
-        // alternatives the book keeping complexity doesn't provide an improvement
-        // in efficiency for our input graph (<1000 nodes and ~ 100 terminal pairs).
+        let mut violated = Vec::new();
         for cc in &components {
             let tmp_connected_pairs = self.connected_pairs.clone();
             let active_terminals = self
@@ -564,10 +590,6 @@ impl NodeRouter {
 
                 // Neither of the pair are in cc... skip...
                 if !terminal_in_cc && !root_in_cc {
-                    if root == SUPER_ROOT {
-                        has_violated_super_terminal = true;
-                        break;
-                    }
                     continue;
                 }
 
@@ -576,19 +598,9 @@ impl NodeRouter {
                     self.connected_pairs.insert((terminal, root));
                 } else {
                     // The pair is violated...
-                    if root == SUPER_ROOT {
-                        // violated super terminals violate all components...
-                        has_violated_super_terminal = true;
-                        break;
-                    }
-                    // Just this cc is violated...
                     cc_violated = true;
                     break;
                 }
-            }
-
-            if has_violated_super_terminal {
-                break;
             }
 
             if cc_violated {
@@ -596,10 +608,7 @@ impl NodeRouter {
             }
         }
 
-        if has_violated_super_terminal {
-            self.connected_pairs.clear();
-            Some(components)
-        } else if violated.is_empty() {
+        if violated.is_empty() {
             None
         } else {
             Some(violated)
@@ -660,37 +669,28 @@ impl NodeRouter {
         pairs.into_iter().map(|(_, number)| number).collect()
     }
 
-    /// Simple straight forward recursive pruning of non-terminal degree 1 nodes from the graph.
-    fn prune_approximation(&mut self, ordered_removables: &mut Vec<usize>) {
+    /// Populates the IDTree and initializes idtree_active_indices
+    fn populate_idtree(&mut self, x: &IntSet<usize>) {
         if DO_DBG {
-            println!(
-                "Pruning idtree with {} nodes using {} active nodes and {} removables...",
-                self.idtree.active_nodes().len(),
-                self.idtree_active_indices.len(),
-                ordered_removables.len()
-            );
+            println!("Populating IDTree...");
         }
-        let mut untouchable_indices = self.untouchables.clone();
-        untouchable_indices.retain(|&i| self.idtree_active_indices.contains(&i));
-        untouchable_indices.extend(self.terminal_to_root.keys());
-        loop {
-            let extracted = self
-                .idtree_active_indices
-                .extract_if(|&i| self.idtree.degree(i) == 1 && !untouchable_indices.contains(&i))
-                .collect::<Vec<_>>();
-            if extracted.is_empty() {
-                break;
-            }
-            self.idtree.isolate_nodes(extracted);
-        }
-        ordered_removables.retain(|&v| self.idtree.active_nodes().contains(&v));
-        if DO_DBG {
-            println!(
-                "  num active nodes {} and removables {}",
-                self.idtree.active_nodes().len(),
-                ordered_removables.len()
-            );
-        }
+        self.ref_graph
+            .filter_map(
+                |node_idx, _| {
+                    if x.contains(&node_idx.index()) {
+                        Some(())
+                    } else {
+                        None
+                    }
+                },
+                |_, edge_idx| Some(*edge_idx),
+            )
+            .edge_indices()
+            .for_each(|edge_idx| {
+                let (u, v) = self.ref_graph.edge_endpoints(edge_idx).unwrap();
+                self.idtree.insert_edge(u.index(), v.index());
+            });
+        self.idtree_active_indices = self.idtree.active_nodes().into_iter().collect();
     }
 
     /// Updates self._bridge_* variables with relevant bridged component nodes.
