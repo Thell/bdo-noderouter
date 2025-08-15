@@ -291,7 +291,7 @@ impl NodeRouter {
 
         // Convert all remaining active indices in idtree to waypoints and return
         if DO_DBG {
-            println!("Translating results...");
+            println!("Translating winning results...");
         }
         let winner = if forward_weight < reverse_weight {
             forward_result
@@ -314,21 +314,33 @@ impl NodeRouter {
 
     /// Set of all terminals, fixed roots and leaf terminal parents
     fn generate_untouchables(&mut self) {
+        if DO_DBG {
+            println!("Generating untouchables...");
+        }
+
         self.untouchables.clear();
         self.untouchables.extend(self.terminal_to_root.keys());
         self.untouchables.extend(self.terminal_to_root.values());
         self.untouchables.remove(&SUPER_ROOT);
 
         // Add unambigous connected nodes (degree 1)...
-        if DO_DBG {
-            println!("  untouchables: {:?}", self.untouchables);
-        }
         for &node in self.untouchables.clone().iter() {
             if let Some(neighbors) = self.index_to_neighbors.get(&node) {
                 if neighbors.len() == 1 {
                     self.untouchables.extend(neighbors);
                 }
             }
+        }
+        if DO_DBG {
+            let untouchable_waypoints = self
+                .untouchables
+                .iter()
+                .map(|&i| self.index_to_waypoint[&i])
+                .collect::<Vec<_>>();
+            println!(
+                "  untouchables (w/unambiguous connections): {:?}",
+                untouchable_waypoints
+            );
         }
     }
 
@@ -426,11 +438,31 @@ impl NodeRouter {
         while let Some(violated_sets) = self.violated_sets(&x) {
             let violated: IntSet<_> = violated_sets.into_iter().flatten().collect();
             let frontier_nodes = self.find_frontier_nodes(&violated, None);
+            if DO_DBG {
+                let frontier_node_waypoints = frontier_nodes
+                    .iter()
+                    .map(|&i| self.index_to_waypoint[&i])
+                    .collect::<Vec<_>>();
+                println!("frontier_node_waypoints {:?}", frontier_node_waypoints);
+            }
+
+            for &v in &frontier_nodes {
+                y[v] += 1;
+            }
+
             let tight_nodes: Vec<_> = frontier_nodes
                 .iter()
                 .cloned()
                 .filter(|&v| y[v] == self.index_to_weight[&v])
                 .collect();
+
+            if DO_DBG {
+                let tight_node_waypoints: Vec<usize> = tight_nodes
+                    .iter()
+                    .map(|&i| self.index_to_waypoint[&i])
+                    .collect();
+                println!("tight_node_waypoints {:?}", tight_node_waypoints);
+            }
 
             x.extend(&tight_nodes);
             ordered_removables.extend(self.sort_by_weights(&tight_nodes, None));
@@ -595,6 +627,13 @@ impl NodeRouter {
     }
 
     fn sort_by_weights(&self, numbers: &[usize], weights: Option<&[usize]>) -> Vec<usize> {
+        // NOTE:
+        // The sorting here was purely for deterministic testing while refactoring from networkx.
+        // But amazingly enough this _dramatically_ improves results with PD!
+        // Considering this is sorting by 'waypoint_key' it doesn't really represent a weight
+        // that _should_ have anything to do with the component growth but since the keys
+        // are somewhat geographically ordered the structural ordering of the bridge
+        // and removal candidates during the bridge heuristics is altered.
         let effective_weights: Vec<usize> = match weights {
             Some(ws) => ws.to_vec(),
             None => numbers
@@ -608,13 +647,6 @@ impl NodeRouter {
             .zip(numbers.iter().cloned())
             .collect();
 
-        // NOTE:
-        // The sorting here was purely for deterministic testing while refactoring from networkx.
-        // But amazingly enough this _dramatically_ improves results with PD!
-        // Considering this is sorting by 'waypoint_key' it doesn't really represent a weight
-        // that _should_ have anything to do with the component growth but since the keys
-        // are somewhat geographically ordered the structural ordering of the bridge
-        // and removal candidates during the bridge heuristics is altered.
         pairs.sort_unstable();
 
         pairs.into_iter().map(|(_, number)| number).collect()
@@ -776,6 +808,9 @@ impl NodeRouter {
                 if self.was_seen_before(&bridge, &bridge_rooted_cycles, &mut seen_before_cache) {
                     self.idtree.isolate_nodes(reisolate_bridge_nodes);
                     self.idtree_active_indices = incumbent_indices.clone();
+                    if DO_DBG {
+                        println!("  skipping as seen before...")
+                    }
                     continue;
                 }
 
@@ -784,6 +819,9 @@ impl NodeRouter {
                 else {
                     self.idtree.isolate_nodes(reisolate_bridge_nodes);
                     self.idtree_active_indices = incumbent_indices.clone();
+                    if DO_DBG {
+                        println!("  skipping as no removal candidates...")
+                    }
                     continue;
                 };
 
@@ -799,6 +837,10 @@ impl NodeRouter {
                     let tmp: Vec<usize> = bridge.iter().copied().collect();
                     ordered_removables.extend(self.sort_by_weights(tmp.as_slice(), None));
                     break;
+                }
+
+                if DO_DBG {
+                    println!("  failed to improve...");
                 }
 
                 self.idtree.isolate_nodes(reisolate_bridge_nodes);
@@ -855,6 +897,18 @@ impl NodeRouter {
 
         let root = *bridge.iter().next()?;
         let all_cycles = self.idtree.cycle_basis(Some(root));
+        if DO_DBG {
+            let all_cycle_waypoints: Vec<_> = all_cycles
+                .iter()
+                .map(|cycle| {
+                    cycle
+                        .iter()
+                        .map(|&v| self.index_to_waypoint[&v])
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            println!("all_cycle waypoints {:?}", all_cycle_waypoints);
+        }
 
         let filtered: Vec<IntSet<usize>> = all_cycles
             .into_iter()
@@ -867,6 +921,18 @@ impl NodeRouter {
         if filtered.is_empty() {
             None
         } else {
+            if DO_DBG {
+                let filtered_waypoints: Vec<_> = filtered
+                    .iter()
+                    .map(|cycle| {
+                        cycle
+                            .iter()
+                            .map(|&v| self.index_to_waypoint[&v])
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                println!("filtered_waypoints {:?}", filtered_waypoints);
+            }
             Some(filtered)
         }
     }
@@ -943,10 +1009,11 @@ impl NodeRouter {
                 .map(|&(v, _)| self.index_to_waypoint[&v])
                 .collect::<Vec<_>>();
             println!(
-                "Improving component for bridge {:?} => {:?}... using removal candidates {:?} => {:?}...",
+                "Improving component for bridge {:?} => {:?}...\n  using removal candidates {:?} => {:?}...",
                 bridge, bridge_waypoints, removal_candidates, removal_set_waypoints
             );
         }
+
         let mut ordered_removables = ordered_removables.to_owned();
         let mut removal_attempts = 0;
         let max_removal_attempts = self.max_removal_attempts;
@@ -975,6 +1042,14 @@ impl NodeRouter {
                 break;
             }
 
+            if DO_DBG {
+                let removal_set_waypoints: Vec<_> = removal_set
+                    .iter()
+                    .map(|&v| self.index_to_waypoint[&v])
+                    .collect();
+                println!("  removing removal set {:?}", removal_set_waypoints);
+            }
+
             let mut deleted_edges = Vec::new();
             for &v in &removal_set {
                 let neighbors = self.index_to_neighbors[&v].intersection(&bridged_component);
@@ -995,8 +1070,8 @@ impl NodeRouter {
                         .map(|&v| self.index_to_waypoint[&v])
                         .collect::<Vec<_>>();
                     println!(
-                        "Skipping removal set {:?} => {:?}...",
-                        removal_set, removal_set_waypoints
+                        "  skipping removal set as not connected... {:?}...",
+                        removal_set_waypoints
                     );
                 }
                 continue;
@@ -1027,6 +1102,14 @@ impl NodeRouter {
                     self.idtree.insert_edge(v, u);
                 }
                 continue;
+            }
+
+            if DO_DBG {
+                println!(
+                    "  Improved Component! cost:{}, components: {}",
+                    new_weight,
+                    self.idtree.num_connected_components()
+                );
             }
 
             let mut ret_val = freed.clone();
