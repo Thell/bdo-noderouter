@@ -33,6 +33,20 @@ pub struct ExplorationNodeData {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+#[derive(Clone)]
+pub struct DynamicState {
+    combo_gen_direction: bool,
+    has_super_terminal: bool,
+    idtree: IDTree,
+    idtree_active_indices: IntSet<usize>,
+    terminal_to_root: IntMap<usize, usize>,
+    untouchables: IntSet<usize>,
+    connected_pairs: RapidHashSet<(usize, usize)>,
+    bridge_affected_base_towns: IntSet<usize>,
+    bridge_affected_indices: IntSet<usize>,
+    bridge_affected_terminals: RapidHashSet<(usize, usize)>,
+}
+
 /// Solves Node-Weighted Steiner Forest using primal-dual and bridge heuristics.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "python", pyclass(unsendable))]
@@ -44,6 +58,8 @@ pub struct NodeRouter {
     max_removal_attempts: usize,
     // Used for controlling the sort order of removal set generator.
     combo_gen_direction: bool, // 'true' for descending
+    // Used for controlling special case handlers for super terminals
+    has_super_terminal: bool,
 
     // Static Mappings
     base_towns: IntSet<usize>,
@@ -172,6 +188,7 @@ impl NodeRouter {
             max_node_weight,           // static
             max_removal_attempts: 350, // static
             combo_gen_direction: true,
+            has_super_terminal: false,
             base_towns,         // static
             index_to_neighbors, // static
             index_to_waypoint,  // static
@@ -189,125 +206,116 @@ impl NodeRouter {
         }
     }
 
-    /// Solve for a list of terminal pairs [(terminal, root), ...]
-    /// where root is an exploration data waypoint with attribute `is_base_town`
-    /// or `99999` to indicate a super-terminal that can connect to any base town.
-    pub fn solve_for_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) -> Vec<usize> {
-        self.terminal_to_root.clear();
-        self.connected_pairs.clear();
-        self.bridge_affected_base_towns.clear();
-        self.bridge_affected_indices.clear();
-        self.bridge_affected_terminals.clear();
+    fn clear_dynamic_state(&mut self) {
+        self.combo_gen_direction = true;
+        self.has_super_terminal = false;
         for node in self.idtree.active_nodes() {
             self.idtree.isolate_node(node);
         }
         self.idtree_active_indices.clear();
-        self.combo_gen_direction = true;
+        self.terminal_to_root.clear();
+        self.untouchables.clear();
+        self.connected_pairs.clear();
+        self.bridge_affected_base_towns.clear();
+        self.bridge_affected_indices.clear();
+        self.bridge_affected_terminals.clear();
+    }
 
-        if DO_DBG {
-            println!("solve for terminal pairs: {:?}", terminal_pairs);
+    pub fn get_dynamic_state(&self) -> DynamicState {
+        DynamicState {
+            combo_gen_direction: self.combo_gen_direction,
+            has_super_terminal: self.has_super_terminal,
+            idtree: self.idtree.clone(),
+            idtree_active_indices: self.idtree_active_indices.clone(),
+            terminal_to_root: self.terminal_to_root.clone(),
+            untouchables: self.untouchables.clone(),
+            connected_pairs: self.connected_pairs.clone(),
+            bridge_affected_base_towns: self.bridge_affected_base_towns.clone(),
+            bridge_affected_indices: self.bridge_affected_indices.clone(),
+            bridge_affected_terminals: self.bridge_affected_terminals.clone(),
         }
-        let tmp_indices: Vec<_> = terminal_pairs
-            .iter()
-            .map(|(t, r)| {
-                let t_idx = self.waypoint_to_index.get(t).unwrap();
-                let r_idx = if r == &SUPER_ROOT {
-                    SUPER_ROOT
-                } else {
-                    *self.waypoint_to_index.get(r).unwrap()
-                };
-                (t_idx, r_idx)
-            })
-            .collect();
-        if DO_DBG {
-            println!("at indices: {:?}", tmp_indices);
-        }
+    }
 
+    pub fn restore_dynamic_state(&mut self, state: DynamicState) {
+        self.combo_gen_direction = state.combo_gen_direction.clone();
+        self.has_super_terminal = state.has_super_terminal.clone();
+        self.idtree = state.idtree.clone();
+        self.idtree_active_indices = state.idtree_active_indices.clone();
+        self.terminal_to_root = state.terminal_to_root.clone();
+        self.untouchables = state.untouchables.clone();
+        self.connected_pairs = state.connected_pairs.clone();
+        self.bridge_affected_base_towns = state.bridge_affected_base_towns.clone();
+        self.bridge_affected_indices = state.bridge_affected_indices.clone();
+        self.bridge_affected_terminals = state.bridge_affected_terminals.clone();
+    }
+
+    fn init_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) {
         for (t, r) in terminal_pairs {
             let t_idx = *self.waypoint_to_index.get(&t).unwrap();
             let r_idx = if r == SUPER_ROOT {
+                self.has_super_terminal = true;
                 SUPER_ROOT
             } else {
                 *self.waypoint_to_index.get(&r).unwrap()
             };
             self.terminal_to_root.insert(t_idx, r_idx);
         }
+    }
+
+    fn idtree_weight(&self) -> (IntSet<usize>, usize) {
+        let active_nodes = self.idtree_active_indices.clone();
+        let total_weight: usize = active_nodes.iter().map(|&i| self.index_to_weight[&i]).sum();
 
         if DO_DBG {
-            println!("Generating untouchables...");
+            println!(
+                "  pass completed... terminals connected: {:?} weight: {}",
+                self.terminal_pairs_connected(),
+                total_weight
+            );
         }
+
+        (active_nodes, total_weight)
+    }
+
+    /// Solve for a list of terminal pairs [(terminal, root), ...]
+    /// where root is an exploration data waypoint with attribute `is_base_town`
+    /// or `99999` to indicate a super-terminal that can connect to any base town.
+    pub fn solve_for_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) -> Vec<usize> {
+        if DO_DBG {
+            println!("solve for terminal pairs: {:?}", terminal_pairs);
+        }
+
+        self.clear_dynamic_state();
+        self.init_terminal_pairs(terminal_pairs);
         self.generate_untouchables();
-        if DO_DBG {
-            println!("  untouchables len {}", self.untouchables.len());
-        }
 
-        if DO_DBG {
-            println!("Forward pass approximating...");
-        }
         let ordered_removables = self.approximate();
-        self.bridge_heuristics(&mut ordered_removables.clone());
-        let forward_weight: usize = self
-            .idtree
-            .active_nodes()
-            .iter()
-            .map(|&i| self.index_to_weight[&i])
-            .sum();
-        let forward_result = self.idtree_active_indices.clone();
-        if DO_DBG {
-            println!(
-                "Forward pass completed... terminals_connected: {:?} weight: {}",
-                self.terminal_pairs_connected(),
-                forward_weight
-            );
-        }
+        let post_approximation_state = self.get_dynamic_state();
 
-        // No need to redo the approximation...
-        // Restore post-approximation state...
+        if DO_DBG {
+            println!("Forward pass...");
+        }
+        self.bridge_heuristics(&mut ordered_removables.clone());
+        let (fwd_indices, fwd_weight) = self.idtree_weight();
+
+        self.restore_dynamic_state(post_approximation_state);
         self.combo_gen_direction = false;
-        self.bridge_affected_base_towns.clear();
-        self.bridge_affected_indices.clear();
-        self.bridge_affected_terminals.clear();
-        self.connected_pairs.clear();
 
         if DO_DBG {
-            println!("Reverse pass approximating...");
+            println!("Reverse pass...");
         }
-        let ordered_removables = self.approximate();
         self.bridge_heuristics(&mut ordered_removables.clone());
-        let reverse_weight: usize = self
-            .idtree
-            .active_nodes()
-            .iter()
-            .map(|&i| self.index_to_weight[&i])
-            .sum();
-        let reverse_result = self.idtree_active_indices.clone();
-        if DO_DBG {
-            println!(
-                "Reverse pass completed... terminals_connected: {:?} weight: {}",
-                self.terminal_pairs_connected(),
-                reverse_weight
-            );
-        }
+        let (rev_indices, rev_weight) = self.idtree_weight();
 
-        // Convert all remaining active indices in idtree to waypoints and return
+        // Convert idtree active nodes of winning pass to waypoints and return
         if DO_DBG {
             println!("Translating winning results...");
         }
-        let winner = if forward_weight < reverse_weight {
-            forward_result
+        let winner = if fwd_weight < rev_weight {
+            fwd_indices
         } else {
-            reverse_result
+            rev_indices
         };
-        self.terminal_to_root.clear();
-        self.connected_pairs.clear();
-        self.bridge_affected_base_towns.clear();
-        self.bridge_affected_indices.clear();
-        self.bridge_affected_terminals.clear();
-        for node in self.idtree.active_nodes() {
-            self.idtree.isolate_node(node);
-        }
-        self.idtree_active_indices.clear();
-        self.combo_gen_direction = true;
 
         winner.iter().map(|&i| self.index_to_waypoint[&i]).collect()
     }
