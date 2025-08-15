@@ -81,6 +81,10 @@ impl Iterator for WeightedComboIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
+            if self.state.target_weight > self.state.max_target_weight {
+                self.state.done = true;
+                return None;
+            }
             if self.state.done {
                 return None;
             }
