@@ -68,6 +68,9 @@ class PrimalDualNWSF:
         # Used in approximation to reduce violated set connectivity checks.
         self.connected_pairs: set[tuple[int, int]] = set()
 
+        # Used in approximation for super-terminal special case handling
+        self.has_super_terminal = SUPER_ROOT in self.terminal_to_root.values()
+
         # Bridge heuristics
 
         # 10_000 is the single reverse pass threshold used for benching since early development
@@ -138,7 +141,7 @@ class PrimalDualNWSF:
         if self.do_debug:
             logger.debug(f"Added degree 1 terminal parents to X. New  size: {len(X)}...")
 
-    def pyGraph_subgraph_stable(
+    def ref_subgraph_stable(
         self, indices: list[int] | set[int], source_graph: rx.PyGraph | None = None, inclusive: bool = True
     ) -> rx.PyGraph:
         """Copies ref graph and deletes all nodes not in indices if inclusive is True.
@@ -243,7 +246,7 @@ class PrimalDualNWSF:
 
         - re-assigns original terminal roots pairs to pairs from the approximation clusters.
         """
-        subgraph = self.pyGraph_subgraph_stable(list(self.idtree.active_nodes()))
+        subgraph = self.ref_subgraph_stable(list(self.idtree.active_nodes()))
         if self.do_info:
             logger.info("Finalizing solution...")
             self.dump_graph_specs(subgraph)
@@ -330,20 +333,17 @@ class PrimalDualNWSF:
 
     def approximate(self) -> list[int]:
         start_time = time.perf_counter()
+        if self.do_debug:
+            logger.debug("Starting PD Approximation...")
 
         X = self.generate_untouchables()
-
-        if self.do_debug:
-            logger.debug(f"Initialized approximation with {len(X)} nodes...")
-            starting_ccs = rx.connected_components(self.ref_graph.subgraph(list(X)))
-            logger.debug(
-                f"There are {len(starting_ccs)} connected components in X of sizes: {sorted([len(cc) for cc in starting_ccs])}",
-            )
+        if self.has_super_terminal:
+            self.augment_superterminal_roots(X)
 
         X, iters, ordered_removables = self.primal_dual_approximation(X)
 
         # Initializing the idtree using the PyGraph just seems simplest...
-        subgraph = self.pyGraph_subgraph_stable(X)
+        subgraph = self.ref_subgraph_stable(X)
         for v in subgraph.node_indices():
             for u in subgraph.neighbors(v):
                 self.idtree.insert_edge(u, v)
@@ -355,7 +355,6 @@ class PrimalDualNWSF:
         # reverse order to facilitate the removal of the latest nodes to 'go tight' first.
         # The list is reversed here and processed in forward order thoughout the remainder
         # of the algorithm and bridge heuristic processing.
-        ordered_removables = self.prune_approximation(ordered_removables)
         ordered_removables = list(reversed(ordered_removables))
         if self.do_debug:
             incumbent_weight = sum(self.index_to_weight[v] for v in self.idtree.active_nodes())
@@ -383,6 +382,59 @@ class PrimalDualNWSF:
 
         return ordered_removables
 
+    def augment_superterminal_roots(self, x: set[int]) -> None:
+        """
+        Augments initial approximation set with super-terminal potential roots when
+        that root is nearer than any existing rooted node in the current approximation set.
+        """
+        import heapq
+
+        working_roots = self.terminal_to_root.copy()
+        pending_super_terminals: set[int] = {t for t, r in working_roots.items() if r == SUPER_ROOT}
+
+        # Processes the super terminals such that the super-terminal nearest a fixed
+        # terminal or any base town is completed first and then becomes available to
+        # be a potential root until all super terminals have a potential root in x.
+        while pending_super_terminals:
+            # (super_terminal, target_node, cost)
+            super_terminal_distances: list[tuple[int, int, int]] = []
+
+            for terminal in pending_super_terminals:
+                heap: list[tuple[int, int]] = [(0, terminal)]
+                visited: set[int] = set()
+
+                while heap:
+                    cost, node = heapq.heappop(heap)
+                    if node in visited:
+                        continue
+                    visited.add(node)
+
+                    if node != terminal:
+                        is_rooted = (node in working_roots and working_roots[node] != SUPER_ROOT) or (
+                            node in self.base_towns
+                        )
+                        if is_rooted:
+                            super_terminal_distances.append((terminal, node, cost))
+                            break
+
+                    for neighbor in self.index_to_neighbors[node]:
+                        if neighbor in visited:
+                            continue
+                        next_cost = cost if neighbor in x else cost + self.index_to_weight[neighbor]
+                        heapq.heappush(heap, (next_cost, neighbor))
+
+            super_terminal_distances.sort(key=lambda t: t[2])
+            terminal, target, cost = super_terminal_distances[0]
+            x.add(target)
+            working_roots[terminal] = target
+            pending_super_terminals.remove(terminal)
+
+            if self.do_debug:
+                logger.debug(
+                    f"  super-terminal {self.index_to_waypoint[terminal]} "
+                    f"should connect to {self.index_to_waypoint[target]} (cost = {cost})"
+                )
+
     def primal_dual_approximation(self, X: set[int]) -> tuple[set[int], int, list[int]]:
         """Classical variant based on Demaine et al."""
         # While the main loop operations and frontier node calculations are set based the
@@ -390,7 +442,9 @@ class PrimalDualNWSF:
         # connected_components on the full graph. The loop usually only iterates a half
         # dozen times.
         if self.do_debug:
-            logger.info("Running primal-dual approximation")
+            logger.debug(
+                f"Running primal-dual approximation for x of length {len(X)}: {sorted([self.index_to_waypoint[v] for v in X])}..."
+            )
 
         y = [0] * self.ref_graph.num_nodes()
         ordered_removables = []
@@ -398,14 +452,23 @@ class PrimalDualNWSF:
         while violated_sets := self.violated_sets(X):
             viol_iters += 1
             violated = set().union(*violated_sets)
+
             if self.do_trace:
-                logger.trace(f"Violated nodes: {[self.index_to_waypoint[v] for v in violated]}")
+                violated_waypoints = [self.index_to_waypoint[v] for v in violated]
+                violated_waypoints.sort()
+                logger.trace(
+                    f"  violated waypoints from {len(violated_sets)} components: {violated_waypoints}"
+                )
+
             frontier_nodes = self.find_frontier_nodes(violated)
-            tight_nodes = [v for v in frontier_nodes if y[v] == self.index_to_weight[v]]
-            X.update(tight_nodes)
-            ordered_removables.extend(self.sort_by_weights(tight_nodes))
+
             for v in frontier_nodes:
                 y[v] += 1
+
+            tight_nodes = [v for v in frontier_nodes if y[v] >= self.index_to_weight[v]]
+            X.update(tight_nodes)
+            ordered_removables.extend(self.sort_by_weights(tight_nodes))
+
         return X, viol_iters, ordered_removables
 
     def sort_by_weights(self, numbers: list[int], weights: list[int] | None = None):
@@ -421,29 +484,8 @@ class PrimalDualNWSF:
         pairs = zip(weights, numbers)
         sorted_pairs = sorted(pairs)
         sorted_numbers = [number for _, number in sorted_pairs]
+
         return sorted_numbers
-
-    def prune_approximation(self, ordered_removables: list[int]) -> list[int]:
-        """Simple straight forward pruning of non-terminal degree 1 nodes from the graph."""
-        if self.do_debug:
-            logger.debug("Pruning degree 1 nodes...")
-
-        terminal_indices = set(self.terminal_to_root.keys())
-        untouchable_indices = terminal_indices | self.untouchables.intersection(self.idtree_active_indices)
-
-        while indices := [
-            i
-            for i in self.idtree_active_indices
-            if self.idtree.degree(i) == 1 and i not in untouchable_indices
-        ]:
-            for i in indices:
-                self.idtree.isolate_node(i)
-                self.idtree_active_indices.remove(i)
-            if self.do_debug:
-                logger.debug(f"Removed {len(indices)} degree 1 nodes")
-
-        ordered_removables = [v for v in ordered_removables if v in self.idtree.active_nodes()]
-        return ordered_removables
 
     def find_frontier_nodes(self, settlement: set[int], min_degree=0) -> set[int]:
         """Finds and returns nodes not in settlement with neighbors in settlement."""
@@ -458,43 +500,24 @@ class PrimalDualNWSF:
             frontier = {v for v in frontier if len(self.index_to_neighbors[v]) >= min_degree}
 
         if self.do_debug:
-            logger.debug(f"Found {len(frontier)} frontier nodes for settlement of size {len(settlement)}...")
+            logger.debug(
+                f"  found {len(frontier)} frontier nodes for settlement of size {len(settlement)}..."
+            )
 
         return frontier
 
     def violated_sets(self, nodes_subset: set[int]) -> list[set[int]]:
         """Returns connected components violating connectivity constraints."""
         if self.do_debug:
-            logger.debug("Finding violated sets...")
+            logger.debug(f"  checking for violated sets for x of length {len(nodes_subset)}...")
 
-        # It is fairly common in the smaller test incidents that a super terminal can
-        # be placed in a Terminal Cluster Set of a component with a higher cost simply
-        # because another (cheaper) component near it is non-violated. To avoid these
-        # situations reset the connected pairs cache and mark all components as violated
-        # until all super terminals are connected. Since it is assumed that super terminals
-        # are listed last in the terminal_to_root listing use reversed to eliminate almost
-        # all overhead associated with tightening and removing more frontier nodes.
-
-        # Another scenario where a super terminal can be put in a higher cost component
-        # is when it is nearer to a basetown that is a potential super-terminal root but
-        # that basetown isn't a fixed root for any other terminal while the super-terminal
-        # is also near enough to a higher cost component's settlement that _is_ violated,
-        # meaning the violated component and super-terminal component both grow while the
-        # potential super-terminal root basetown doesn't leading to the super-terminal
-        # joining with the higher cost component prior to joining with the lower costing
-        # basetown. A possible fix for this is to include potential roots in the violated
-        # components until all super terminals are not violated where the potential roots
-        # are those that are nearest to the super-terminals, and if that basetown is already
-        # a fixed basetown for a terminal then nothing special needs to be done.
-
-        has_violated_super_terminal = False
-        subgraph = self.pyGraph_subgraph_stable(nodes_subset)
+        subgraph = self.ref_subgraph_stable(nodes_subset)
         connected_components = rx.connected_components(subgraph)
         violated: list[set[int]] = []
         for cc in connected_components:
             # Since the pd approximation is additive we can safely avoid duplicate checks.
             active_terminals = [
-                p for p in reversed(list(self.terminal_to_root.items())) if p not in self.connected_pairs
+                p for p in list(self.terminal_to_root.items()) if p not in self.connected_pairs
             ]
             for terminal, root in active_terminals:
                 terminal_in_cc = terminal in cc
@@ -505,21 +528,13 @@ class PrimalDualNWSF:
                 )
 
                 if not terminal_in_cc and not root_in_cc:
-                    if root == SUPER_ROOT:
-                        has_violated_super_terminal = True
-                        break
                     continue
                 if terminal_in_cc and root_in_cc:
                     self.connected_pairs.add((terminal, root))
                 else:
-                    if root == SUPER_ROOT:
-                        has_violated_super_terminal = True
-                        break
                     violated.append(cc)
+                    break
 
-        if has_violated_super_terminal:
-            self.connected_pairs.clear()
-            return connected_components
         return violated
 
     ###################################################################
@@ -748,7 +763,7 @@ class PrimalDualNWSF:
             # NOTE: Each ring is only a single node 'thick' so the `all_pairs_all_simple_paths`
             # is an efficient way to obtain all size constrained connected runs within the ring
             # along with the associated endpoint nodes.
-            subgraph = self.pyGraph_subgraph_stable(nodes)
+            subgraph = self.ref_subgraph_stable(nodes)
             tmp = rx.all_pairs_all_simple_paths(subgraph, cutoff=ring_combo_cutoff[ring_idx])
             seen_endpoints: set[tuple[int, int]] = set()
 
@@ -1184,12 +1199,15 @@ if __name__ == "__main__":
     graph = get_exploration_graph(config)
     assert isinstance(graph, rx.PyDiGraph)
     for terminals, optimal_cost in test_sets:
-        print(f"\nOptimizing graph with {terminals=} terminals...")
+        print(f"\nOptimizing graph with {terminals=}...")
         result = optimize_with_terminals(graph, terminals, config)
         solution_graph = result["solution_graph"]
         objective_value = result["objective_value"]
         solution_waypoints = []
         for node in solution_graph.nodes():
             solution_waypoints.append(node["waypoint_key"])
-        print(solution_waypoints)
-        print(f"Solution cost: {objective_value} (pass: {objective_value == optimal_cost})")
+        logger.info(solution_waypoints)
+        if objective_value == optimal_cost:
+            logger.success(f"PASS: Solution cost: {objective_value}")
+        else:
+            logger.error(f"FAIL: Solution cost: {objective_value} (expected: {optimal_cost})")
