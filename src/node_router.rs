@@ -7,7 +7,9 @@ use std::ops::CoroutineState;
 use nohash_hasher::{IntMap, IntSet};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::NodeIndex;
+use petgraph::prelude::StableGraph;
 use petgraph::stable_graph::StableUnGraph;
+use petgraph::Undirected;
 use rapidhash::fast::RapidHashSet;
 use rapidhash::v3::rapidhash_v3;
 use serde::Deserialize;
@@ -277,6 +279,21 @@ impl NodeRouter {
         (active_nodes, total_weight)
     }
 
+    /// Induce subgraph from self.ref_graph using node indices
+    fn ref_subgraph_stable(&self, indices: &IntSet<usize>) -> StableGraph<(), usize, Undirected> {
+        let subgraph = self.ref_graph.filter_map(
+            |node_idx, _| {
+                if indices.contains(&node_idx.index()) {
+                    Some(())
+                } else {
+                    None
+                }
+            },
+            |_, edge_idx| Some(*edge_idx),
+        );
+        subgraph
+    }
+
     /// Solve for a list of terminal pairs [(terminal, root), ...]
     /// where root is an exploration data waypoint with attribute `is_base_town`
     /// or `99999` to indicate a super-terminal that can connect to any base town.
@@ -361,8 +378,25 @@ impl NodeRouter {
         }
 
         let mut x = self.untouchables.clone();
+        if DO_DBG {
+            let mut x_waypoints = x
+                .iter()
+                .map(|&i| self.index_to_waypoint[&i])
+                .collect::<Vec<_>>();
+            x_waypoints.sort();
+            println!("  initializing x to {:?}", x_waypoints);
+        }
+
         if self.has_super_terminal {
             self.augment_superterminal_roots(&mut x);
+            if DO_DBG {
+                let mut x_waypoints = x
+                    .iter()
+                    .map(|&i| self.index_to_waypoint[&i])
+                    .collect::<Vec<_>>();
+                x_waypoints.sort();
+                println!("  augmented x to {:?}", x_waypoints);
+            }
         }
 
         let (x, mut ordered_removables) = self.primal_dual_approximation(x);
@@ -484,19 +518,39 @@ impl NodeRouter {
         // The main loop operations and frontier node calculations are set based.
         // The violated sets identification requires subgraphing the ref_graph and running
         // connected_components. The loop usually only iterates a half dozen times.
+        if DO_DBG {
+            let mut x_waypoints = x
+                .iter()
+                .map(|&i| self.index_to_waypoint[&i])
+                .collect::<Vec<_>>();
+            x_waypoints.sort();
+            println!(
+                "Running primal-dual approximation for x of length {}: {:?}...",
+                x.len(),
+                x_waypoints
+            );
+        }
+
         let mut y = vec![0; self.ref_graph.node_count()];
         let mut ordered_removables = Vec::new();
 
         while let Some(violated_sets) = self.violated_sets(&x) {
+            let num_violated_sets = violated_sets.len();
             let violated: IntSet<_> = violated_sets.into_iter().flatten().collect();
-            let frontier_nodes = self.find_frontier_nodes(&violated, None);
+
             if DO_DBG {
-                let frontier_node_waypoints = frontier_nodes
+                let mut violated_waypoints = violated
                     .iter()
                     .map(|&i| self.index_to_waypoint[&i])
                     .collect::<Vec<_>>();
-                println!("frontier_node_waypoints {:?}", frontier_node_waypoints);
+                violated_waypoints.sort();
+                println!(
+                    "  violated waypoints from {} components: {:?}",
+                    num_violated_sets, violated_waypoints
+                );
             }
+
+            let frontier_nodes = self.find_frontier_nodes(&violated, None);
 
             for &v in &frontier_nodes {
                 y[v] += 1;
@@ -526,22 +580,14 @@ impl NodeRouter {
     /// Returns connected components violating connectivity constraints.
     fn violated_sets(&mut self, x: &IntSet<usize>) -> Option<Vec<IntSet<usize>>> {
         if DO_DBG {
-            println!("Checking for violated sets...");
+            println!(
+                "  checking for violated sets for x of length {}...",
+                x.len()
+            );
         }
 
-        // Induce subgraph from self.ref_graph using node indices in x
-        let subgraph = self.ref_graph.filter_map(
-            |node_idx, _| {
-                if x.contains(&node_idx.index()) {
-                    Some(())
-                } else {
-                    None
-                }
-            },
-            |_, edge_idx| Some(*edge_idx),
-        );
-
         // Compute connected components (undirected graph)
+        let subgraph = self.ref_subgraph_stable(x);
         let components: Vec<IntSet<usize>> = tarjan_scc(&subgraph)
             .into_iter()
             .map(|comp| comp.iter().map(|nidx| nidx.index()).collect())
@@ -558,53 +604,33 @@ impl NodeRouter {
             println!("components_as_waypoints {:?}", components_as_waypoints);
         }
 
-        // Here we test each iteration's current active terminals located with
-        // the current component. This allows short-circuiting of testing once
-        // all terminals are connected as well as per iteration reduction of
-        // testable pairs.
-        let mut violated = Vec::new();
+        let mut violated: Vec<IntSet<usize>> = Vec::new();
         for cc in &components {
+            // Since the pd approximation is additive we can safely avoid duplicate checks.
             let tmp_connected_pairs = self.connected_pairs.clone();
             let active_terminals = self
                 .terminal_to_root
                 .iter()
                 .filter(|p| !tmp_connected_pairs.contains(&(*p.0, *p.1)));
 
-            let mut cc_violated = false;
-
             for (&terminal, &root) in active_terminals {
                 let terminal_in_cc = cc.contains(&terminal);
 
-                // Test for any base town in the component if terminal is a super terminal.
                 let root_in_cc = if root == SUPER_ROOT {
-                    if DO_DBG {
-                        let tmp: Vec<_> = cc.intersection(&self.base_towns).collect();
-                        println!("cc: {:?}", cc);
-                        println!("base_towns: {:?}", self.base_towns);
-                        println!("intersection: {:?}", tmp);
-                    }
                     cc.intersection(&self.base_towns).next().is_some()
                 } else {
                     cc.contains(&root)
                 };
 
-                // Neither of the pair are in cc... skip...
                 if !terminal_in_cc && !root_in_cc {
                     continue;
                 }
-
-                // Both are in the cc, record and continue...
                 if terminal_in_cc && root_in_cc {
                     self.connected_pairs.insert((terminal, root));
                 } else {
-                    // The pair is violated...
-                    cc_violated = true;
+                    violated.push(cc.clone());
                     break;
                 }
-            }
-
-            if cc_violated {
-                violated.push(cc.clone());
             }
         }
 
@@ -622,10 +648,7 @@ impl NodeRouter {
         min_degree: Option<usize>,
     ) -> IntSet<usize> {
         if DO_DBG {
-            println!(
-                "Finding frontier nodes for settlement of size {}...",
-                settlement.len()
-            );
+            println!("Finding frontier nodes ...",);
         }
         let mut frontier = settlement
             .iter()
@@ -638,7 +661,11 @@ impl NodeRouter {
             frontier.retain(|v| self.index_to_neighbors[v].len() >= min_degree);
         }
         if DO_DBG {
-            println!("  num frontier nodes {}", frontier.len());
+            println!(
+                "  found {} frontier nodes for settlement of size {}",
+                frontier.len(),
+                settlement.len()
+            );
         }
         frontier
     }
@@ -674,17 +701,7 @@ impl NodeRouter {
         if DO_DBG {
             println!("Populating IDTree...");
         }
-        self.ref_graph
-            .filter_map(
-                |node_idx, _| {
-                    if x.contains(&node_idx.index()) {
-                        Some(())
-                    } else {
-                        None
-                    }
-                },
-                |_, edge_idx| Some(*edge_idx),
-            )
+        self.ref_subgraph_stable(x)
             .edge_indices()
             .for_each(|edge_idx| {
                 let (u, v) = self.ref_graph.edge_endpoints(edge_idx).unwrap();

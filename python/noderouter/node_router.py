@@ -90,12 +90,15 @@ if __name__ == "__main__":
     graph = get_exploration_graph(config)
     assert isinstance(graph, rx.PyDiGraph)
     for terminals, optimal_cost in test_sets:
-        print(f"\nOptimizing graph with {terminals=} terminals...")
+        print(f"\nOptimizing graph with {terminals=}...")
         result = optimize_with_terminals(graph, terminals, config)
         solution_graph = result["solution_graph"]
         objective_value = result["objective_value"]
         solution_waypoints = []
         for node in solution_graph.nodes():
             solution_waypoints.append(node["waypoint_key"])
-        print(solution_waypoints)
-        print(f"Solution cost: {objective_value} (pass: {objective_value == optimal_cost})")
+        logger.info(solution_waypoints)
+        if objective_value == optimal_cost:
+            logger.success(f"PASS: Solution cost: {objective_value}")
+        else:
+            logger.error(f"FAIL: Solution cost: {objective_value} (expected: {optimal_cost})")
