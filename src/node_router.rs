@@ -464,9 +464,9 @@ impl NodeRouter {
             for &terminal in &pending_super_terminals {
                 let mut heap = BinaryHeap::new();
                 let mut visited = IntSet::default();
-                heap.push((Reverse(0), terminal));
+                heap.push((Reverse(0), Reverse(terminal)));
 
-                while let Some((Reverse(cost), node)) = heap.pop() {
+                while let Some((Reverse(cost), Reverse(node))) = heap.pop() {
                     if !visited.insert(node) {
                         continue;
                     }
@@ -493,7 +493,7 @@ impl NodeRouter {
                         } else {
                             cost + self.index_to_weight[&neighbor]
                         };
-                        heap.push((Reverse(next_cost), neighbor));
+                        heap.push((Reverse(next_cost), Reverse(neighbor)));
                     }
                 }
             }
