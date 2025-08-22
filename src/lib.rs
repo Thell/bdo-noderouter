@@ -4,7 +4,7 @@ mod generator_bridge;
 mod generator_weighted_combo;
 mod helpers_common;
 mod idtree;
-mod node_router;
+pub mod node_router;
 
 // Core exports, available for all builds
 pub use crate::idtree::IDTree;
