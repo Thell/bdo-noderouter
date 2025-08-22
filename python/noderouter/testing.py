@@ -227,12 +227,12 @@ def _run_test(
     assert isinstance(solution_graph, rx.PyDiGraph)
     assert isinstance(objective_value, int)
 
-    metrics["time"] = f"{solve_time:.2f}s"
+    metrics["time"] = f"{solve_time:.6f}s"
     num_components = _get_solution_metrics(solution_graph, objective_value, metrics)
 
     logger.info(f"Solution nodes: {[n['waypoint_key'] for n in solution_graph.nodes()]}")
 
-    logger.info(f"Solve time: {solve_time:.2f}s, Components: {num_components}, Cost: {objective_value}")
+    logger.info(f"Solve time: {solve_time:.6f}s, Components: {num_components}, Cost: {objective_value}")
     return solve_time, solution_graph, objective_value
 
 
@@ -376,7 +376,7 @@ def baselines(
         result = optimization_fn(exploration_graph, terminals, config)
         all_pass &= _validate_baselines(test_name, result, expected_value, config)
 
-    logger.info(f"Total testing time: {(time.perf_counter() - start_time):.2f}s")
+    logger.info(f"Total testing time: {(time.perf_counter() - start_time):.6f}s")
     return all_pass
 
 
