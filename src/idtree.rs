@@ -1,9 +1,11 @@
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
+use fixedbitset::FixedBitSet;
 use nohash_hasher::{IntMap, IntSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(align(64))]
 struct Node {
     parent: i32,
     subtree_size: usize,
@@ -30,12 +32,16 @@ impl Node {
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "python", pyclass(unsendable))]
+#[repr(align(64))]
 pub struct IDTree {
     n: usize,
     nodes: Vec<Node>,
-    used: Vec<bool>, // scratch area
-    q: Vec<usize>,   // scratch area
-    l: Vec<usize>,   // scratch area
+    used: Vec<bool>,            // scratch area
+    q: Vec<usize>,              // scratch area
+    l: Vec<usize>,              // scratch area
+    node_scratch0: FixedBitSet, // scratch area
+    node_scratch1: FixedBitSet, // scratch area
+    node_scratch2: FixedBitSet, // scratch area
 }
 
 #[cfg(feature = "python")]
@@ -166,78 +172,79 @@ impl IDTree {
         // Constructs a fundamental cycle basis for the connected component containing `root`,
         // using the ID-Tree structure as its spanning tree. A fundamental cycle is formed
         // each time a non-tree edge is encountered during DFS from the `root`.
-        //
-        // Each cycle:
-        // - Includes the `root` node
-        // - Is simple (no repeated nodes)
-        // - Is formed by combining paths from both endpoints of the non-tree edge up to their
-        //   lowest common ancestor (LCA) in the tree
-        //
-        // Assumes:
-        // - The underlying graph is undirected and simple (no self-loops or multi-edges)
-        // - The `parent` field in each node defines a rooted spanning tree (ID-Tree)
-        // - The `root` is a valid node within a connected component
         if root.is_none() {
             return vec![];
         }
         let root = root.unwrap();
-        let mut cycles = Vec::with_capacity(self.n / 2);
-        let mut seen_edges = IntSet::default();
-        let mut in_component = IntSet::default();
-        let mut stack = vec![root];
 
-        in_component.insert(root);
+        let mut cycles = Vec::with_capacity(self.n / 2);
+
+        let stack = &mut self.q;
+        let in_component = &mut self.node_scratch0;
+
+        stack.clear();
+        in_component.clear();
+
+        stack.push(root);
+        in_component.set(root, true);
 
         while let Some(u) = stack.pop() {
             for &v in &self.nodes[u].adj {
-                // Skip if already handled from other end
-                if seen_edges.contains(&(v * self.n + u)) || u == v {
-                    continue;
-                }
-
-                seen_edges.insert(u * self.n + v);
-
-                // First-time discovery of a node in this component
-                if in_component.insert(v) {
+                if !in_component[v] {
                     stack.push(v);
+                    in_component.set(v, true);
                 }
 
-                // Skip tree edges
                 let pu = self.nodes[u].parent;
                 let pv = self.nodes[v].parent;
                 if pu == v as i32 || pv == u as i32 {
                     continue;
                 }
 
+                if u >= v {
+                    continue;
+                }
+
                 // Found a fundamental cycle via (u, v)
-                let mut path_u = vec![u];
-                let mut path_v = vec![v];
+                let mut path_u = Vec::with_capacity(self.n);
+                let mut path_v = Vec::with_capacity(self.n);
+                path_u.push(u);
+                path_v.push(v);
+
+                let visited_u = &mut self.node_scratch1;
+                let visited_v = &mut self.node_scratch2;
+                visited_u.clear();
+                visited_v.clear();
+                visited_u.set(u, true);
+                visited_v.set(v, true);
+
                 let mut a = u;
                 let mut b = v;
-
-                let mut visited_u = IntSet::default();
-                visited_u.insert(a);
-                let mut visited_v = IntSet::default();
-                visited_v.insert(b);
 
                 while a != b {
                     if self.nodes[a].parent != -1 {
                         a = self.nodes[a].parent as usize;
-                        if !visited_u.insert(a) {
+                        if visited_u[a] {
                             break;
                         }
+                        visited_u.set(a, true);
+
                         path_u.push(a);
-                        if visited_v.contains(&a) {
+
+                        if visited_v[a] {
                             break;
                         }
                     }
                     if self.nodes[b].parent != -1 && a != b {
                         b = self.nodes[b].parent as usize;
-                        if !visited_v.insert(b) {
+                        if visited_v[b] {
                             break;
                         }
+                        visited_v.set(b, true);
+
                         path_v.push(b);
-                        if visited_u.contains(&b) {
+
+                        if visited_u[b] {
                             break;
                         }
                     }
@@ -250,8 +257,8 @@ impl IDTree {
                 while path_v.last() != Some(&lca) {
                     path_v.pop();
                 }
-
                 path_v.pop(); // avoid repeating lca
+
                 path_v.reverse();
                 path_u.extend(path_v);
                 cycles.push(path_u);
@@ -350,6 +357,9 @@ impl IDTree {
             used: vec![false; n],
             q: vec![],
             l: vec![],
+            node_scratch0: FixedBitSet::with_capacity(n),
+            node_scratch1: FixedBitSet::with_capacity(n),
+            node_scratch2: FixedBitSet::with_capacity(n),
         }
     }
 
