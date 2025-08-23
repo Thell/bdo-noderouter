@@ -10,16 +10,22 @@
 <body>
     <h1>NodeRouter WASM Demo</h1>
 
-    <label>Load clean exploration.json:</label>
-    <input type="file" id="fileInput" accept=".json" />
+    <label>Load clean exploration.json:</label><br>
+    <input type="file" id="fileInput" accept=".json" /><br>
 
-    <label>Terminal,Root pairs (comma-separated, e.g., 1,2 3,4):</label>
-    <textarea id="terminalPairs" rows="4" cols="40"></textarea>
+    <h2>Test Sets</h2>
+    <div class="test-sets">
+        <button data-testid="no_super">550 no super</button>
+        <button data-testid="super">550 super</button>
+    </div><br>
+
+    <label>Terminal,Root pairs (comma-separated, e.g., 1,2 3,4):</label><br>
+    <textarea id="terminalPairs" rows="4" cols="40"></textarea><br>
 
     <button id="solveBtn">Solve</button>
 
     <h3>Output</h3>
-    <pre id="output"></pre>
+    <div id="output"></div>
 
     <script type="module" src="index.js"></script>
 </body>
