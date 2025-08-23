@@ -2,15 +2,16 @@
 use pyo3::prelude::*;
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::BuildHasherDefault;
 use std::ops::CoroutineState;
 
-use nohash_hasher::{IntMap, IntSet};
+use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::NodeIndex;
 use petgraph::prelude::StableGraph;
 use petgraph::stable_graph::StableUnGraph;
 use petgraph::Undirected;
-use rapidhash::fast::RapidHashSet;
+use rapidhash::fast::{HashSetExt, RapidHashSet};
 use rapidhash::v3::rapidhash_v3;
 use serde::Deserialize;
 
@@ -42,6 +43,7 @@ pub struct DynamicState {
     idtree: IDTree,
     idtree_active_indices: IntSet<usize>,
     terminal_to_root: IntMap<usize, usize>,
+    terminal_root_pairs: RapidHashSet<(usize, usize)>,
     untouchables: IntSet<usize>,
     connected_pairs: RapidHashSet<(usize, usize)>,
     bridge_affected_base_towns: IntSet<usize>,
@@ -76,9 +78,11 @@ pub struct NodeRouter {
     // The main workhorse of the Bridge Heuristic
     idtree: IDTree,
     idtree_active_indices: IntSet<usize>,
+    bridge_generator: BridgeGenerator,
 
     // Contains all terminal, root pairs
     terminal_to_root: IntMap<usize, usize>,
+    terminal_root_pairs: RapidHashSet<(usize, usize)>,
     // Contains all terminals, fixed roots, leaf terminal parents
     untouchables: IntSet<usize>,
     // Used in approximation to reduce violated set connectivity checks.
@@ -140,6 +144,8 @@ impl NodeRouter {
                 max_node_weight = node_data.need_exploration_point;
             }
         }
+        let num_nodes = ref_graph.node_count();
+
         // Then we populate the neighbor cache...
         if DO_DBG {
             println!("Populating neighbor cache...");
@@ -186,6 +192,8 @@ impl NodeRouter {
         let idtree = IDTree::new(&initialization_adj_dict);
         let idtree_active_indices = IntSet::default();
 
+        let bridge_generator = BridgeGenerator::new(ref_graph.clone(), index_to_neighbors.clone());
+
         Self {
             max_node_weight,           // static
             max_removal_attempts: 350, // static
@@ -199,12 +207,20 @@ impl NodeRouter {
             ref_graph,          // static
             idtree,
             idtree_active_indices,
+            bridge_generator,
             terminal_to_root: IntMap::default(), // static per solve run
+            terminal_root_pairs: RapidHashSet::default(), // static per solve run
             untouchables: IntSet::default(),     // static per solve run
             connected_pairs: RapidHashSet::default(),
-            bridge_affected_base_towns: IntSet::default(),
-            bridge_affected_indices: IntSet::default(),
-            bridge_affected_terminals: RapidHashSet::default(),
+            bridge_affected_base_towns: IntSet::with_capacity_and_hasher(
+                num_nodes,
+                BuildHasherDefault::default(),
+            ),
+            bridge_affected_indices: IntSet::with_capacity_and_hasher(
+                num_nodes,
+                BuildHasherDefault::default(),
+            ),
+            bridge_affected_terminals: RapidHashSet::with_capacity(num_nodes),
         }
     }
 
@@ -216,6 +232,7 @@ impl NodeRouter {
         }
         self.idtree_active_indices.clear();
         self.terminal_to_root.clear();
+        self.terminal_root_pairs.clear();
         self.untouchables.clear();
         self.connected_pairs.clear();
         self.bridge_affected_base_towns.clear();
@@ -230,6 +247,7 @@ impl NodeRouter {
             idtree: self.idtree.clone(),
             idtree_active_indices: self.idtree_active_indices.clone(),
             terminal_to_root: self.terminal_to_root.clone(),
+            terminal_root_pairs: self.terminal_root_pairs.clone(),
             untouchables: self.untouchables.clone(),
             connected_pairs: self.connected_pairs.clone(),
             bridge_affected_base_towns: self.bridge_affected_base_towns.clone(),
@@ -244,6 +262,7 @@ impl NodeRouter {
         self.idtree = state.idtree.clone();
         self.idtree_active_indices = state.idtree_active_indices.clone();
         self.terminal_to_root = state.terminal_to_root.clone();
+        self.terminal_root_pairs = state.terminal_root_pairs.clone();
         self.untouchables = state.untouchables.clone();
         self.connected_pairs = state.connected_pairs.clone();
         self.bridge_affected_base_towns = state.bridge_affected_base_towns.clone();
@@ -261,6 +280,7 @@ impl NodeRouter {
                 *self.waypoint_to_index.get(&r).unwrap()
             };
             self.terminal_to_root.insert(t_idx, r_idx);
+            self.terminal_root_pairs.insert((t_idx, r_idx));
         }
     }
 
@@ -650,13 +670,16 @@ impl NodeRouter {
         if DO_DBG {
             println!("Finding frontier nodes ...",);
         }
-        let mut frontier = settlement
-            .iter()
-            .flat_map(|v| &self.index_to_neighbors[v])
-            .filter(|n| !settlement.contains(n))
-            .copied()
-            .collect::<IntSet<_>>();
-
+        let mut frontier = IntSet::with_capacity_and_hasher(
+            self.ref_graph.node_count(),
+            BuildNoHashHasher::default(),
+        );
+        frontier.extend(
+            settlement
+                .iter()
+                .flat_map(|v| &self.index_to_neighbors[v])
+                .filter(|n| !settlement.contains(n)),
+        );
         if let Some(min_degree) = min_degree {
             frontier.retain(|v| self.index_to_neighbors[v].len() >= min_degree);
         }
@@ -716,17 +739,12 @@ impl NodeRouter {
             println!("Updating bridge affected nodes...");
         }
         self.bridge_affected_indices = affected_component;
-        self.bridge_affected_terminals = self
-            .terminal_to_root
-            .iter()
-            .filter(|p| self.bridge_affected_indices.contains(p.0))
-            .map(|p| (*p.0, *p.1))
-            .collect();
-        self.bridge_affected_base_towns = self
-            .base_towns
-            .intersection(&self.bridge_affected_indices)
-            .cloned()
-            .collect();
+        self.bridge_affected_terminals = self.terminal_root_pairs.clone();
+        self.bridge_affected_terminals
+            .retain(|p| self.bridge_affected_indices.contains(&(p.0)));
+        self.bridge_affected_base_towns = self.base_towns.clone();
+        self.bridge_affected_base_towns
+            .retain(|&b| self.bridge_affected_indices.contains(&b));
     }
 
     /////
@@ -748,6 +766,7 @@ impl NodeRouter {
         }
         let mut freed = IntSet::default();
         let mut freed_edges = Vec::new();
+        let mut active_neighbors = Vec::new();
 
         for &v in ordered_removables {
             if !self.bridge_affected_indices.contains(&v) {
@@ -755,10 +774,10 @@ impl NodeRouter {
             }
 
             // Simulate removal by isolating the node
-            let mut deleted_edges = Vec::new();
-            for &u in self.index_to_neighbors[&v].intersection(&self.bridge_affected_indices) {
+            active_neighbors.clear();
+            for &u in &self.idtree.neighbors(v) {
                 if self.idtree.delete_edge(v, u) != -1 {
-                    deleted_edges.push((v, u));
+                    active_neighbors.push((v, u));
                 }
             }
             if self.terminal_pairs_connected() {
@@ -766,10 +785,10 @@ impl NodeRouter {
                 self.bridge_affected_indices.remove(&v);
                 self.bridge_affected_base_towns.remove(&v);
                 freed.insert(v);
-                freed_edges.extend(deleted_edges);
+                freed_edges.extend(active_neighbors.clone());
             } else {
                 // Restore broken connectivity
-                for &(v, u) in &deleted_edges {
+                for &(v, u) in &active_neighbors {
                     self.idtree.insert_edge(v, u);
                 }
             }
@@ -779,12 +798,9 @@ impl NodeRouter {
 
     /// Check all `bridge_affected_terminals` pair connectivity.
     fn terminal_pairs_connected(&self) -> bool {
-        for &(terminal, root) in &self.bridge_affected_terminals {
-            if !self.terminal_is_connected(terminal, root) {
-                return false;
-            }
-        }
-        true
+        self.bridge_affected_terminals
+            .iter()
+            .all(|(terminal, root)| self.terminal_is_connected(*terminal, *root))
     }
 
     /// Check terminal pair connectivity.
@@ -811,79 +827,86 @@ impl NodeRouter {
         while improved {
             improved = false;
 
-            let bridge_generator =
-                BridgeGenerator::new(self.ref_graph.clone(), self.index_to_neighbors.clone());
-            let mut bridge_gen = bridge_generator.generate_bridges(incumbent_indices.clone());
+            let bridge_generator = std::mem::take(&mut self.bridge_generator);
+            // Scope for bridge_gen for borrow checking...
+            {
+                let mut bridge_gen = bridge_generator.generate_bridges(incumbent_indices.clone());
+                while let CoroutineState::Yielded(bridge) = bridge_gen.as_mut().resume(()) {
+                    let reisolate_bridge_nodes: Vec<usize> = bridge
+                        .iter()
+                        .filter(|&&v| !incumbent_indices.contains(&v))
+                        .copied()
+                        .collect();
 
-            while let CoroutineState::Yielded(bridge) = bridge_gen.as_mut().resume(()) {
-                let reisolate_bridge_nodes: Vec<usize> = bridge
-                    .iter()
-                    .filter(|&&v| !incumbent_indices.contains(&v))
-                    .copied()
-                    .collect();
+                    self.connect_bridge(&bridge);
 
-                self.connect_bridge(&bridge);
+                    let Some(bridge_rooted_cycles) = self.bridge_rooted_cycles(&bridge) else {
+                        self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                        self.idtree_active_indices = incumbent_indices.clone();
+                        continue;
+                    };
 
-                let Some(bridge_rooted_cycles) = self.bridge_rooted_cycles(&bridge) else {
-                    self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                    self.idtree_active_indices = incumbent_indices.clone();
-                    continue;
-                };
-
-                if self.was_seen_before(&bridge, &bridge_rooted_cycles, &mut seen_before_cache) {
-                    self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                    self.idtree_active_indices = incumbent_indices.clone();
-                    if DO_DBG {
-                        println!("  skipping as seen before...")
+                    if self.was_seen_before(&bridge, &bridge_rooted_cycles, &mut seen_before_cache)
+                    {
+                        self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                        self.idtree_active_indices = incumbent_indices.clone();
+                        if DO_DBG {
+                            println!("  skipping as seen before...");
+                        }
+                        continue;
                     }
-                    continue;
-                }
 
-                let Some(removal_candidates) =
-                    self.removal_candidates(&bridge, &bridge_rooted_cycles)
-                else {
+                    let Some(removal_candidates) =
+                        self.removal_candidates(&bridge, &bridge_rooted_cycles)
+                    else {
+                        self.idtree.isolate_nodes(reisolate_bridge_nodes);
+                        self.idtree_active_indices = incumbent_indices.clone();
+                        if DO_DBG {
+                            println!("  skipping as no removal candidates...");
+                        }
+                        continue;
+                    };
+
+                    let (is_improved, _removal_attempts, freed) =
+                        self.improve_component(&bridge, &removal_candidates, ordered_removables);
+
+                    if is_improved {
+                        incumbent_indices = self.idtree._active_nodes();
+                        self.idtree_active_indices = incumbent_indices.clone();
+                        improved = true;
+
+                        ordered_removables.retain(|v| !freed.contains(v));
+                        let tmp: Vec<usize> = bridge.iter().copied().collect();
+                        ordered_removables.extend(self.sort_by_weights(tmp.as_slice(), None));
+                        break;
+                    }
+
+                    if DO_DBG {
+                        println!("  failed to improve...");
+                    }
+
                     self.idtree.isolate_nodes(reisolate_bridge_nodes);
                     self.idtree_active_indices = incumbent_indices.clone();
-                    if DO_DBG {
-                        println!("  skipping as no removal candidates...")
-                    }
-                    continue;
-                };
-
-                let (is_improved, _removal_attempts, freed) =
-                    self.improve_component(&bridge, &removal_candidates, ordered_removables);
-
-                if is_improved {
-                    incumbent_indices = self.idtree._active_nodes();
-                    self.idtree_active_indices = incumbent_indices.clone();
-                    improved = true;
-
-                    ordered_removables.retain(|v| !freed.contains(v));
-                    let tmp: Vec<usize> = bridge.iter().copied().collect();
-                    ordered_removables.extend(self.sort_by_weights(tmp.as_slice(), None));
-                    break;
                 }
-
-                if DO_DBG {
-                    println!("  failed to improve...");
-                }
-
-                self.idtree.isolate_nodes(reisolate_bridge_nodes);
-                self.idtree_active_indices = incumbent_indices.clone();
-            }
+            } // bridge_gen dropped here
+            self.bridge_generator = bridge_generator;
         }
     }
 
     /// Applies bridge to idtree active nodes
     fn connect_bridge(&mut self, bridge: &IntSet<usize>) {
         // Insert edges connecting bridge nodes to their active neighbors.
-        // Use tmp to store the whole bridge, deplete by moving from tmp to dtree
-        // when the node in tmp has an active neighbor in dtree.
-        let mut tmp = bridge.clone();
+        // Use tmp to store the whole bridge, deplete by moving from tmp to idtree
+        // when the node in tmp has an active neighbor in idtree.
+        let mut tmp = Vec::with_capacity(bridge.len());
+        tmp.extend(bridge.iter().copied());
         let mut moved_node = true;
+
         while !tmp.is_empty() && moved_node {
             moved_node = false;
-            for v in tmp.clone().drain() {
+            let mut i = 0;
+            while i < tmp.len() {
+                let v = tmp[i];
                 let active_neighbors = self
                     .index_to_neighbors
                     .get(&v)
@@ -897,8 +920,10 @@ impl NodeRouter {
                 }
                 if inserted_active_neighbor {
                     self.idtree_active_indices.insert(v);
-                    tmp.remove(&v);
+                    tmp.swap_remove(i);
                     moved_node = true;
+                } else {
+                    i += 1;
                 }
             }
         }
@@ -913,7 +938,7 @@ impl NodeRouter {
         }
     }
 
-    fn bridge_rooted_cycles(&mut self, bridge: &IntSet<usize>) -> Option<Vec<IntSet<usize>>> {
+    fn bridge_rooted_cycles(&mut self, bridge: &IntSet<usize>) -> Option<Vec<Vec<usize>>> {
         if DO_DBG {
             let bridge_waypoints: Vec<_> =
                 bridge.iter().map(|&v| self.index_to_waypoint[&v]).collect();
@@ -935,12 +960,11 @@ impl NodeRouter {
             println!("all_cycle waypoints {:?}", all_cycle_waypoints);
         }
 
-        let filtered: Vec<IntSet<usize>> = all_cycles
+        let filtered: Vec<Vec<usize>> = all_cycles
             .into_iter()
             .filter(|cycle| {
                 cycle.len() >= (2 + bridge.len()) && cycle.iter().any(|v| bridge.contains(v))
             })
-            .map(|v| IntSet::from_iter(v.iter().copied()))
             .collect();
 
         if filtered.is_empty() {
@@ -962,15 +986,38 @@ impl NodeRouter {
         }
     }
 
+    // fn was_seen_before(
+    //     &mut self,
+    //     bridge: &IntSet<usize>,
+    //     cycles: &[IntSet<usize>],
+    //     seen_before: &mut IntSet<u64>,
+    // ) -> bool {
+    //     let mut all = Vec::from_iter(bridge.iter().copied());
+    //     for cycle in cycles {
+    //         all.extend(cycle.iter().copied());
+    //     }
+    //     all.sort_unstable();
+    //     let all_hash = rapidhash_v3(
+    //         &all.iter()
+    //             .flat_map(|x| x.to_le_bytes())
+    //             .collect::<Vec<u8>>(),
+    //     );
+    //     if seen_before.contains(&all_hash) {
+    //         true
+    //     } else {
+    //         seen_before.insert(all_hash);
+    //         false
+    //     }
+    // }
     fn was_seen_before(
         &mut self,
         bridge: &IntSet<usize>,
-        cycles: &[IntSet<usize>],
+        cycles: &[Vec<usize>],
         seen_before: &mut IntSet<u64>,
     ) -> bool {
-        let mut all = Vec::from_iter(bridge.iter().copied());
+        let mut all = bridge.iter().copied().collect::<Vec<usize>>();
         for cycle in cycles {
-            all.extend(cycle.iter().copied());
+            all.extend_from_slice(cycle);
         }
         all.sort_unstable();
         let all_hash = rapidhash_v3(
@@ -986,10 +1033,42 @@ impl NodeRouter {
         }
     }
 
+    // fn removal_candidates(
+    //     &mut self,
+    //     bridge: &IntSet<usize>,
+    //     cycles: &[IntSet<usize>],
+    // ) -> Option<Vec<(usize, usize)>> {
+    //     if DO_DBG {
+    //         let bridge_waypoints: Vec<_> =
+    //             bridge.iter().map(|&v| self.index_to_waypoint[&v]).collect();
+    //         println!(
+    //             "Finding removal candidates for bridge={:?}... {:?}",
+    //             bridge, bridge_waypoints
+    //         );
+    //     }
+    //     let threshold = cycles.len() + 1;
+    //     let mut candidates = IntSet::default();
+    //     for cycle in cycles {
+    //         candidates.extend(cycle.iter().copied());
+    //     }
+    //     candidates.retain(|&v| !self.untouchables.contains(&v) && !bridge.contains(&v));
+    //     let idtree_candidates: Vec<(usize, usize)> = candidates
+    //         .iter()
+    //         .filter(|&&v| self.idtree.degree(v) as usize <= threshold)
+    //         .map(|&v| (v, self.index_to_weight[&v]))
+    //         .collect();
+
+    //     if idtree_candidates.is_empty() {
+    //         None
+    //     } else {
+    //         Some(idtree_candidates)
+    //     }
+    // }
+
     fn removal_candidates(
         &mut self,
         bridge: &IntSet<usize>,
-        cycles: &[IntSet<usize>],
+        cycles: &[Vec<usize>],
     ) -> Option<Vec<(usize, usize)>> {
         if DO_DBG {
             let bridge_waypoints: Vec<_> =
