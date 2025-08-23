@@ -2,7 +2,6 @@
 use pyo3::prelude::*;
 
 use std::collections::{BTreeMap, HashMap};
-use std::hash::BuildHasherDefault;
 use std::ops::CoroutineState;
 
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
@@ -214,11 +213,11 @@ impl NodeRouter {
             connected_pairs: RapidHashSet::default(),
             bridge_affected_base_towns: IntSet::with_capacity_and_hasher(
                 num_nodes,
-                BuildHasherDefault::default(),
+                BuildNoHashHasher::default(),
             ),
             bridge_affected_indices: IntSet::with_capacity_and_hasher(
                 num_nodes,
-                BuildHasherDefault::default(),
+                BuildNoHashHasher::default(),
             ),
             bridge_affected_terminals: RapidHashSet::with_capacity(num_nodes),
         }
