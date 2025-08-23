@@ -1,4 +1,5 @@
-use crate::helpers_common::hash_intset;
+use std::ops::Coroutine;
+use std::pin::Pin;
 
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::algo::astar;
@@ -6,26 +7,6 @@ use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableUnGraph;
 use petgraph::visit::{Dfs, IntoNodeIdentifiers};
 use rapidhash::fast::{HashSetExt, RapidHashSet};
-use std::ops::Coroutine;
-use std::pin::Pin;
-
-// ref_graph => full reference graph of all nodes and edges.
-// Contains potentially topologically constrained expansion of Settlement
-// Settlement potentially contains disjoint connected components
-//
-// S => Settlement (induced subgraph of currently 'active' nodes of ref_graph)
-// B => Border (nodes in Settlement with ref_graph neighbors in Frontier)
-// F => Frontier (non-settled nodes with ref_graph neighbors in Settlement)
-// W => Wild Frontier (non-settled nodes with no settled ref_graph neighbors)
-//
-// 𝓕 => Fringe edges (edges in ref_graph connecting border and frontier nodes)
-// 𝓑 => bridging span of nodes not in S that connect distinct nodes in S.
-//
-// Let ring 0 => B (in most cases B == S since S is most commonly a Steiner Forest/Tree)
-// Let ring 1 => F0 be an eccentric ring around {B}
-// Let ring 2 => F1 be an eccentric ring around {F0|B}
-// Let ring 3 => F2 be an eccentric ring around {F1|F0|B}
-// ...
 
 /// Finds bridging spans of settlement border nodes within frontier and wild frontier.
 #[derive(Debug, Clone)]
@@ -46,11 +27,8 @@ impl BridgeGenerator {
     }
 
     /// Finds and returns nodes not in settlement with neighbors in settlement.
-    fn find_frontier_nodes(
-        &self,
-        settlement: &IntSet<usize>,
-        min_degree: Option<usize>,
-    ) -> IntSet<usize> {
+    fn find_frontier_nodes(&self, settlement: &IntSet<usize>) -> IntSet<usize> {
+        // This will result in a sorted frontier set.
         let mut frontier = IntSet::with_capacity_and_hasher(
             self.ref_graph.node_count(),
             BuildNoHashHasher::default(),
@@ -61,9 +39,7 @@ impl BridgeGenerator {
                 .flat_map(|v| &self.index_to_neighbors[v])
                 .filter(|n| !settlement.contains(n)),
         );
-        if let Some(min_degree) = min_degree {
-            frontier.retain(|v| self.index_to_neighbors[v].len() >= min_degree);
-        }
+        frontier.retain(|v| self.index_to_neighbors[v].len() > 1);
         frontier
     }
 
@@ -72,35 +48,47 @@ impl BridgeGenerator {
         let max_frontier_rings = 3;
         let ring_combo_cutoff = [0, 3, 2, 2];
         let mut seen_candidate_pairs = RapidHashSet::with_capacity(num_nodes);
-        let mut yielded_hashes: IntSet<u64> =
-            IntSet::with_capacity_and_hasher(1024, BuildNoHashHasher::default());
 
         // Populate ring0 (Settlement border)
         let mut rings: Vec<IntSet<usize>> = Vec::with_capacity(ring_combo_cutoff.len() + 1);
         rings.push(settlement.clone());
 
+        // This will result in a sorted set because of load% !
         let mut seen_nodes =
             IntSet::with_capacity_and_hasher(num_nodes, BuildNoHashHasher::default());
         seen_nodes.extend(&settlement);
+
+        // This will result in a sorted set because of load% !
+        let mut combo = IntSet::with_capacity_and_hasher(
+            self.ref_graph.node_count(),
+            BuildNoHashHasher::default(),
+        );
+
         let mut reachable = Vec::with_capacity(num_nodes);
 
         Box::pin(
             #[coroutine]
             static move |_: ()| {
                 while rings.len() <= max_frontier_rings {
-                    // Populate the new outermost ring
-                    let nodes = self.find_frontier_nodes(&seen_nodes, Some(2));
+                    // Populate the new outermost ring with a sorted set!
+                    let nodes = self.find_frontier_nodes(&seen_nodes);
+
+                    // This extend will keep seen_nodes sorted.
                     seen_nodes.extend(&nodes);
+
                     let ring_idx = rings.len();
                     rings.push(nodes.clone());
 
-                    // Phase 1:
-                    // Yield single node bridges from outermost ring connecting with >=2 neighbors in inner ring.
+                    // Phase 1: Yield single node bridges
+                    // outermost ring connecting with >=2 neighbors in inner ring.
                     let inner_ring = &rings[ring_idx - 1];
+
+                    // This will result in a sorted set!
                     let mut bridge =
                         IntSet::with_capacity_and_hasher(num_nodes, BuildNoHashHasher::default());
 
                     for &node in &nodes {
+                        // Singletons must connect to at least 2 distinct inner ring nodes.
                         if self.index_to_neighbors[&node]
                             .intersection(inner_ring)
                             .nth(1)
@@ -108,32 +96,22 @@ impl BridgeGenerator {
                         {
                             continue;
                         }
+
                         bridge.clear();
                         bridge.insert(node);
+
                         for bridge in self.descend_to_yield_bridges(
                             ring_idx,
                             &bridge,
                             bridge.clone(),
                             &rings,
-                            &mut yielded_hashes,
                             &mut seen_candidate_pairs,
                         ) {
                             yield bridge;
                         }
                     }
 
-                    // Phase 2:
-                    // Yield multi-node bridges from outermost ring.
-
-                    // NOTE: Each ring is only a single node 'thick' and in the python implementation
-                    // the `rustworkx.all_pairs_all_simple_paths` is efficient at obtaining all size
-                    // constrained connected runs within the ring along with the endpoint nodes.
-                    // This Rust implementation utilizes petgraph's A* algorithm on a per pair
-                    // basis for because with the simple heuristic of node cost 1 and edge cost 0
-                    // A* behaves like Dijkstra but will return the path len and ordered path while
-                    // the path would need to be built by processing the Dijkstra returned values.
-                    // We get away with the node cost of 1 because of the single node 'thick'
-                    // ring, so we are simply counting hops to control the length of connected runs.
+                    // Phase 2: Yield multi-node bridges from outermost ring.
                     let subgraph = self.ref_graph.filter_map(
                         |node_idx, _| {
                             if nodes.contains(&node_idx.index()) {
@@ -145,21 +123,16 @@ impl BridgeGenerator {
                         |_, edge_idx| Some(*edge_idx),
                     );
 
-                    let mut combo = IntSet::with_capacity_and_hasher(
-                        ring_combo_cutoff[ring_idx],
-                        BuildNoHashHasher::default(),
-                    );
-                    combo.extend(nodes.clone());
-
                     for u_identifier in subgraph.node_identifiers() {
+                        // Stop isolates _in this ring_ from creating a dfs
                         if subgraph.neighbors_undirected(u_identifier).next().is_none() {
                             continue;
                         }
 
                         let u = u_identifier.index();
-                        reachable.clear();
 
                         let mut dfs = Dfs::new(&subgraph, u_identifier);
+                        reachable.clear();
                         while let Some(node) = dfs.next(&subgraph) {
                             let node_idx = node.index();
                             if node_idx > u {
@@ -168,6 +141,8 @@ impl BridgeGenerator {
                         }
 
                         for &v in &reachable {
+                            // u, v are the endpoints of the path and should not share a
+                            // common neighbor on the inner ring.
                             let u_neighbors = &self.index_to_neighbors[&u];
                             let v_neighbors = &self.index_to_neighbors[&v];
                             if u_neighbors
@@ -176,6 +151,9 @@ impl BridgeGenerator {
                             {
                                 continue;
                             }
+
+                            // astar with no heuristic will reduce to a Dijkstra but the path
+                            // is generated during traversal instead of rebuilt in post-processing.
                             if let Some((path_len, path)) = astar(
                                 &subgraph,
                                 u_identifier,
@@ -194,7 +172,6 @@ impl BridgeGenerator {
                                     &combo,
                                     combo.clone(),
                                     &rings,
-                                    &mut yielded_hashes,
                                     &mut seen_candidate_pairs,
                                 ) {
                                     yield bridge;
@@ -208,34 +185,21 @@ impl BridgeGenerator {
         )
     }
 
-    /// Descend from current ring to settlement frontier (F0), yielding bridges connecting ≥2 S nodes.
-
+    /// Descend from current ring to settlement frontier (F0)
+    /// yielding bridges connecting ≥2 nodes.
     fn descend_to_yield_bridges(
         &self,
         ring_idx: usize,
         current_nodes: &IntSet<usize>,
         bridge: IntSet<usize>,
         rings: &Vec<IntSet<usize>>,
-        yielded: &mut IntSet<u64>,
         seen_candidate_pairs: &mut RapidHashSet<(usize, usize)>,
     ) -> impl Iterator<Item = IntSet<usize>> {
         let mut output = Vec::new();
 
         // Base case (Settlement Frontier): yield and return
         if ring_idx == 1 {
-            let bridge_hash = hash_intset(&bridge);
-            if !yielded.contains(&bridge_hash) {
-                if current_nodes
-                    .iter()
-                    .flat_map(|&v| &self.index_to_neighbors[&v])
-                    .filter(|n| rings[0].contains(n))
-                    .nth(1)
-                    .is_some()
-                {
-                    yielded.insert(bridge_hash);
-                    output.push(bridge);
-                }
-            }
+            output.push(bridge);
 
         // Descending case:
         } else {
@@ -263,7 +227,6 @@ impl BridgeGenerator {
                             &new_current,
                             new_bridge,
                             rings,
-                            yielded,
                             seen_candidate_pairs,
                         ));
                     }
