@@ -7,7 +7,7 @@ scaling_tests = true
 # Set level to 'INFO' to output terminal, root pairs and solutions
 # DEBUG and TRACE can be used for PD Aprroximation and the DO_DBG
 # cariable can be set in the rust files for debugging output.
-level = "INFO"
+level = "SUCCESS"
 format = "<level>{message}</level>"
 
 # The loguru default format string.
