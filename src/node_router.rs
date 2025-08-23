@@ -763,20 +763,17 @@ impl NodeRouter {
                 ordered_removables.len()
             );
         }
+
         let mut freed = IntSet::default();
         let mut freed_edges = Vec::new();
         let mut active_neighbors = Vec::new();
 
         for &v in ordered_removables {
-            if !self.bridge_affected_indices.contains(&v) {
-                continue;
-            }
-
             // Simulate removal by isolating the node
             active_neighbors.clear();
             for &u in &self.idtree.neighbors(v) {
-                if self.idtree.delete_edge(v, u) != -1 {
-                    active_neighbors.push((v, u));
+                if self.idtree.delete_edge(u, v) != -1 {
+                    active_neighbors.push((u, v));
                 }
             }
             if self.terminal_pairs_connected() {
@@ -787,8 +784,8 @@ impl NodeRouter {
                 freed_edges.extend(active_neighbors.clone());
             } else {
                 // Restore broken connectivity
-                for &(v, u) in &active_neighbors {
-                    self.idtree.insert_edge(v, u);
+                for &(u, v) in &active_neighbors {
+                    self.idtree.insert_edge(u, v);
                 }
             }
         }
@@ -985,29 +982,6 @@ impl NodeRouter {
         }
     }
 
-    // fn was_seen_before(
-    //     &mut self,
-    //     bridge: &IntSet<usize>,
-    //     cycles: &[IntSet<usize>],
-    //     seen_before: &mut IntSet<u64>,
-    // ) -> bool {
-    //     let mut all = Vec::from_iter(bridge.iter().copied());
-    //     for cycle in cycles {
-    //         all.extend(cycle.iter().copied());
-    //     }
-    //     all.sort_unstable();
-    //     let all_hash = rapidhash_v3(
-    //         &all.iter()
-    //             .flat_map(|x| x.to_le_bytes())
-    //             .collect::<Vec<u8>>(),
-    //     );
-    //     if seen_before.contains(&all_hash) {
-    //         true
-    //     } else {
-    //         seen_before.insert(all_hash);
-    //         false
-    //     }
-    // }
     fn was_seen_before(
         &mut self,
         bridge: &IntSet<usize>,
@@ -1024,45 +998,8 @@ impl NodeRouter {
                 .flat_map(|x| x.to_le_bytes())
                 .collect::<Vec<u8>>(),
         );
-        if seen_before.contains(&all_hash) {
-            true
-        } else {
-            seen_before.insert(all_hash);
-            false
-        }
+        !seen_before.insert(all_hash)
     }
-
-    // fn removal_candidates(
-    //     &mut self,
-    //     bridge: &IntSet<usize>,
-    //     cycles: &[IntSet<usize>],
-    // ) -> Option<Vec<(usize, usize)>> {
-    //     if DO_DBG {
-    //         let bridge_waypoints: Vec<_> =
-    //             bridge.iter().map(|&v| self.index_to_waypoint[&v]).collect();
-    //         println!(
-    //             "Finding removal candidates for bridge={:?}... {:?}",
-    //             bridge, bridge_waypoints
-    //         );
-    //     }
-    //     let threshold = cycles.len() + 1;
-    //     let mut candidates = IntSet::default();
-    //     for cycle in cycles {
-    //         candidates.extend(cycle.iter().copied());
-    //     }
-    //     candidates.retain(|&v| !self.untouchables.contains(&v) && !bridge.contains(&v));
-    //     let idtree_candidates: Vec<(usize, usize)> = candidates
-    //         .iter()
-    //         .filter(|&&v| self.idtree.degree(v) as usize <= threshold)
-    //         .map(|&v| (v, self.index_to_weight[&v]))
-    //         .collect();
-
-    //     if idtree_candidates.is_empty() {
-    //         None
-    //     } else {
-    //         Some(idtree_candidates)
-    //     }
-    // }
 
     fn removal_candidates(
         &mut self,
@@ -1184,9 +1121,8 @@ impl NodeRouter {
             active_component_indices.retain(|&v| !removal_set.contains(&v));
             self.update_bridge_affected_nodes(active_component_indices.clone());
             ordered_removables.retain(|&v| !removal_set.contains(&v));
+            ordered_removables.retain(|&v| self.bridge_affected_indices.contains(&v));
 
-            // let mut tmp_removables = ordered_removables.clone();
-            // tmp_removables.extend(bridge.iter().copied());
             let (freed, freed_edges) = self.remove_removables(&ordered_removables);
             active_component_indices.retain(|&v| !freed.contains(&v));
             let new_weight = active_component_indices
