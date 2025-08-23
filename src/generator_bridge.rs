@@ -50,12 +50,6 @@ impl BridgeGenerator {
             node_state[v] = NodeState::Settled;
         }
 
-        // This will result in a sorted set because of load% !
-        let mut combo = IntSet::with_capacity_and_hasher(
-            self.ref_graph.node_count(),
-            BuildNoHashHasher::default(),
-        );
-
         let mut reachable = Vec::with_capacity(num_nodes);
 
         Box::pin(
@@ -93,10 +87,6 @@ impl BridgeGenerator {
                     // outermost ring connecting with >=2 neighbors in inner ring.
                     let inner_ring = &rings[ring_idx - 1];
 
-                    // This will result in a sorted set!
-                    let mut bridge =
-                        IntSet::with_capacity_and_hasher(num_nodes, BuildNoHashHasher::default());
-
                     for &node in &frontier {
                         // Singletons must connect to at least 2 distinct inner ring.
                         if self.index_to_neighbors[&node]
@@ -107,13 +97,13 @@ impl BridgeGenerator {
                             continue;
                         }
 
-                        bridge.clear();
-                        bridge.insert(node);
+                        let mut one_node_bridge =
+                            IntSet::with_capacity_and_hasher(1, BuildNoHashHasher::default());
+                        one_node_bridge.insert(node);
 
                         for bridge in self.descend_to_yield_bridges(
                             ring_idx,
-                            &bridge,
-                            bridge.clone(),
+                            one_node_bridge,
                             &rings,
                             &mut seen_candidate_pairs,
                         ) {
@@ -175,13 +165,12 @@ impl BridgeGenerator {
                                     continue;
                                 }
 
-                                combo.clear();
-                                combo.extend(path.iter().map(|n| n.index()));
+                                let bridge_from_path: IntSet<usize> =
+                                    path.iter().map(|n| n.index()).collect();
 
                                 for bridge in self.descend_to_yield_bridges(
                                     ring_idx,
-                                    &combo,
-                                    combo.clone(),
+                                    bridge_from_path,
                                     &rings,
                                     &mut seen_candidate_pairs,
                                 ) {
@@ -201,8 +190,7 @@ impl BridgeGenerator {
     fn descend_to_yield_bridges(
         &self,
         ring_idx: usize,
-        current_nodes: &IntSet<usize>,
-        bridge: IntSet<usize>,
+        mut bridge: IntSet<usize>,
         rings: &Vec<IntSet<usize>>,
         seen_candidate_pairs: &mut RapidHashSet<(usize, usize)>,
     ) -> impl Iterator<Item = IntSet<usize>> {
@@ -215,7 +203,20 @@ impl BridgeGenerator {
         // Descending case:
         } else {
             // Collect and process pairwise combinations of current_nodes candidates...
-            // Candidates are current_nodes neighbors in ring_idx - 1
+            //
+            // Current frontier is the working contents of `bridge` but we only want
+            // to consider the *last step*'s additions to expand from.
+            // So we collect candidate next-layer nodes by scanning neighbors of the
+            // *current frontier subset*.
+            //
+            // That subset is: bridge ∩ rings[ring_idx]
+            let current_nodes: Vec<_> = bridge
+                .iter()
+                .filter(|n| rings[ring_idx].contains(n))
+                .copied()
+                .collect();
+
+            // Candidates are neighbors in inner ring (ring_idx - 1)
             let inner_ring = &rings[ring_idx - 1];
             let mut candidates: Vec<_> = current_nodes
                 .iter()
@@ -223,27 +224,33 @@ impl BridgeGenerator {
                 .filter(|x| inner_ring.contains(x))
                 .copied()
                 .collect();
+
             candidates.sort_unstable();
             candidates.dedup();
 
-            for i in 0..(candidates.len() - 1) {
+            for i in 0..(candidates.len().saturating_sub(1)) {
                 let u = candidates[i];
                 for &v in candidates.iter().skip(i + 1) {
                     if seen_candidate_pairs.insert((u, v)) {
-                        let new_current = IntSet::from_iter([u, v]);
-                        let mut new_bridge = bridge.clone();
-                        new_bridge.extend([u, v]);
+                        // Extend bridge in-place, recurse, then backtrack
+                        bridge.insert(u);
+                        bridge.insert(v);
+
                         output.extend(self.descend_to_yield_bridges(
                             ring_idx - 1,
-                            &new_current,
-                            new_bridge,
+                            bridge.clone(),
                             rings,
                             seen_candidate_pairs,
                         ));
+
+                        // Backtrack: remove u,v so outer loop stays clean
+                        bridge.remove(&u);
+                        bridge.remove(&v);
                     }
                 }
             }
         }
+
         output.into_iter()
     }
 }
