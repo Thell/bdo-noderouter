@@ -4,29 +4,39 @@ use pyo3::prelude::*;
 use fixedbitset::FixedBitSet;
 use nohash_hasher::{IntMap, IntSet};
 
+use smallvec::SmallVec;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(align(64))]
 struct Node {
     parent: i32,
     subtree_size: usize,
-    adj: IntSet<usize>,
+    adj: SmallVec<[usize; 4]>,
 }
 
 impl Node {
+    #[inline]
     fn new() -> Self {
         Node {
             parent: -1,
             subtree_size: 1,
-            adj: IntSet::default(),
+            adj: SmallVec::new(),
         }
     }
 
+    #[inline]
     fn insert_adj(&mut self, u: usize) {
-        self.adj.insert(u);
+        // preserve set semantics (no duplicates)
+        if !self.adj.contains(&u) {
+            self.adj.push(u);
+        }
     }
 
+    #[inline]
     fn delete_adj(&mut self, u: usize) {
-        self.adj.remove(&u);
+        if let Some(i) = self.adj.iter().position(|&x| x == u) {
+            self.adj.swap_remove(i);
+        }
     }
 }
 
@@ -401,7 +411,7 @@ impl IDTree {
 
         while let Some(node_index) = queue.pop_front() {
             for j in 0..self.nodes[node_index].adj.len() {
-                let neighbor_index = *self.nodes[node_index].adj.get(&j).unwrap();
+                let neighbor_index = self.nodes[node_index].adj[j];
                 if !self.used[neighbor_index] {
                     self.used[neighbor_index] = true;
                     self.nodes[neighbor_index].parent = node_index as i32;
