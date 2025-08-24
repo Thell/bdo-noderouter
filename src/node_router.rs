@@ -752,7 +752,7 @@ impl NodeRouter {
 
     /// Attempt removals of each node in ordered_removables.
     ///
-    /// NOTE: This function should only be entered after terminal pairs connected check succeeds.
+    // /// NOTE: This function should only be entered after terminal pairs connected check succeeds.
     fn remove_removables(
         &mut self,
         ordered_removables: &Vec<usize>,
@@ -768,27 +768,52 @@ impl NodeRouter {
         let mut freed_edges = Vec::new();
         let mut active_neighbors = Vec::new();
 
-        for &v in ordered_removables {
-            // Simulate removal by isolating the node
+        for &u in ordered_removables {
             active_neighbors.clear();
-            for &u in &self.idtree.neighbors(v) {
-                if self.idtree.delete_edge(u, v) != -1 {
-                    active_neighbors.push((u, v));
+            let mut need_check = false;
+
+            for &v in &self.idtree.neighbors(u) {
+                match self.idtree.delete_edge(u, v) {
+                    // nothing removed
+                    -1 => continue,
+                    // adjacency removed OR replacement found
+                    0 | 1 => active_neighbors.push((u, v)),
+                    // new component
+                    2 => {
+                        active_neighbors.push((u, v));
+                        need_check = true;
+                    }
+                    _ => unreachable!(),
                 }
             }
-            if self.terminal_pairs_connected() {
+
+            if active_neighbors.is_empty() {
+                continue;
+            }
+
+            // Non base town leaf nodes
+            if active_neighbors.len() == 1 && !self.bridge_affected_base_towns.contains(&u) {
+                self.bridge_affected_indices.remove(&u);
+                self.bridge_affected_base_towns.remove(&u);
+                freed.insert(u);
+                freed_edges.extend_from_slice(&active_neighbors);
+                continue;
+            }
+
+            if need_check && self.terminal_pairs_connected() {
                 // Finalize removal
-                self.bridge_affected_indices.remove(&v);
-                self.bridge_affected_base_towns.remove(&v);
-                freed.insert(v);
-                freed_edges.extend(active_neighbors.clone());
-            } else {
-                // Restore broken connectivity
+                self.bridge_affected_indices.remove(&u);
+                self.bridge_affected_base_towns.remove(&u);
+                freed.insert(u);
+                freed_edges.extend_from_slice(&active_neighbors);
+            } else if need_check {
+                // Restore connectivity
                 for &(u, v) in &active_neighbors {
                     self.idtree.insert_edge(u, v);
                 }
             }
         }
+
         (freed, freed_edges)
     }
 
