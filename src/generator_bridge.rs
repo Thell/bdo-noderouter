@@ -2,10 +2,7 @@ use std::ops::Coroutine;
 use std::pin::Pin;
 
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
-use petgraph::algo::astar;
-use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableUnGraph;
-use petgraph::visit::{Dfs, IntoNodeIdentifiers};
 use rapidhash::fast::{HashSetExt, RapidHashSet};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -32,6 +29,63 @@ impl BridgeGenerator {
             ref_graph,
             index_to_neighbors,
         }
+    }
+
+    /// Bounded BFS restricted to `allowed` set.
+    /// Returns path if <= cutoff, else None.
+    // #[inline(never)]
+    fn bounded_path(
+        &self,
+        start: usize,
+        goal: usize,
+        allowed: &IntSet<usize>,
+        cutoff: usize,
+    ) -> Option<Vec<usize>> {
+        use std::collections::VecDeque;
+
+        let mut queue = VecDeque::new();
+        let mut parent: IntMap<usize, usize> = IntMap::default();
+
+        queue.push_back(start);
+        parent.insert(start, start);
+
+        while let Some(u) = queue.pop_front() {
+            if u == goal {
+                // Reconstruct path
+                let mut path = Vec::new();
+                let mut cur = goal;
+                while cur != start {
+                    path.push(cur);
+                    cur = parent[&cur];
+                }
+                path.push(start);
+                return Some(path);
+            }
+
+            let depth = {
+                // depth = distance from start
+                let mut d = 0;
+                let mut cur = u;
+                while cur != start {
+                    cur = parent[&cur];
+                    d += 1;
+                }
+                d
+            };
+
+            if depth >= cutoff {
+                continue;
+            }
+
+            for &n in &self.index_to_neighbors[&u] {
+                if allowed.contains(&n) && !parent.contains_key(&n) {
+                    parent.insert(n, u);
+                    queue.push_back(n);
+                }
+            }
+        }
+
+        None
     }
 
     pub fn generate_bridges<'a>(&'a self, settlement: IntSet<usize>) -> BridgeCoroutine<'a> {
@@ -76,9 +130,6 @@ impl BridgeGenerator {
                     if frontier.is_empty() {
                         break;
                     }
-                    for &n in &frontier {
-                        node_state[n] = NodeState::Settled;
-                    }
 
                     let ring_idx = rings.len();
                     rings.push(frontier.clone());
@@ -111,38 +162,34 @@ impl BridgeGenerator {
                         }
                     }
 
-                    // Phase 2: Yield multi-node bridges from outermost ring.
-                    let subgraph = self.ref_graph.filter_map(
-                        |node_idx, _| {
-                            if frontier.contains(&node_idx.index()) {
-                                Some(())
-                            } else {
-                                None
-                            }
-                        },
-                        |_, edge_idx| Some(*edge_idx),
-                    );
-
-                    for u_identifier in subgraph.node_identifiers() {
-                        // Stop isolates _in this ring_ from creating a dfs
-                        if subgraph.neighbors_undirected(u_identifier).next().is_none() {
+                    for &u in &frontier {
+                        // Skip isolates inside this ring
+                        if self.index_to_neighbors[&u]
+                            .iter()
+                            .all(|n| !frontier.contains(n))
+                        {
                             continue;
                         }
 
-                        let u = u_identifier.index();
-
-                        let mut dfs = Dfs::new(&subgraph, u_identifier);
+                        // Collect reachable nodes inside the frontier (u < v ordering)
                         reachable.clear();
-                        while let Some(node) = dfs.next(&subgraph) {
-                            let node_idx = node.index();
-                            if node_idx > u {
-                                reachable.push(node_idx);
+                        let mut dfs = vec![u];
+                        let mut seen = IntSet::default();
+                        seen.insert(u);
+
+                        while let Some(x) = dfs.pop() {
+                            for &n in &self.index_to_neighbors[&x] {
+                                if n > u {
+                                    if frontier.contains(&n) && seen.insert(n) {
+                                        dfs.push(n);
+                                        reachable.push(n);
+                                    }
+                                }
                             }
                         }
 
                         for &v in &reachable {
-                            // u, v are the endpoints of the path and should not share a
-                            // common neighbor on the inner ring.
+                            // u, v should not share a common neighbor in the inner ring
                             let u_neighbors = &self.index_to_neighbors[&u];
                             let v_neighbors = &self.index_to_neighbors[&v];
                             if u_neighbors
@@ -152,21 +199,15 @@ impl BridgeGenerator {
                                 continue;
                             }
 
-                            // astar with no heuristic will reduce to a Dijkstra but the path
-                            // is generated during traversal instead of rebuilt in post-processing.
-                            if let Some((path_len, path)) = astar(
-                                &subgraph,
-                                u_identifier,
-                                |f| f == NodeIndex::new(v),
-                                |_| 1,
-                                |_| 0,
-                            ) {
-                                if path_len + 1 > ring_combo_cutoff[ring_idx] {
+                            // Direct bounded BFS inside the frontier
+                            if let Some(path) =
+                                self.bounded_path(u, v, &frontier, ring_combo_cutoff[ring_idx])
+                            {
+                                if path.len() > ring_combo_cutoff[ring_idx] {
                                     continue;
                                 }
 
-                                let bridge_from_path: IntSet<usize> =
-                                    path.iter().map(|n| n.index()).collect();
+                                let bridge_from_path: IntSet<usize> = path.into_iter().collect();
 
                                 for bridge in self.descend_to_yield_bridges(
                                     ring_idx,
