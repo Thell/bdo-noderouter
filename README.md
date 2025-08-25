@@ -162,24 +162,36 @@ The optimal solution input files are available in the `workerman` directory
 of the Python project's data folder and took multiple days of processing to
 produce.
 
-![Workerman Empire Results](_workerman_results.png)
+
+**v0.1.0**
+
+
+![Workerman Empire Results v1](_workerman_results_v1.png)
+
+
+**v0.2.0**
+
+
+![Workerman Empire Results v2](_workerman_results_v2.png)
+
+
 The next image is the timings of random terminal, root assignments representing
 a percentage of coverage of all available terminals
 
-![Random Coverage Results](_random_coverage_results.png)
+
+**v0.1.0**
+
+
+![Random Coverage Results v1](_random_coverage_results_v1.png)
+
+
+**v0.2.0**
+
+
+![Random Coverage Results v2](_random_coverage_results_v2.png)
+
 
 ## TODO
-
-- Post approximation augment/prune of leaf super terminals to nearest base town.
-
-  Consider R_1 - T_1 - _5_ - ST - _4_ - B. When T_1 <-> ST will go tight prior
-  to ST <-> B because B is not violated and will not expand.
-  By selecting leaf super terminals and doing a BFS for the nearest R, T or B
-  the post pruned approximation can have the path (ST, B) inserted as a bridge
-  and remove_removables can be run. If the approximation solution is improved
-  then ST is promoted to a T and assigned B as a root which is placed in
-  untouchables and removables is updated with the intermediate nodes on that
-  path.
 
 - Finish studying the implementation details of scip-jack and process each
   terminal set cluster identified by the NodeRouter as a final pass to improve
