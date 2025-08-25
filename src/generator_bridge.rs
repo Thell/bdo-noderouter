@@ -4,6 +4,7 @@ use std::pin::Pin;
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::stable_graph::StableUnGraph;
 use rapidhash::fast::{HashSetExt, RapidHashSet};
+use smallvec::SmallVec;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -17,13 +18,13 @@ enum NodeState {
 #[derive(Debug, Clone)]
 pub struct BridgeGenerator {
     ref_graph: StableUnGraph<usize, usize>,
-    index_to_neighbors: IntMap<usize, IntSet<usize>>,
+    index_to_neighbors: IntMap<usize, SmallVec<[usize; 4]>>,
 }
 
 impl BridgeGenerator {
     pub fn new(
         ref_graph: StableUnGraph<usize, usize>,
-        index_to_neighbors: IntMap<usize, IntSet<usize>>,
+        index_to_neighbors: IntMap<usize, SmallVec<[usize; 4]>>,
     ) -> Self {
         Self {
             ref_graph,
@@ -33,7 +34,6 @@ impl BridgeGenerator {
 
     /// Bounded BFS restricted to `allowed` set.
     /// Returns path if <= cutoff, else None.
-    // #[inline(never)]
     fn bounded_path(
         &self,
         start: usize,
@@ -110,7 +110,7 @@ impl BridgeGenerator {
             #[coroutine]
             static move |_: ()| {
                 while rings.len() <= max_frontier_rings {
-                    // Build next frontier strictly from the current outer ring -----
+                    // Build next frontier strictly from the current outer ring
                     let previous_frontier = rings.last().unwrap();
 
                     // This will result in a sorted set because of load% !
@@ -141,20 +141,17 @@ impl BridgeGenerator {
                     for &node in &frontier {
                         // Singletons must connect to at least 2 distinct inner ring.
                         if self.index_to_neighbors[&node]
-                            .intersection(inner_ring)
+                            .iter()
+                            .filter(|n| inner_ring.contains(n))
                             .nth(1)
                             .is_none()
                         {
                             continue;
                         }
 
-                        let mut one_node_bridge =
-                            IntSet::with_capacity_and_hasher(1, BuildNoHashHasher::default());
-                        one_node_bridge.insert(node);
-
                         for bridge in self.descend_to_yield_bridges(
                             ring_idx,
-                            one_node_bridge,
+                            vec![node],
                             &rings,
                             &mut seen_candidate_pairs,
                         ) {
@@ -193,13 +190,13 @@ impl BridgeGenerator {
                             let u_neighbors = &self.index_to_neighbors[&u];
                             let v_neighbors = &self.index_to_neighbors[&v];
                             if u_neighbors
-                                .intersection(v_neighbors)
+                                .iter()
+                                .filter(|n| v_neighbors.contains(n))
                                 .any(|n| inner_ring.contains(n))
                             {
                                 continue;
                             }
 
-                            // Direct bounded BFS inside the frontier
                             if let Some(path) =
                                 self.bounded_path(u, v, &frontier, ring_combo_cutoff[ring_idx])
                             {
@@ -207,11 +204,9 @@ impl BridgeGenerator {
                                     continue;
                                 }
 
-                                let bridge_from_path: IntSet<usize> = path.into_iter().collect();
-
                                 for bridge in self.descend_to_yield_bridges(
                                     ring_idx,
-                                    bridge_from_path,
+                                    path,
                                     &rings,
                                     &mut seen_candidate_pairs,
                                 ) {
@@ -221,7 +216,7 @@ impl BridgeGenerator {
                         }
                     }
                 }
-                IntSet::default()
+                Vec::default()
             },
         )
     }
@@ -231,10 +226,10 @@ impl BridgeGenerator {
     fn descend_to_yield_bridges(
         &self,
         ring_idx: usize,
-        mut bridge: IntSet<usize>,
+        mut bridge: Vec<usize>,
         rings: &Vec<IntSet<usize>>,
         seen_candidate_pairs: &mut RapidHashSet<(usize, usize)>,
-    ) -> impl Iterator<Item = IntSet<usize>> {
+    ) -> impl Iterator<Item = Vec<usize>> {
         let mut output = Vec::new();
 
         // Base case (Settlement Frontier): yield and return
@@ -251,19 +246,14 @@ impl BridgeGenerator {
             // *current frontier subset*.
             //
             // That subset is: bridge ∩ rings[ring_idx]
-            let current_nodes: Vec<_> = bridge
-                .iter()
-                .filter(|n| rings[ring_idx].contains(n))
-                .copied()
-                .collect();
-
             // Candidates are neighbors in inner ring (ring_idx - 1)
             let inner_ring = &rings[ring_idx - 1];
-            let mut candidates: Vec<_> = current_nodes
+            let mut candidates: Vec<usize> = bridge
                 .iter()
-                .flat_map(|&n| &self.index_to_neighbors[&n])
-                .filter(|x| inner_ring.contains(x))
                 .copied()
+                .filter(|n| rings[ring_idx].contains(n))
+                .flat_map(|n| self.index_to_neighbors[&n].iter().copied())
+                .filter(|x| inner_ring.contains(x))
                 .collect();
 
             candidates.sort_unstable();
@@ -274,8 +264,8 @@ impl BridgeGenerator {
                 for &v in candidates.iter().skip(i + 1) {
                     if seen_candidate_pairs.insert((u, v)) {
                         // Extend bridge in-place, recurse, then backtrack
-                        bridge.insert(u);
-                        bridge.insert(v);
+                        bridge.push(u);
+                        bridge.push(v);
 
                         output.extend(self.descend_to_yield_bridges(
                             ring_idx - 1,
@@ -284,9 +274,9 @@ impl BridgeGenerator {
                             seen_candidate_pairs,
                         ));
 
-                        // Backtrack: remove u,v so outer loop stays clean
-                        bridge.remove(&u);
-                        bridge.remove(&v);
+                        // // Backtrack: remove u,v so outer loop stays clean
+                        bridge.pop();
+                        bridge.pop();
                     }
                 }
             }
@@ -306,4 +296,4 @@ impl Default for BridgeGenerator {
 }
 
 pub type BridgeCoroutine<'a> =
-    Pin<Box<dyn Coroutine<(), Yield = IntSet<usize>, Return = IntSet<usize>> + 'a>>;
+    Pin<Box<dyn Coroutine<(), Yield = Vec<usize>, Return = Vec<usize>> + 'a>>;
