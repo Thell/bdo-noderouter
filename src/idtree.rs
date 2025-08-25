@@ -2,7 +2,7 @@
 use pyo3::prelude::*;
 
 use fixedbitset::FixedBitSet;
-use nohash_hasher::{IntMap, IntSet};
+use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 
 use smallvec::SmallVec;
 
@@ -312,7 +312,14 @@ impl IDTree {
     }
 
     pub fn _active_nodes(&mut self) -> IntSet<usize> {
-        (0..self.n).filter(|&i| !self.is_isolated(i)).collect()
+        let mut active_nodes =
+            IntSet::with_capacity_and_hasher(self.n, BuildNoHashHasher::default());
+        for i in 0..self.n {
+            if !self.is_isolated(i) {
+                active_nodes.insert(i);
+            }
+        }
+        active_nodes
     }
 
     pub fn isolate_node(&mut self, v: usize) {
@@ -335,6 +342,10 @@ impl IDTree {
 
     pub fn neighbors(&mut self, v: usize) -> Vec<usize> {
         self.nodes[v].adj.iter().cloned().collect()
+    }
+
+    pub fn neighbors_smallvec(&mut self, v: usize) -> SmallVec<[usize; 4]> {
+        self.nodes[v].adj.clone()
     }
 
     pub fn retain_active_nodes_from(&mut self, from_indices: Vec<usize>) -> Vec<usize> {
