@@ -258,8 +258,8 @@ impl NodeRouter {
     }
 
     pub fn restore_dynamic_state(&mut self, state: DynamicState) {
-        self.combo_gen_direction = state.combo_gen_direction.clone();
-        self.has_super_terminal = state.has_super_terminal.clone();
+        self.combo_gen_direction = state.combo_gen_direction;
+        self.has_super_terminal = state.has_super_terminal;
         self.idtree = state.idtree.clone();
         self.idtree_active_indices = state.idtree_active_indices.clone();
         self.terminal_to_root = state.terminal_to_root.clone();
@@ -293,7 +293,7 @@ impl NodeRouter {
 
     /// Induce subgraph from self.ref_graph using node indices
     fn ref_subgraph_stable(&self, indices: &IntSet<usize>) -> StableUnGraph<(), usize> {
-        let subgraph = self.ref_graph.filter_map(
+        self.ref_graph.filter_map(
             |node_idx, _| {
                 if indices.contains(&node_idx.index()) {
                     Some(())
@@ -302,8 +302,7 @@ impl NodeRouter {
                 }
             },
             |_, edge_idx| Some(*edge_idx),
-        );
-        subgraph
+        )
     }
 
     /// Solve for a list of terminal pairs [(terminal, root), ...]
@@ -772,7 +771,7 @@ impl NodeRouter {
             .into_iter()
             .filter(|c| c.len() >= (2 + bridge.len()) && c.iter().any(|v| bridge.contains(v)))
             .collect();
-        (!filtered.is_empty()).then(|| filtered)
+        (!filtered.is_empty()).then_some(filtered)
     }
 
     fn was_seen_before(&mut self, bridge: &[usize], seen_before: &mut IntSet<u64>) -> bool {
@@ -814,7 +813,7 @@ impl NodeRouter {
             }
         }
 
-        (!idtree_candidates.is_empty()).then(|| idtree_candidates)
+        (!idtree_candidates.is_empty()).then_some(idtree_candidates)
     }
 
     fn improve_component(

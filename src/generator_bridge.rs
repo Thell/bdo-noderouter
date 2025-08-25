@@ -15,7 +15,7 @@ enum NodeState {
 }
 
 /// Finds bridging spans of settlement border nodes within frontier and wild frontier.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct BridgeGenerator {
     ref_graph: StableUnGraph<usize, usize>,
     index_to_neighbors: IntMap<usize, SmallVec<[usize; 4]>>,
@@ -119,11 +119,11 @@ impl BridgeGenerator {
 
                     for &v in previous_frontier {
                         for &n in &self.index_to_neighbors[&v] {
-                            if node_state[n] == NodeState::WildFrontier {
-                                if self.index_to_neighbors[&n].len() > 1 {
-                                    node_state[n] = NodeState::Frontier;
-                                    frontier.insert(n);
-                                }
+                            if node_state[n] == NodeState::WildFrontier
+                                && self.index_to_neighbors[&n].len() > 1
+                            {
+                                node_state[n] = NodeState::Frontier;
+                                frontier.insert(n);
                             }
                         }
                     }
@@ -176,11 +176,9 @@ impl BridgeGenerator {
 
                         while let Some(x) = dfs.pop() {
                             for &n in &self.index_to_neighbors[&x] {
-                                if n > u {
-                                    if frontier.contains(&n) && seen.insert(n) {
-                                        dfs.push(n);
-                                        reachable.push(n);
-                                    }
+                                if n > u && frontier.contains(&n) && seen.insert(n) {
+                                    dfs.push(n);
+                                    reachable.push(n);
                                 }
                             }
                         }
@@ -283,15 +281,6 @@ impl BridgeGenerator {
         }
 
         output.into_iter()
-    }
-}
-
-impl Default for BridgeGenerator {
-    fn default() -> Self {
-        Self {
-            ref_graph: StableUnGraph::default(),
-            index_to_neighbors: IntMap::default(),
-        }
     }
 }
 
