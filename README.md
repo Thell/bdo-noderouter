@@ -88,7 +88,8 @@ potential base town.
 The `pd_approximation.py` script uses the a Python implementation of the Primal Dual
 Approximation algorithm along with the Pulsing-Bridge Spanners (PBS) heuristic
 both written in Python. The heuristic uses a Rust implementation of the IDTree
-for constant-time connectivity testing...
+for constant-time connectivity testing... (this is not kep strictly in sync with
+the Rust implementation).
 
 `.venv/bin/python python/bdo_noderouter/pd_approximation.py`
 
@@ -112,6 +113,21 @@ visualize them by editing the two indicated lines near the bottom of
 `.venv/bin/python python/bdo_noderouter/visualize_solution.py`
 
 This will open a browser instance for with an interactive map.
+
+### Notes
+
+There are some hard-coded tunable values that increase accuracy at the
+expense of runtime.
+
+- `max_removal_attempts` (default: 350)
+- `max_frontier_rings` (default: 3)
+- `ring_combo_cutoff` (from inner-most to outer-most ring, default: [0, 3, 2, 2])
+
+For example, in the 'Direct Tests' section of `node_router.py` example file
+there is a seemingly simple instance that becomes solvable when
+`max_removal_attempts >= 4_045`, `max_frontier_rings == 4` and the fourth ring
+has a `ring_combo_cutoff == 2`. These settings increase the runtime fairly
+significantly.
 
 ## Credits
 
@@ -192,6 +208,11 @@ a percentage of coverage of all available terminals
 
 
 ## TODO
+
+Generate:
+- disjoint-bridges
+- spidering bridges
+- inner-ring spanning bridges 
 
 - Finish studying the implementation details of scip-jack and process each
   terminal set cluster identified by the NodeRouter as a final pass to improve

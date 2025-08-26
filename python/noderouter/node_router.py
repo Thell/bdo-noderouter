@@ -86,6 +86,11 @@ if __name__ == "__main__":
         ({160: 1, 1132: 99999}, 8),
         ({155: 1, 1132: 99999, 1152: 99999}, 11),
         ({155: 1, 1132: 99999, 1136: 99999, 1152: 99999}, 14),
+        # passes if max removal attempts is >= 4_045 with singletons emitted for 4 frontier rings
+        # which puts the timing results back into the 2.3s range for the full test suite meaning
+        # larger workerman instances would be in the 10-20ms range native.
+        ({910: 601, 1683: 302}, 30),
+        ({910: 601, 1683: 302, 480: 302}, 33),
     ]
     graph = get_exploration_graph(config)
     assert isinstance(graph, rx.PyDiGraph)
