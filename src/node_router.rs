@@ -187,8 +187,8 @@ impl NodeRouter {
         let node_count = ref_graph.node_count();
 
         Self {
-            max_node_weight,               // static
-            max_removal_attempts: 100_000, // static
+            max_node_weight,           // static
+            max_removal_attempts: 350, // static
             combo_gen_direction: true,
             has_super_terminal: false,
             base_towns,                                     // static
