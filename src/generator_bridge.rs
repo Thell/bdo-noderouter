@@ -18,13 +18,13 @@ enum NodeState {
 #[derive(Debug, Default, Clone)]
 pub struct BridgeGenerator {
     ref_graph: StableUnGraph<usize, usize>,
-    index_to_neighbors: IntMap<usize, SmallVec<[usize; 4]>>,
+    index_to_neighbors: Vec<SmallVec<[usize; 4]>>,
 }
 
 impl BridgeGenerator {
     pub fn new(
         ref_graph: StableUnGraph<usize, usize>,
-        index_to_neighbors: IntMap<usize, SmallVec<[usize; 4]>>,
+        index_to_neighbors: Vec<SmallVec<[usize; 4]>>,
     ) -> Self {
         Self {
             ref_graph,
@@ -77,7 +77,7 @@ impl BridgeGenerator {
                 continue;
             }
 
-            for &n in &self.index_to_neighbors[&u] {
+            for &n in &self.index_to_neighbors[u] {
                 if allowed.contains(&n) && !parent.contains_key(&n) {
                     parent.insert(n, u);
                     queue.push_back(n);
@@ -118,9 +118,9 @@ impl BridgeGenerator {
                         IntSet::with_capacity_and_hasher(num_nodes, BuildNoHashHasher::default());
 
                     for &v in previous_frontier {
-                        for &n in &self.index_to_neighbors[&v] {
+                        for &n in &self.index_to_neighbors[v] {
                             if node_state[n] == NodeState::WildFrontier
-                                && self.index_to_neighbors[&n].len() > 1
+                                && self.index_to_neighbors[n].len() > 1
                             {
                                 node_state[n] = NodeState::Frontier;
                                 frontier.insert(n);
@@ -140,7 +140,7 @@ impl BridgeGenerator {
 
                     for &node in &frontier {
                         // Singletons must connect to at least 2 distinct inner ring.
-                        if self.index_to_neighbors[&node]
+                        if self.index_to_neighbors[node]
                             .iter()
                             .filter(|n| inner_ring.contains(n))
                             .nth(1)
@@ -161,7 +161,7 @@ impl BridgeGenerator {
 
                     for &u in &frontier {
                         // Skip isolates inside this ring
-                        if self.index_to_neighbors[&u]
+                        if self.index_to_neighbors[u]
                             .iter()
                             .all(|n| !frontier.contains(n))
                         {
@@ -175,7 +175,7 @@ impl BridgeGenerator {
                         seen.insert(u);
 
                         while let Some(x) = dfs.pop() {
-                            for &n in &self.index_to_neighbors[&x] {
+                            for &n in &self.index_to_neighbors[x] {
                                 if n > u && frontier.contains(&n) && seen.insert(n) {
                                     dfs.push(n);
                                     reachable.push(n);
@@ -185,8 +185,8 @@ impl BridgeGenerator {
 
                         for &v in &reachable {
                             // u, v should not share a common neighbor in the inner ring
-                            let u_neighbors = &self.index_to_neighbors[&u];
-                            let v_neighbors = &self.index_to_neighbors[&v];
+                            let u_neighbors = &self.index_to_neighbors[u];
+                            let v_neighbors = &self.index_to_neighbors[v];
                             if u_neighbors
                                 .iter()
                                 .filter(|n| v_neighbors.contains(n))
@@ -250,7 +250,7 @@ impl BridgeGenerator {
                 .iter()
                 .copied()
                 .filter(|n| rings[ring_idx].contains(n))
-                .flat_map(|n| self.index_to_neighbors[&n].iter().copied())
+                .flat_map(|n| self.index_to_neighbors[n].iter().copied())
                 .filter(|x| inner_ring.contains(x))
                 .collect();
 

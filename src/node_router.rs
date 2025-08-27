@@ -63,9 +63,9 @@ pub struct NodeRouter {
 
     // Static Mappings
     base_towns: IntSet<usize>,
-    index_to_neighbors: IntMap<usize, SmallVec<[usize; 4]>>,
-    index_to_waypoint: IntMap<usize, usize>,
-    index_to_weight: IntMap<usize, usize>,
+    index_to_neighbors: Vec<SmallVec<[usize; 4]>>,
+    index_to_waypoint: Vec<usize>,
+    index_to_weight: Vec<usize>,
     waypoint_to_index: IntMap<usize, usize>,
 
     // The main workhorse of the PD Approximation
@@ -129,12 +129,9 @@ impl NodeRouter {
             IntSet::with_capacity_and_hasher(exploration_data.len(), BuildNoHashHasher::default());
         let mut waypoint_to_index =
             IntMap::with_capacity_and_hasher(exploration_data.len(), BuildNoHashHasher::default());
-        let mut index_to_waypoint =
-            IntMap::with_capacity_and_hasher(exploration_data.len(), BuildNoHashHasher::default());
-        let mut index_to_weight =
-            IntMap::with_capacity_and_hasher(exploration_data.len(), BuildNoHashHasher::default());
-        let mut index_to_neighbors =
-            IntMap::with_capacity_and_hasher(exploration_data.len(), BuildNoHashHasher::default());
+        let mut index_to_waypoint = Vec::with_capacity(exploration_data.len());
+        let mut index_to_weight = Vec::with_capacity(exploration_data.len());
+        let mut index_to_neighbors = Vec::with_capacity(exploration_data.len());
 
         // First pass: populate node data and mappings
         for (&waypoint_key, node_data) in exploration_data.iter() {
@@ -164,15 +161,15 @@ impl NodeRouter {
 
         // Add edges with deduplication
         let mut seen_edges = RapidHashSet::with_capacity(exploration_data.len());
-        for (idx, neighbors) in index_to_neighbors.iter() {
+        for (idx, neighbors) in index_to_neighbors.iter().enumerate() {
             for &neighbor in neighbors {
-                let (u, v) = if *idx < neighbor {
-                    (*idx, neighbor)
+                let (u, v) = if idx < neighbor {
+                    (idx, neighbor)
                 } else {
-                    (neighbor, *idx)
+                    (neighbor, idx)
                 };
                 if seen_edges.insert((u, v)) {
-                    ref_graph.add_edge(NodeIndex::new(u), NodeIndex::new(v), index_to_weight[&v]);
+                    ref_graph.add_edge(NodeIndex::new(u), NodeIndex::new(v), index_to_weight[v]);
                 }
             }
         }
@@ -287,7 +284,7 @@ impl NodeRouter {
 
     fn idtree_weight(&self) -> (IntSet<usize>, usize) {
         let active_nodes = self.idtree_active_indices.clone();
-        let total_weight: usize = active_nodes.iter().map(|&i| self.index_to_weight[&i]).sum();
+        let total_weight: usize = active_nodes.iter().map(|&i| self.index_to_weight[i]).sum();
         (active_nodes, total_weight)
     }
 
@@ -332,7 +329,7 @@ impl NodeRouter {
             rev_indices
         };
 
-        winner.iter().map(|&i| self.index_to_waypoint[&i]).collect()
+        winner.iter().map(|&i| self.index_to_waypoint[i]).collect()
     }
 
     /// Set of all terminals, fixed roots and leaf terminal parents
@@ -344,10 +341,8 @@ impl NodeRouter {
 
         // Add unambigous connected nodes (degree 1)...
         for &node in self.untouchables.clone().iter() {
-            if let Some(neighbors) = self.index_to_neighbors.get(&node) {
-                if neighbors.len() == 1 {
-                    self.untouchables.extend(neighbors);
-                }
+            if self.index_to_neighbors[node].len() == 1 {
+                self.untouchables.insert(self.index_to_neighbors[node][0]);
             }
         }
     }
@@ -426,14 +421,14 @@ impl NodeRouter {
                         }
                     }
 
-                    for &neighbor in &self.index_to_neighbors[&node] {
+                    for &neighbor in &self.index_to_neighbors[node] {
                         if visited.contains(&neighbor) {
                             continue;
                         }
                         let next_cost = if x.contains(&neighbor) {
                             cost
                         } else {
-                            cost + self.index_to_weight[&neighbor]
+                            cost + self.index_to_weight[neighbor]
                         };
                         heap.push((Reverse(next_cost), Reverse(neighbor)));
                     }
@@ -462,7 +457,7 @@ impl NodeRouter {
         while self.violated_sets(&x, &mut violated) {
             for v in self.find_frontier_nodes(&violated) {
                 y[v] += 1;
-                if y[v] >= self.index_to_weight[&v] {
+                if y[v] >= self.index_to_weight[v] {
                     x.insert(v);
                     ordered_removables.push(v);
                 }
@@ -523,7 +518,7 @@ impl NodeRouter {
         frontier.extend(
             settlement
                 .iter()
-                .flat_map(|v| &self.index_to_neighbors[v])
+                .flat_map(|&v| &self.index_to_neighbors[v])
                 .filter(|n| !settlement.contains(n)),
         );
         frontier
@@ -539,10 +534,7 @@ impl NodeRouter {
         // and removal candidates during the bridge heuristics is altered.
         let effective_weights: Vec<usize> = match weights {
             Some(ws) => ws.to_vec(),
-            None => numbers
-                .iter()
-                .map(|&i| self.index_to_waypoint[&i])
-                .collect(),
+            None => numbers.iter().map(|&i| self.index_to_waypoint[i]).collect(),
         };
 
         let mut pairs: Vec<(usize, usize)> = effective_weights
@@ -592,7 +584,7 @@ impl NodeRouter {
     ) -> (Vec<usize>, Vec<(usize, usize)>) {
         let mut freed = Vec::new();
         let mut freed_edges = Vec::new();
-        let mut active_neighbors = Vec::new();
+        let mut active_neighbors = Vec::<(usize, usize)>::with_capacity(4);
 
         for &u in ordered_removables {
             active_neighbors.clear();
@@ -669,7 +661,8 @@ impl NodeRouter {
     /// that can improve the solution.
     fn bridge_heuristics(&mut self, ordered_removables: &mut Vec<usize>) {
         let mut incumbent_indices = self.idtree_active_indices.clone();
-        let mut seen_before_cache: IntSet<u64> = IntSet::default();
+        let mut seen_before_cache: IntSet<u64> =
+            IntSet::with_capacity_and_hasher(128, BuildNoHashHasher::default());
 
         let mut improved = true;
         while improved {
@@ -681,8 +674,8 @@ impl NodeRouter {
                 while let CoroutineState::Yielded(bridge) = bridge_gen.as_mut().resume(()) {
                     let reisolate_bridge_nodes: Vec<usize> = bridge
                         .iter()
-                        .copied()
                         .filter(|v| !incumbent_indices.contains(v))
+                        .copied()
                         .collect();
 
                     self.connect_bridge(&bridge);
@@ -744,7 +737,7 @@ impl NodeRouter {
                 let v = tmp[i];
                 let mut inserted_active_neighbor = false;
 
-                for &u in self.index_to_neighbors[&v]
+                for &u in self.index_to_neighbors[v]
                     .iter()
                     .filter(|&&n| self.idtree_active_indices.contains(&n))
                 {
@@ -809,7 +802,7 @@ impl NodeRouter {
                 continue;
             }
             if self.idtree.degree(v) as usize <= cycle_degree_threshold {
-                idtree_candidates.push((v, self.index_to_weight[&v]));
+                idtree_candidates.push((v, self.index_to_weight[v]));
             }
         }
 
@@ -827,11 +820,11 @@ impl NodeRouter {
         let max_removal_attempts = self.max_removal_attempts;
         let bridged_component = self.idtree_active_indices.clone();
         self.update_bridge_affected_nodes(bridged_component.clone());
-        let bridge_weight: usize = bridge.iter().map(|&v| self.index_to_weight[&v]).sum();
+        let bridge_weight: usize = bridge.iter().map(|&v| self.index_to_weight[v]).sum();
         let incumbent_weight: usize = self
             .idtree_active_indices
             .iter()
-            .map(|&v| self.index_to_weight[&v])
+            .map(|&v| self.index_to_weight[v])
             .sum::<usize>()
             - bridge_weight;
         let incumbent_component_count = self.idtree.num_connected_components();
@@ -853,7 +846,7 @@ impl NodeRouter {
             // Isolate the removal_set nodes
             let mut deleted_edges = Vec::new();
             for &v in &removal_set {
-                for &u in self.index_to_neighbors[&v]
+                for &u in self.index_to_neighbors[v]
                     .iter()
                     .filter(|&&u| bridged_component.contains(&u))
                 {
@@ -880,7 +873,7 @@ impl NodeRouter {
             active_component_indices.retain(|&v| !freed.contains(&v));
             let new_weight = active_component_indices
                 .iter()
-                .map(|&v| self.index_to_weight[&v])
+                .map(|&v| self.index_to_weight[v])
                 .sum();
 
             if incumbent_weight < new_weight
