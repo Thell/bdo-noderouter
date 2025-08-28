@@ -291,6 +291,30 @@ impl IDTree {
         visited.into_iter().collect()
     }
 
+    pub fn _node_connected_component(&mut self, v: usize) -> FixedBitSet {
+        let stack = &mut self.q;
+        // let visited = &mut self.node_set_scratch;
+        let visited = &mut self.node_scratch0;
+
+        stack.clear();
+        visited.clear();
+
+        stack.push(v);
+        visited.insert(v);
+
+        while let Some(node) = stack.pop() {
+            stack.extend(
+                self.nodes[node]
+                    .adj
+                    .iter()
+                    .filter(|&v| !visited.put(*v))
+                    .copied(),
+            )
+        }
+
+        visited.clone()
+    }
+
     pub fn num_connected_components(&mut self) -> usize {
         (0..self.n)
             .filter(|&i| self.nodes[i].parent == -1 && !self.is_isolated(i))
@@ -314,6 +338,16 @@ impl IDTree {
     pub fn _active_nodes(&mut self) -> IntSet<usize> {
         let mut active_nodes =
             IntSet::with_capacity_and_hasher(self.n, BuildNoHashHasher::default());
+        for i in 0..self.n {
+            if !self.is_isolated(i) {
+                active_nodes.insert(i);
+            }
+        }
+        active_nodes
+    }
+
+    pub fn __active_nodes(&mut self) -> FixedBitSet {
+        let mut active_nodes = FixedBitSet::with_capacity(self.n);
         for i in 0..self.n {
             if !self.is_isolated(i) {
                 active_nodes.insert(i);

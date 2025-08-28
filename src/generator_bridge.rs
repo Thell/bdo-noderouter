@@ -1,6 +1,7 @@
 use std::ops::Coroutine;
 use std::pin::Pin;
 
+use fixedbitset::FixedBitSet;
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::stable_graph::StableUnGraph;
 use rapidhash::fast::{HashSetExt, RapidHashSet};
@@ -88,7 +89,7 @@ impl BridgeGenerator {
         None
     }
 
-    pub fn generate_bridges<'a>(&'a self, settlement: IntSet<usize>) -> BridgeCoroutine<'a> {
+    pub fn generate_bridges<'a>(&'a self, settlement: FixedBitSet) -> BridgeCoroutine<'a> {
         let num_nodes = self.ref_graph.node_count();
         let max_frontier_rings = 3;
         let ring_combo_cutoff = [0, 3, 2, 2];
@@ -96,11 +97,11 @@ impl BridgeGenerator {
 
         // Populate ring0 (Settlement border)
         let mut rings: Vec<IntSet<usize>> = Vec::with_capacity(ring_combo_cutoff.len() + 1);
-        rings.push(settlement.clone());
+        rings.push(settlement.ones().collect());
 
         // Initialize tri-state membership
         let mut node_state = vec![NodeState::WildFrontier; num_nodes];
-        for &v in &settlement {
+        for v in settlement.ones() {
             node_state[v] = NodeState::Settled;
         }
 

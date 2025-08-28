@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::CoroutineState;
 
+use fixedbitset::FixedBitSet;
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::NodeIndex;
@@ -37,13 +38,13 @@ pub struct DynamicState {
     combo_gen_direction: bool,
     has_super_terminal: bool,
     idtree: IDTree,
-    idtree_active_indices: IntSet<usize>,
+    idtree_active_indices: FixedBitSet,
     terminal_to_root: IntMap<usize, usize>,
     terminal_root_pairs: RapidHashSet<(usize, usize)>,
     untouchables: IntSet<usize>,
     connected_pairs: RapidHashSet<(usize, usize)>,
     bridge_affected_base_towns: IntSet<usize>,
-    bridge_affected_indices: IntSet<usize>,
+    bridge_affected_indices: FixedBitSet,
     bridge_affected_terminals: RapidHashSet<(usize, usize)>,
 }
 
@@ -73,7 +74,7 @@ pub struct NodeRouter {
 
     // The main workhorse of the Bridge Heuristic
     idtree: IDTree,
-    idtree_active_indices: IntSet<usize>,
+    idtree_active_indices: FixedBitSet,
     bridge_generator: BridgeGenerator,
 
     // Contains all terminal, root pairs
@@ -85,7 +86,7 @@ pub struct NodeRouter {
     connected_pairs: RapidHashSet<(usize, usize)>,
     // Used in reverse deletion to filter deletion and connection checks.
     bridge_affected_base_towns: IntSet<usize>,
-    bridge_affected_indices: IntSet<usize>,
+    bridge_affected_indices: FixedBitSet,
     bridge_affected_terminals: RapidHashSet<(usize, usize)>,
 
     bridge_all_cycle_nodes: Vec<usize>,
@@ -195,10 +196,7 @@ impl NodeRouter {
             waypoint_to_index,                              // static
             ref_graph: ref_graph.clone(),                   // static
             idtree: IDTree::new(&initialization_adj_dict),
-            idtree_active_indices: IntSet::with_capacity_and_hasher(
-                node_count,
-                BuildNoHashHasher::default(),
-            ),
+            idtree_active_indices: FixedBitSet::with_capacity(node_count),
             bridge_generator: BridgeGenerator::new(ref_graph, index_to_neighbors),
             terminal_to_root: IntMap::default(), // static per solve run
             terminal_root_pairs: RapidHashSet::default(), // static per solve run
@@ -211,10 +209,7 @@ impl NodeRouter {
                 node_count,
                 BuildNoHashHasher::default(),
             ),
-            bridge_affected_indices: IntSet::with_capacity_and_hasher(
-                node_count,
-                BuildNoHashHasher::default(),
-            ),
+            bridge_affected_indices: FixedBitSet::with_capacity(node_count),
             bridge_affected_terminals: RapidHashSet::with_capacity(node_count),
             bridge_all_cycle_nodes: Vec::with_capacity(node_count),
             hash_buf: Vec::with_capacity(node_count * core::mem::size_of::<usize>()),
@@ -282,9 +277,9 @@ impl NodeRouter {
         }
     }
 
-    fn idtree_weight(&self) -> (IntSet<usize>, usize) {
+    fn idtree_weight(&self) -> (FixedBitSet, usize) {
         let active_nodes = self.idtree_active_indices.clone();
-        let total_weight: usize = active_nodes.iter().map(|&i| self.index_to_weight[i]).sum();
+        let total_weight: usize = active_nodes.ones().map(|i| self.index_to_weight[i]).sum();
         (active_nodes, total_weight)
     }
 
@@ -322,14 +317,12 @@ impl NodeRouter {
         self.bridge_heuristics(&mut ordered_removables.clone());
         let (rev_indices, rev_weight) = self.idtree_weight();
 
-        // Convert idtree active nodes of winning pass to waypoints and return
         let winner = if fwd_weight < rev_weight {
             fwd_indices
         } else {
             rev_indices
         };
-
-        winner.iter().map(|&i| self.index_to_waypoint[i]).collect()
+        winner.ones().map(|i| self.index_to_waypoint[i]).collect()
     }
 
     /// Set of all terminals, fixed roots and leaf terminal parents
@@ -373,7 +366,10 @@ impl NodeRouter {
 
         let (freed, _freed_edges) = self.remove_removables(&ordered_removables);
 
-        self.idtree_active_indices.retain(|&v| !freed.contains(&v));
+        // self.idtree_active_indices.retain(|&v| !freed.contains(&v));
+        freed
+            .iter()
+            .for_each(|&v| self.idtree_active_indices.remove(v));
         ordered_removables.retain(|&v| !freed.contains(&v));
 
         ordered_removables
@@ -559,14 +555,14 @@ impl NodeRouter {
     }
 
     /// Updates self._bridge_* variables with relevant bridged component nodes.
-    fn update_bridge_affected_nodes(&mut self, affected_component: IntSet<usize>) {
+    fn update_bridge_affected_nodes(&mut self, affected_component: FixedBitSet) {
         self.bridge_affected_terminals = self.terminal_root_pairs.clone();
         self.bridge_affected_terminals
-            .retain(|p| affected_component.contains(&(p.0)));
+            .retain(|p| affected_component.contains(p.0));
 
         self.bridge_affected_base_towns = self.base_towns.clone();
         self.bridge_affected_base_towns
-            .retain(|&b| affected_component.contains(&b));
+            .retain(|&b| affected_component.contains(b));
 
         self.bridge_affected_indices = affected_component;
     }
@@ -612,7 +608,7 @@ impl NodeRouter {
 
             // Non base town leaf nodes
             if active_neighbors.len() == 1 && !self.bridge_affected_base_towns.contains(&u) {
-                self.bridge_affected_indices.remove(&u);
+                self.bridge_affected_indices.remove(u);
                 self.bridge_affected_base_towns.remove(&u);
                 freed.push(u);
                 freed_edges.extend_from_slice(&active_neighbors);
@@ -621,7 +617,7 @@ impl NodeRouter {
 
             if need_check && self.terminal_pairs_connected() {
                 // Finalize removal
-                self.bridge_affected_indices.remove(&u);
+                self.bridge_affected_indices.remove(u);
                 self.bridge_affected_base_towns.remove(&u);
                 freed.push(u);
                 freed_edges.extend_from_slice(&active_neighbors);
@@ -674,7 +670,7 @@ impl NodeRouter {
                 while let CoroutineState::Yielded(bridge) = bridge_gen.as_mut().resume(()) {
                     let reisolate_bridge_nodes: Vec<usize> = bridge
                         .iter()
-                        .filter(|v| !incumbent_indices.contains(v))
+                        .filter(|&&v| !incumbent_indices.contains(v))
                         .copied()
                         .collect();
 
@@ -709,7 +705,7 @@ impl NodeRouter {
                         self.improve_component(&bridge, &removal_candidates, ordered_removables);
 
                     if is_improved {
-                        incumbent_indices = self.idtree._active_nodes();
+                        incumbent_indices = self.idtree.__active_nodes();
                         self.idtree_active_indices = incumbent_indices.clone();
                         improved = true;
 
@@ -739,7 +735,7 @@ impl NodeRouter {
 
                 for &u in self.index_to_neighbors[v]
                     .iter()
-                    .filter(|&&n| self.idtree_active_indices.contains(&n))
+                    .filter(|&&n| self.idtree_active_indices.contains(n))
                 {
                     if self.idtree.insert_edge(v, u) != -1 {
                         inserted_active_neighbor = true;
@@ -818,13 +814,15 @@ impl NodeRouter {
         let mut ordered_removables = ordered_removables.to_owned();
         let mut removal_attempts = 0;
         let max_removal_attempts = self.max_removal_attempts;
-        let bridged_component = self.idtree_active_indices.clone();
+
+        // let bridged_component = self.idtree_active_indices.clone();
+        let bridged_component = self.idtree._node_connected_component(bridge[0]);
         self.update_bridge_affected_nodes(bridged_component.clone());
+
         let bridge_weight: usize = bridge.iter().map(|&v| self.index_to_weight[v]).sum();
-        let incumbent_weight: usize = self
-            .idtree_active_indices
-            .iter()
-            .map(|&v| self.index_to_weight[v])
+        let incumbent_component_weight: usize = bridged_component
+            .ones()
+            .map(|v| self.index_to_weight[v])
             .sum::<usize>()
             - bridge_weight;
         let incumbent_component_count = self.idtree.num_connected_components();
@@ -848,7 +846,7 @@ impl NodeRouter {
             for &v in &removal_set {
                 for &u in self.index_to_neighbors[v]
                     .iter()
-                    .filter(|&&u| bridged_component.contains(&u))
+                    .filter(|&&u| bridged_component.contains(u))
                 {
                     if self.idtree.delete_edge(v, u) != -1 {
                         deleted_edges.push((v, u));
@@ -864,20 +862,26 @@ impl NodeRouter {
             }
 
             let mut active_component_indices = bridged_component.clone();
-            active_component_indices.retain(|&v| !removal_set.contains(&v));
+            // active_component_indices.retain(|&v| !removal_set.contains(&v));
+            removal_set
+                .iter()
+                .for_each(|&v| active_component_indices.remove(v));
             self.update_bridge_affected_nodes(active_component_indices.clone());
             ordered_removables.retain(|&v| !removal_set.contains(&v));
-            ordered_removables.retain(|&v| self.bridge_affected_indices.contains(&v));
+            ordered_removables.retain(|&v| self.bridge_affected_indices.contains(v));
 
             let (mut freed, freed_edges) = self.remove_removables(&ordered_removables);
-            active_component_indices.retain(|&v| !freed.contains(&v));
-            let new_weight = active_component_indices
+            freed
                 .iter()
-                .map(|&v| self.index_to_weight[v])
+                .for_each(|&v| active_component_indices.remove(v));
+
+            let new_weight = active_component_indices
+                .ones()
+                .map(|v| self.index_to_weight[v])
                 .sum();
 
-            if incumbent_weight < new_weight
-                || (incumbent_weight == new_weight
+            if incumbent_component_weight < new_weight
+                || (incumbent_component_weight == new_weight
                     && self.idtree.num_connected_components() == incumbent_component_count)
             {
                 for &(v, u) in &deleted_edges {
