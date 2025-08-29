@@ -47,7 +47,7 @@ pub struct IDTree {
     n: usize,
     nodes: Vec<Node>,
     used: Vec<bool>,            // scratch area
-    q: Vec<usize>,              // scratch area
+    stack: Vec<usize>,          // scratch area
     l: Vec<usize>,              // scratch area
     node_scratch0: FixedBitSet, // scratch area
     node_scratch1: FixedBitSet, // scratch area
@@ -146,6 +146,7 @@ impl IDTree {
 
 impl IDTree {
     // MARK: Core
+
     pub fn insert_edge(&mut self, u: usize, v: usize) -> i32 {
         if !self.insert_edge_in_graph(u, v) {
             return -1;
@@ -178,6 +179,7 @@ impl IDTree {
     // MARK: Extensions
 
     /// Rooted Tree-Based Fundamental Cycle Basis
+
     pub fn cycle_basis(&mut self, root: Option<usize>) -> Vec<Vec<usize>> {
         // Constructs a fundamental cycle basis for the connected component containing `root`,
         // using the ID-Tree structure as its spanning tree. A fundamental cycle is formed
@@ -189,7 +191,7 @@ impl IDTree {
 
         let mut cycles = Vec::with_capacity(self.n / 2);
 
-        let stack = &mut self.q;
+        let stack = &mut self.stack;
         let in_component = &mut self.node_scratch0;
 
         stack.clear();
@@ -292,8 +294,7 @@ impl IDTree {
     }
 
     pub fn _node_connected_component(&mut self, v: usize) -> FixedBitSet {
-        let stack = &mut self.q;
-        // let visited = &mut self.node_set_scratch;
+        let stack = &mut self.stack;
         let visited = &mut self.node_scratch0;
 
         stack.clear();
@@ -410,7 +411,7 @@ impl IDTree {
             n,
             nodes,
             used: vec![false; n],
-            q: vec![],
+            stack: vec![],
             l: vec![],
             node_scratch0: FixedBitSet::with_capacity(n),
             node_scratch1: FixedBitSet::with_capacity(n),
@@ -450,8 +451,8 @@ impl IDTree {
         let mut queue: VecDeque<usize> = VecDeque::new();
         queue.push_back(root);
 
-        self.q.clear();
-        self.q.push(root);
+        self.stack.clear();
+        self.stack.push(root);
         self.used[root] = true;
 
         while let Some(node_index) = queue.pop_front() {
@@ -460,14 +461,14 @@ impl IDTree {
                 if !self.used[neighbor_index] {
                     self.used[neighbor_index] = true;
                     self.nodes[neighbor_index].parent = node_index as i32;
-                    self.q.push(neighbor_index);
+                    self.stack.push(neighbor_index);
                     queue.push_back(neighbor_index);
                 }
             }
         }
 
         // Propagate subtree sizes up the tree, skipping the root
-        for &child_index in self.q.iter().skip(1).rev() {
+        for &child_index in self.stack.iter().skip(1).rev() {
             let parent_index = self.nodes[child_index].parent as usize;
             self.nodes[parent_index].subtree_size += self.nodes[child_index].subtree_size;
         }
@@ -475,10 +476,10 @@ impl IDTree {
 
     #[cfg(feature = "python")]
     fn find_centroid_in_q(&self) -> Option<usize> {
-        let num_nodes = self.q.len();
+        let num_nodes = self.stack.len();
         let half_num_nodes = num_nodes / 2;
 
-        self.q.iter().rev().find_map(|&node_index| {
+        self.stack.iter().rev().find_map(|&node_index| {
             if self.nodes[node_index].subtree_size > half_num_nodes {
                 Some(node_index)
             } else {
@@ -637,17 +638,17 @@ impl IDTree {
         // let mut queue: VecDeque<usize> = VecDeque::new();
         // queue.push_back(u);
 
-        self.q.clear();
+        self.stack.clear();
         self.l.clear();
 
-        self.q.push(u);
+        self.stack.push(u);
         self.l.push(u);
         self.used[u] = true;
 
         //  7 while 𝑄 ≠ ∅ do
         let mut i = 0;
-        while i < self.q.len() {
-            let mut x = self.q[i];
+        while i < self.stack.len() {
+            let mut x = self.stack[i];
             i += 1;
 
             //  9 foreach 𝑦 ∈ 𝑁(𝑥) do
@@ -659,7 +660,7 @@ impl IDTree {
                 // 11 else if 𝑥 = 𝑝𝑎𝑟𝑒𝑛𝑡(𝑦) then
                 if self.nodes[y].parent == x as i32 {
                     // 12 𝑄.𝑝𝑢𝑠ℎ(𝑦);
-                    self.q.push(y);
+                    self.stack.push(y);
 
                     if !self.used[y] {
                         // 13 𝑆 ← 𝑆 ∪ {𝑦};
