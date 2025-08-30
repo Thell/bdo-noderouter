@@ -43,12 +43,12 @@ impl Node {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "python", pyclass(unsendable))]
 #[repr(align(64))]
+#[allow(unused)]
 pub struct IDTree {
     n: usize,
     nodes: Vec<Node>,
-    used: Vec<bool>,            // scratch area
+    used: Vec<bool>,            // scratch area (used by python setup)
     stack: Vec<usize>,          // scratch area
-    l: Vec<usize>,              // scratch area
     node_scratch0: FixedBitSet, // scratch area
     node_scratch1: FixedBitSet, // scratch area
     node_scratch2: FixedBitSet, // scratch area
@@ -412,7 +412,6 @@ impl IDTree {
             nodes,
             used: vec![false; n],
             stack: vec![],
-            l: vec![],
             node_scratch0: FixedBitSet::with_capacity(n),
             node_scratch1: FixedBitSet::with_capacity(n),
             node_scratch2: FixedBitSet::with_capacity(n),
@@ -633,122 +632,94 @@ impl IDTree {
         2
     }
 
-    fn find_replacement(&mut self, u: usize, f: usize) -> bool {
+    fn find_replacement(&mut self, u: usize, root_v: usize) -> bool {
+        let nodes = &mut self.nodes;
+        let stack = &mut self.stack;
+        let used = &mut self.node_scratch0;
+
         // 5 𝑄 ← an empty queue, 𝑄.𝑝𝑢𝑠ℎ(𝑢);
-        // let mut queue: VecDeque<usize> = VecDeque::new();
-        // queue.push_back(u);
+        stack.clear();
+        used.clear();
 
-        self.stack.clear();
-        self.l.clear();
-
-        self.stack.push(u);
-        self.l.push(u);
-        self.used[u] = true;
+        stack.push(u);
+        used.insert(u);
 
         //  7 while 𝑄 ≠ ∅ do
-        let mut i = 0;
-        while i < self.stack.len() {
-            let mut x = self.stack[i];
-            i += 1;
-
+        while let Some(mut node) = stack.pop() {
             //  9 foreach 𝑦 ∈ 𝑁(𝑥) do
-            for &y in &self.nodes[x].adj {
+            'neighbors: for &neighbor in nodes[node]
+                .adj
+                .iter()
                 // 10 if 𝑦 = 𝑝𝑎𝑟𝑒𝑛𝑡(𝑥) then continue;
-                if y as i32 == self.nodes[x].parent {
-                    continue;
-                }
+                .filter(|&&n| n != nodes[node].parent as usize)
+            {
                 // 11 else if 𝑥 = 𝑝𝑎𝑟𝑒𝑛𝑡(𝑦) then
-                if self.nodes[y].parent == x as i32 {
-                    // 12 𝑄.𝑝𝑢𝑠ℎ(𝑦);
-                    self.stack.push(y);
-
-                    if !self.used[y] {
-                        // 13 𝑆 ← 𝑆 ∪ {𝑦};
-                        self.used[y] = true;
-                        self.l.push(y);
-                    }
+                // 12 𝑄.𝑝𝑢𝑠ℎ(𝑦);
+                // 13 𝑆 ← 𝑆 ∪ {𝑦};
+                if node as i32 == nodes[neighbor].parent {
+                    stack.push(neighbor);
+                    used.insert(neighbor);
                     continue;
                 }
 
                 // Try to build a new path from y upward
                 // 15 𝑠𝑢𝑐𝑐 ← true;
-                let mut replacement_found = true;
-
                 // 16 foreach 𝑤 from 𝑦 to the root do
-                let mut w = y as i32;
+                // 17 if 𝑤 ∈ 𝑆 then
+                // 18  𝑠𝑢𝑐𝑐 ← false;
+                // 19  break
+                // 20 else
+                // 21  𝑆 ← 𝑆 ∪ {𝑤};
+                let mut w = neighbor as i32;
                 while w != -1 {
-                    // 17 if 𝑤 ∈ 𝑆 then
-                    if self.used[w as usize] {
-                        // 18 𝑠𝑢𝑐𝑐 ← false;
-                        replacement_found = false;
-                        // 19 break;
-                        break;
+                    if used.put(w as usize) {
+                        continue 'neighbors;
+                    } else {
+                        w = nodes[w as usize].parent;
                     }
-                    // 20 else
-                    // 21 𝑆 ← 𝑆 ∪ {𝑤};
-                    self.used[w as usize] = true;
-                    self.l.push(w as usize);
-
-                    w = self.nodes[w as usize].parent;
-                }
-                if !replacement_found {
-                    continue;
                 }
 
                 // 22 if 𝑠𝑢𝑐𝑐 then
-
-                // 23 𝑟𝑜𝑜𝑡𝑣 ← Link(ReRoot(𝑥),𝑦,𝑟𝑜𝑜𝑡𝑣);
-
-                // Link
-                // ReRoot(𝑥)
-                let mut p = self.nodes[x].parent;
-                self.nodes[x].parent = y as i32;
+                // 23   𝑟𝑜𝑜𝑡𝑣 ← Link(ReRoot(𝑥),𝑦,𝑟𝑜𝑜𝑡𝑣);
+                // Compute new root => update subtree sizes and find new root
+                let mut p = nodes[node].parent;
+                nodes[node].parent = neighbor as i32;
                 while p != -1 {
-                    let pp = self.nodes[p as usize].parent;
-                    self.nodes[p as usize].parent = x as i32;
-                    x = p as usize;
+                    let pp = nodes[p as usize].parent;
+                    nodes[p as usize].parent = node as i32;
+                    node = p as usize;
                     p = pp;
                 }
 
-                // Compute new root => update subtree sizes and find new root
-                let subtree_u_size = self.nodes[u].subtree_size;
-                let s = (self.nodes[f].subtree_size + subtree_u_size) / 2;
+                let subtree_u_size = nodes[u].subtree_size;
+                let s = (nodes[root_v].subtree_size + subtree_u_size) / 2;
                 let mut new_root = None;
-                let mut p = y as i32;
+                let mut p = neighbor as i32;
                 while p != -1 {
-                    self.nodes[p as usize].subtree_size += subtree_u_size;
-                    if new_root.is_none() && self.nodes[p as usize].subtree_size > s {
+                    nodes[p as usize].subtree_size += subtree_u_size;
+                    if new_root.is_none() && nodes[p as usize].subtree_size > s {
                         new_root = Some(p as usize);
                     }
-                    p = self.nodes[p as usize].parent;
+                    p = nodes[p as usize].parent;
                 }
 
                 // Fix subtree sizes
-                let mut p = self.nodes[x].parent;
-                while p != y as i32 {
-                    self.nodes[x].subtree_size -= self.nodes[p as usize].subtree_size;
-                    self.nodes[p as usize].subtree_size += self.nodes[x].subtree_size;
-                    x = p as usize;
-                    p = self.nodes[p as usize].parent;
-                }
-
-                for &k in &self.l {
-                    self.used[k] = false;
+                let mut p = nodes[node].parent;
+                while p != neighbor as i32 {
+                    nodes[node].subtree_size -= nodes[p as usize].subtree_size;
+                    nodes[p as usize].subtree_size += nodes[node].subtree_size;
+                    node = p as usize;
+                    p = nodes[p as usize].parent;
                 }
 
                 if let Some(new_root) = new_root {
-                    if new_root != f {
+                    if new_root != root_v {
                         self.reroot(new_root);
                     }
                 }
                 return true;
             }
         }
-
-        for &k in &self.l {
-            self.used[k] = false;
-        }
-
         false
     }
 
