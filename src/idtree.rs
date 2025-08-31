@@ -7,7 +7,6 @@ use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use smallvec::SmallVec;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[repr(align(64))]
 struct Node {
     parent: i32,
     subtree_size: usize,
@@ -42,7 +41,6 @@ impl Node {
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "python", pyclass(unsendable))]
-#[repr(align(64))]
 #[allow(unused)]
 pub struct IDTree {
     n: usize,

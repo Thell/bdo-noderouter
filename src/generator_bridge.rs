@@ -9,7 +9,6 @@ use rapidhash::fast::{HashSetExt, RapidHashSet};
 use smallvec::SmallVec;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 enum NodeState {
     WildFrontier = 0,
     Frontier = 1,
