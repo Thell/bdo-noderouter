@@ -521,26 +521,13 @@ impl NodeRouter {
         frontier
     }
 
-    fn sort_by_weights(&self, numbers: &[usize], weights: Option<&[usize]>) -> Vec<usize> {
-        // NOTE:
-        // The sorting here was purely for deterministic testing while refactoring from networkx.
-        // But amazingly enough this _dramatically_ improves results with PD!
-        // Considering this is sorting by 'waypoint_key' it doesn't really represent a weight
-        // that _should_ have anything to do with the component growth but since the keys
-        // are somewhat geographically ordered the structural ordering of the bridge
-        // and removal candidates during the bridge heuristics is altered.
-        let effective_weights: Vec<usize> = match weights {
-            Some(ws) => ws.to_vec(),
-            None => numbers.iter().map(|&i| self.index_to_waypoint[i]).collect(),
-        };
-
-        let mut pairs: Vec<(usize, usize)> = effective_weights
-            .into_iter()
+    fn sort_by_weights(&self, numbers: &[usize]) -> Vec<usize> {
+        let mut pairs: Vec<(usize, usize)> = numbers
+            .iter()
+            .map(|&i| self.index_to_weight[i])
             .zip(numbers.iter().cloned())
             .collect();
-
         pairs.sort_unstable();
-
         pairs.into_iter().map(|(_, number)| number).collect()
     }
 
@@ -712,7 +699,7 @@ impl NodeRouter {
                         improved = true;
 
                         ordered_removables.retain(|v| !freed.contains(v));
-                        ordered_removables.extend(self.sort_by_weights(&bridge, None));
+                        ordered_removables.extend(self.sort_by_weights(&bridge));
                         break;
                     }
 
