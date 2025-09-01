@@ -551,7 +551,8 @@ impl NodeRouter {
                 let (u, v) = self.ref_graph.edge_endpoints(edge_idx).unwrap();
                 self.idtree.insert_edge(u.index(), v.index());
             });
-        self.idtree_active_indices = self.idtree.active_nodes().into_iter().collect();
+
+        self.idtree_active_indices = self.idtree.__active_nodes();
     }
 
     /// Updates self._bridge_* variables with relevant bridged component nodes.
