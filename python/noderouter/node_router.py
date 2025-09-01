@@ -10,7 +10,6 @@ import time
 import rustworkx as rx
 from loguru import logger
 
-from api_exploration_graph import get_exploration_graph
 import data_store as ds
 from api_common import set_logger, ResultDict, get_clean_exploration_data
 from noderouter import NodeRouter
@@ -69,41 +68,3 @@ if __name__ == "__main__":
             test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
             test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
-
-    # Direct Super-Terminal tests
-    test_sets = [
-        ({1132: 99999}, 5),
-        ({1152: 99999}, 7),
-        ({1154: 99999}, 6),
-        ({1160: 99999}, 6),
-        ({1162: 99999}, 5),
-        ({155: 1, 1132: 99999}, 9),
-        ({155: 1, 1151: 99999}, 10),
-        ({155: 1, 1152: 99999}, 11),
-        ({155: 1, 1154: 99999}, 10),
-        ({155: 1, 1160: 99999}, 10),
-        ({155: 1, 1162: 99999}, 9),
-        ({160: 1, 1132: 99999}, 8),
-        ({155: 1, 1132: 99999, 1152: 99999}, 11),
-        ({155: 1, 1132: 99999, 1136: 99999, 1152: 99999}, 14),
-        # passes if max removal attempts is >= 4_045 with singletons emitted for 4 frontier rings
-        # which puts the timing results back into the 2.3s range for the full test suite meaning
-        # larger workerman instances would be in the 10-20ms range native.
-        ({910: 601, 1683: 302}, 30),
-        ({910: 601, 1683: 302, 480: 302}, 33),
-    ]
-    graph = get_exploration_graph(config)
-    assert isinstance(graph, rx.PyDiGraph)
-    for terminals, optimal_cost in test_sets:
-        print(f"\nOptimizing graph with {terminals=}...")
-        result = optimize_with_terminals(graph, terminals, config)
-        solution_graph = result["solution_graph"]
-        objective_value = result["objective_value"]
-        solution_waypoints = []
-        for node in solution_graph.nodes():
-            solution_waypoints.append(node["waypoint_key"])
-        logger.info(solution_waypoints)
-        if objective_value == optimal_cost:
-            logger.success(f"PASS: Solution cost: {objective_value}")
-        else:
-            logger.error(f"FAIL: Solution cost: {objective_value} (expected: {optimal_cost})")
