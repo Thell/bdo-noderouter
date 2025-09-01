@@ -187,7 +187,7 @@ impl NodeRouter {
 
         Self {
             max_node_weight,           // static
-            max_removal_attempts: 350, // static use 9_000 for bridge testing
+            max_removal_attempts: 350, // static (9_000 for full bridge testing, 1_800 for single pass)
             combo_gen_direction: false,
             has_super_terminal: false,
             base_towns,                                     // static
@@ -306,6 +306,7 @@ impl NodeRouter {
         self.init_terminal_pairs(terminal_pairs);
         self.generate_untouchables();
 
+        // Two pass setup
         let ordered_removables = self.approximate();
         let post_approximation_state = self.get_dynamic_state();
 
@@ -324,6 +325,15 @@ impl NodeRouter {
             rev_indices
         };
         winner.ones().map(|i| self.index_to_waypoint[i]).collect()
+
+        // Single pass testing setup
+        // let ordered_removables = self.approximate();
+        // self.bridge_heuristics(&mut ordered_removables.clone());
+        // let (fwd_indices, _fwd_weight) = self.idtree_weight();
+        // fwd_indices
+        //     .ones()
+        //     .map(|i| self.index_to_waypoint[i])
+        //     .collect()
     }
 
     /// Set of all terminals, fixed roots and leaf terminal parents
