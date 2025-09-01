@@ -5,7 +5,7 @@ use std::{cell::RefCell, ops::Coroutine};
 use fixedbitset::FixedBitSet;
 use nohash_hasher::IntMap;
 use petgraph::stable_graph::StableUnGraph;
-use rapidhash::fast::{HashSetExt, RapidHashSet};
+use rapidhash::{HashSetExt, RapidHashSet};
 use smallvec::SmallVec;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

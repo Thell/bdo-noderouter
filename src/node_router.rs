@@ -2,6 +2,7 @@
 use pyo3::prelude::*;
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::Hasher;
 use std::ops::CoroutineState;
 
 use fixedbitset::FixedBitSet;
@@ -9,8 +10,8 @@ use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableUnGraph;
-use rapidhash::fast::{HashSetExt, RapidHashSet};
-use rapidhash::v3::rapidhash_v3;
+use rapidhash::fast::RapidHasher;
+use rapidhash::{HashSetExt, RapidHashSet};
 use serde::Deserialize;
 use smallvec::SmallVec;
 
@@ -775,7 +776,9 @@ impl NodeRouter {
         for &x in &self.scratch_nodes {
             self.hash_buf.extend_from_slice(&x.to_le_bytes());
         }
-        let all_hash = rapidhash_v3(&self.hash_buf);
+        let mut hasher = RapidHasher::default();
+        hasher.write(&self.hash_buf);
+        let all_hash = hasher.finish();
         !seen_before.insert(all_hash)
     }
 
