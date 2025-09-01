@@ -187,8 +187,8 @@ impl NodeRouter {
 
         Self {
             max_node_weight,           // static
-            max_removal_attempts: 350, // static
-            combo_gen_direction: true,
+            max_removal_attempts: 350, // static use 9_000 for bridge testing
+            combo_gen_direction: false,
             has_super_terminal: false,
             base_towns,                                     // static
             index_to_neighbors: index_to_neighbors.clone(), // static
@@ -219,7 +219,7 @@ impl NodeRouter {
     }
 
     fn clear_dynamic_state(&mut self) {
-        self.combo_gen_direction = true;
+        self.combo_gen_direction = false;
         self.has_super_terminal = false;
         for node in self.idtree.active_nodes() {
             self.idtree.isolate_node(node);
@@ -313,7 +313,7 @@ impl NodeRouter {
         let (fwd_indices, fwd_weight) = self.idtree_weight();
 
         self.restore_dynamic_state(post_approximation_state);
-        self.combo_gen_direction = false;
+        self.combo_gen_direction = true;
 
         self.bridge_heuristics(&mut ordered_removables.clone());
         let (rev_indices, rev_weight) = self.idtree_weight();
