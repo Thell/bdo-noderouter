@@ -32,7 +32,6 @@ document.getElementById("solveBtn").addEventListener("click", async () => {
         const result = router.solveForTerminalPairs(pairs);
         const end = performance.now();
 
-        // Updated line to use innerHTML with a <br> tag for the newline
         output.innerHTML = `Elapsed: ${(end - start).toFixed(2)}ms<br>Result: [${result.join(", ")}]`;
     } catch (err) {
         output.innerHTML = `Error during solve: ${err}`;
@@ -53,13 +52,23 @@ document.getElementById("fileInput").addEventListener("change", async (event) =>
         const text = await file.text();
         const json = JSON.parse(text);
 
-        await init(); // await WASM initialization
+        await init();
         router = new WasmNodeRouter(json);
         output.textContent = "exploration.json loaded successfully.";
+        setActiveButton(null);
     } catch (e) {
         output.textContent = `Failed to load/parse file: ${e.message || e}`;
     }
 });
+
+function setActiveButton (activeButton) {
+    document.querySelectorAll('.test-sets button').forEach(button => {
+        button.classList.remove('active');
+    });
+    if (activeButton) {
+        activeButton.classList.add('active');
+    }
+}
 
 document.querySelector(".test-sets").addEventListener("click", (event) => {
     const button = event.target.closest('button');
@@ -67,6 +76,11 @@ document.querySelector(".test-sets").addEventListener("click", (event) => {
         const testId = button.dataset.testid;
         if (testSets[testId]) {
             document.getElementById("terminalPairs").value = testSets[testId];
+            setActiveButton(button);
         }
     }
+});
+
+document.getElementById("terminalPairs").addEventListener("input", () => {
+    setActiveButton(null);
 });
