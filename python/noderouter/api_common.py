@@ -60,6 +60,8 @@ def get_clean_exploration_data(config: dict):
             break
         data = new_data
 
+    # ds.write_json(ds.path().joinpath("clean_exploration.json").as_posix(), data)
+
     return data
 
 
