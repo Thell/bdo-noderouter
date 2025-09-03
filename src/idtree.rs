@@ -177,7 +177,6 @@ impl IDTree {
     // MARK: Extensions
 
     /// Rooted Tree-Based Fundamental Cycle Basis
-
     pub fn cycle_basis(&mut self, root: Option<usize>) -> Vec<Vec<usize>> {
         // Constructs a fundamental cycle basis for the connected component containing `root`,
         // using the ID-Tree structure as its spanning tree. A fundamental cycle is formed

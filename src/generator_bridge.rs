@@ -101,7 +101,7 @@ impl BridgeGenerator {
         visited.insert(start);
 
         std::iter::from_fn(move || {
-            while let Some(x) = stack.pop() {
+            if let Some(x) = stack.pop() {
                 for &n in &self.index_to_neighbors[x] {
                     if n > start && frontier.contains(n) && !visited.put(n) {
                         stack.push(n);
