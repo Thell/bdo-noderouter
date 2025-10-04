@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from multiprocessing import cpu_count
-from threading import Event, Lock, Thread
+from threading import Lock, Thread
 import queue
 import time
 
@@ -10,8 +10,6 @@ from highspy import Highs, kHighsInf, ObjSense
 from loguru import logger
 import numpy as np
 import rustworkx as rx
-
-from api_common import SUPER_ROOT
 
 
 @dataclass
@@ -38,17 +36,10 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
     """Populates model with variables and constraints using a model of type and
     arguments in kwargs which is passed to the create_model function.
 
-    - models:
-        - Node Weighted Steiner Forest problem.
-        - Reverse cumulative multi-commodity integer flow
-        - Optimal solution baseline reference
-        - Requires solution extractor for binary 'x_var' variables.
-
     Requires:
       - the kwarg 'graph'
       - a graph with attrs member containing 'terminal_sets' and 'terminals'
-      - all models require nodes with a payload contained 'need_exploration_point'
-      - models with node and edge weights also require 'cost' attribute on edges
+      - requires nodes with a payload containing 'need_exploration_point'
 
     """
     logger.debug("Creating MIP Baseline model using highspy...")
@@ -76,7 +67,7 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
     for k, terminal_set in terminal_sets.items():
         f_ub = len(terminal_set)
         for i, j in G.edge_list():
-            f_k[(k, i, j)] = model.addIntegral(lb=0, ub=f_ub)
+            f_k[(k, i, j)] = model.addVariable(lb=0, ub=f_ub)
 
     # Objective: Minimize total node weight
     model.setObjective(
@@ -95,10 +86,15 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
         neighbors = set(predecessors) | set(successors)
         x_neighbors = [x[j] for j in neighbors]
 
-        # Neighbor selection:
+        if i in all_terminals:
+            # All roots and terminals must be in the solution.
+            model.addConstr(x[i] == 1)
+
+        # Neighbor selection: redundant for selection, imposes a transitive
+        # property to selected nodes to improve solution runtime.
         if i in all_terminals:
             # A terminal or root must have at least one selected neighbor
-            model.addConstr(model.qsum(x_neighbors) >= x[i])
+            model.addConstr(model.qsum(x_neighbors) >= 1)
         else:
             # A selected intermediate must have at least two selected neighbors
             model.addConstr(model.qsum(x_neighbors) >= 2 * x[i])
@@ -107,10 +103,6 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
         for k, terminal_set in terminal_sets.items():
             in_flow = model.qsum(f_k[k, j, i] for j in predecessors)
             out_flow = model.qsum(f_k[k, i, j] for j in successors)
-
-            # Node selection - any flow selects node
-            model.addConstr(in_flow <= len(terminal_set) * x[i])
-            model.addConstr(out_flow <= len(terminal_set) * x[i])
 
             if i == k:
                 # Flow at root node
@@ -122,12 +114,14 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
                 model.addConstr(out_flow - in_flow == 1)
 
             else:
-                # Flow at intermediate node
-                model.addConstr(out_flow - in_flow == 0)
+                # Node selection - any flow selects node
+                model.addConstr(out_flow <= len(terminal_set) * x[i])
+                # Flow conservation at intermediate node
+                model.addConstr(out_flow == in_flow)
 
-    logger.debug(f"  time to  create model: {time.time() - start_time} seconds")
+    logger.debug(f"  time to create model: {time.time() - start_time} seconds")
 
-    vars = {"x": x, "y": {}, "f": f_k}
+    vars = {"x": x}
     return model, vars
 
 
