@@ -40,7 +40,6 @@ def optimize_with_terminals(
     logger.info(f"solution time (ms): {(time.perf_counter() - start_time) * 1000:.2f}")
     solution_indices = [WAYPOINT_TO_INDEX[w] for w in solution_waypoints]
     solution_graph = exploration_graph.subgraph(solution_indices)
-    objective_value = sum(v["need_exploration_point"] for v in solution_graph.nodes())
     return ResultDict({"solution_graph": solution_graph, "objective_value": cost})
 
 

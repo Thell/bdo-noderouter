@@ -24,10 +24,16 @@ omit_great_ocean = true
 # used in the future for solving the terminal clusters after
 # the approximation.
 [solver]
-log_to_console = true
-mip_feasibility_tolerance = 1e-4
+log_to_console = false
+mip_heuristic_run_root_reduced_cost = false
 mip_improvement_timeout = inf
+mip_feasibility_tolerance = 1e-4
 mip_rel_gap = 1e-4
 primal_feasibility_tolerance = 1e-4
+threads = 8                                 # HiGHs internal parallelism
+num_threads = 1                             # concurrent HiGHs threads
 time_limit = inf
-num_threads = 7
+
+# [solution]
+# cleanup = true
+# validate = true

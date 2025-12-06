@@ -50,8 +50,6 @@ def cleanup_solution(solution_graph: rx.PyDiGraph):
     terminal_sets = solution_graph.attrs["terminal_sets"]
     node_key_by_index = solution_graph.attrs["node_key_by_index"]
 
-    super_root_index = node_key_by_index.inv.get(SUPER_ROOT, None)
-
     isolates = list(rx.isolates(solution_graph))
     if isolates:
         logger.info(f"  removing {len(isolates)} isolates... {[node_key_by_index[i] for i in isolates]}")
@@ -136,9 +134,8 @@ def extract_solution_from_x_vars(
     solution_nodes = []
     status = model.getModelStatus()
     if status == highspy.HighsModelStatus.kOptimal or highspy.HighsModelStatus.kInterrupt:
-        solution_nodes = [
-            i for i in G.node_indices() if round(model.getSolution().col_value[x_vars[i].index]) == 1
-        ]
+        col_values = model.getSolution().col_value
+        solution_nodes = [i for i in G.node_indices() if round(col_values[x_vars[i].index]) == 1]
     else:
         logger.error(f"ERROR: Non optimal result status of {status}!")
         raise ValueError("Non optimal result status!")

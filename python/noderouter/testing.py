@@ -138,12 +138,13 @@ def _generate_random_terminals(
         )
         selected_dangers = _select_nodes(danger_nodes, danger_count, seed)
 
-    src_dst = {
+    src_dst: dict[int, int] = {
         **_assign_worker_roots(selected_workers, exploration_data, config.get_territory_root_sets(), seed),
         **_assign_danger_nodes(selected_dangers),
     }
+    root_count, worker_count, danger_count = _count_metrics(src_dst)
 
-    return src_dst, *_count_metrics(src_dst)
+    return src_dst, root_count, worker_count, danger_count
 
 
 def _generate_workerman_terminals(
@@ -192,7 +193,9 @@ def _generate_workerman_terminals(
         selected_dangers = _select_nodes(danger_nodes, danger_count, seed)
         src_dst.update(_assign_danger_nodes(selected_dangers))
 
-    return src_dst, *_count_metrics(src_dst)
+    root_count, worker_count, danger_count = _count_metrics(src_dst)
+
+    return src_dst, root_count, worker_count, danger_count
 
 
 def _get_solution_metrics(

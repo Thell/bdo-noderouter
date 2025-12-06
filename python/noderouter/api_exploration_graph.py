@@ -106,6 +106,44 @@ def exploration_graph_ew_directed(data) -> rx.PyGraph | rx.PyDiGraph:
     return graph
 
 
+def populate_edge_weights(graph: rx.PyGraph | rx.PyDiGraph):
+    for u, v in graph.edge_list():
+        graph.update_edge(u, v, {"need_exploration_point": graph[v]["need_exploration_point"]})
+
+
+def has_edge_weights(graph: rx.PyGraph | rx.PyDiGraph) -> bool:
+    has_edge_data = False
+    for edge in graph.edges():
+        if edge is not None and edge.get("need_exploration_point") is not None:
+            has_edge_data = True
+            break
+    return has_edge_data
+
+
+def get_all_pairs_shortest_paths(graph: rx.PyGraph | rx.PyDiGraph) -> dict[tuple[int, int], list[int]]:
+    if not has_edge_weights(graph):
+        populate_edge_weights(graph)
+    shortest_paths = rx.all_pairs_dijkstra_shortest_paths(
+        graph, edge_cost_fn=lambda edge_data: edge_data["need_exploration_point"]
+    )
+    shortest_paths = {
+        (u, v): list(path)
+        for u, paths_from_source in shortest_paths.items()
+        for v, path in paths_from_source.items()
+    }
+    return shortest_paths
+
+
+def get_all_pairs_path_lengths(graph: rx.PyGraph | rx.PyDiGraph) -> dict[tuple[int, int], int]:
+    """Calculates and returns the node weighted shortest paths for all pairs."""
+    if not has_edge_weights(graph):
+        populate_edge_weights(graph)
+    shortest_paths = get_all_pairs_shortest_paths(graph)
+    return {
+        key: sum(graph[w]["need_exploration_point"] for w in path) for key, path in shortest_paths.items()
+    }
+
+
 def get_exploration_graph(config: dict) -> rx.PyGraph | rx.PyDiGraph:
     """Returns a rustworkx graph.
 
