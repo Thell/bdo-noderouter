@@ -25,14 +25,20 @@ pub struct BridgeGenerator {
     frontier_buffer: RefCell<FixedBitSet>,
     parent_map: RefCell<IntMap<usize, usize>>,
     queue_buffer: RefCell<VecDeque<(usize, usize)>>,
+    max_frontier_rings: usize,
+    ring_combo_cutoff: Vec<usize>,
 }
 
 impl BridgeGenerator {
     pub fn new(
         ref_graph: StableUnGraph<usize, usize>,
         index_to_neighbors: Vec<SmallVec<[usize; 4]>>,
+        max_frontier_rings: usize,
+        ring_combo_cutoff: Vec<usize>,
     ) -> Self {
         let node_count = ref_graph.node_count();
+        let mut combo_cutoffs = vec![0];
+        combo_cutoffs.extend(ring_combo_cutoff);
         Self {
             ref_graph,
             index_to_neighbors,
@@ -41,6 +47,8 @@ impl BridgeGenerator {
             frontier_buffer: RefCell::new(FixedBitSet::with_capacity(node_count)),
             parent_map: RefCell::new(IntMap::default()),
             queue_buffer: RefCell::new(VecDeque::new()),
+            max_frontier_rings,
+            ring_combo_cutoff: combo_cutoffs,
         }
     }
 
@@ -115,8 +123,9 @@ impl BridgeGenerator {
 
     pub fn generate_bridges<'a>(&'a self, settlement: FixedBitSet) -> BridgeCoroutine<'a> {
         let num_nodes = self.ref_graph.node_count();
-        let max_frontier_rings = 3;
-        let ring_combo_cutoff = [0, 3, 2, 2];
+        let max_frontier_rings = self.max_frontier_rings;
+        let ring_combo_cutoff = self.ring_combo_cutoff.clone();
+
         let mut seen_candidate_pairs = RapidHashSet::with_capacity(num_nodes);
 
         // Initialize tri-state membership

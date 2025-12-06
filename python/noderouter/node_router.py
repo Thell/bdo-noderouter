@@ -35,13 +35,13 @@ def optimize_with_terminals(
     logger.debug(f"Optimizing graph with {len(terminals)} terminals...")
     start_time = time.perf_counter()
 
-    solution_waypoints = NR.solve_for_terminal_pairs(list(terminals.items()))
+    solution_waypoints, cost = NR.solve_for_terminal_pairs(list(terminals.items()))
 
     logger.info(f"solution time (ms): {(time.perf_counter() - start_time) * 1000:.2f}")
     solution_indices = [WAYPOINT_TO_INDEX[w] for w in solution_waypoints]
     solution_graph = exploration_graph.subgraph(solution_indices)
     objective_value = sum(v["need_exploration_point"] for v in solution_graph.nodes())
-    return ResultDict({"solution_graph": solution_graph, "objective_value": objective_value})
+    return ResultDict({"solution_graph": solution_graph, "objective_value": cost})
 
 
 if __name__ == "__main__":
@@ -68,3 +68,14 @@ if __name__ == "__main__":
             test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
             test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
+
+    from api_exploration_graph import get_exploration_graph
+
+    # fmt:off
+    terminals = {61:1, 301:1, 302:1, 601:1, 602:1, 604:1, 608:1, 1002:1, 1101:1, 1141:1, 1301:1, 1314:1, 1319:1, 1343:1, 1380:1, 1604:1, 1623:1, 1649:1, 1691:1, 1750:1, 1781:1, 1785:1, 1795:1, 1834:1, 1843:1, 1853:1, 1857:1, 1858:1, 2001:1}
+    # fmt:on
+    exploration_graph = get_exploration_graph(config)
+    assert isinstance(exploration_graph, rx.PyDiGraph)
+    result = optimize_with_terminals(exploration_graph, terminals, config)
+    print([n["waypoint_key"] for n in result["solution_graph"].nodes()])
+    print(result["objective_value"])

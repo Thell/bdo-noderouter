@@ -56,8 +56,13 @@ pub struct NodeRouter {
     // Used in the _combinations_with_weight_range_generator to limit combo generation.
     max_node_weight: usize,
     // Bridge heuristics
+    // Primal-dual
     // min 350 => 1.5x the max iter of test cases for 2-direction pass
     max_removal_attempts: usize,
+    // Controls the number of frontier rings for the bridge generator
+    max_frontier_rings: usize,
+    // Contols the width of the bridge within each frontier ring
+    ring_combo_cutoff: Vec<usize>,
     // Used for controlling the sort order of removal set generator.
     combo_gen_direction: bool, // 'true' for descending
     // Used for controlling special case handlers for super terminals
@@ -110,12 +115,12 @@ impl NodeRouter {
             .collect();
         Self::new(&exploration_data)
     }
-    #[pyo3(name = "solve_for_terminal_pairs")]
 
+    #[pyo3(name = "solve_for_terminal_pairs")]
     pub fn py_solve_for_terminal_pairs(
         &mut self,
         terminal_pairs: Vec<(usize, usize)>,
-    ) -> Vec<usize> {
+    ) -> (Vec<usize>, usize) {
         self.solve_for_terminal_pairs(terminal_pairs)
     }
 }
@@ -184,10 +189,14 @@ impl NodeRouter {
         }
 
         let node_count = ref_graph.node_count();
+        let max_frontier_rings = 3;
+        let ring_combo_cutoff = vec![3, 2, 2];
 
         Self {
-            max_node_weight,           // static
-            max_removal_attempts: 350, // static (9_000 for full bridge testing, 1_800 for single pass)
+            max_node_weight,                              // static
+            max_removal_attempts: 350, // option (9_000 for full bridge testing, 1_800 for single pass)
+            max_frontier_rings,        // option default 3
+            ring_combo_cutoff: ring_combo_cutoff.clone(), // option default 3, 2, 2
             combo_gen_direction: false,
             has_super_terminal: false,
             base_towns,                                     // static
@@ -198,7 +207,12 @@ impl NodeRouter {
             ref_graph: ref_graph.clone(),                   // static
             idtree: IDTree::new(&initialization_adj_dict),
             idtree_active_indices: FixedBitSet::with_capacity(node_count),
-            bridge_generator: BridgeGenerator::new(ref_graph, index_to_neighbors),
+            bridge_generator: BridgeGenerator::new(
+                ref_graph,
+                index_to_neighbors,
+                max_frontier_rings,
+                ring_combo_cutoff,
+            ),
             terminal_to_root: IntMap::default(), // static per solve run
             terminal_root_pairs: RapidHashSet::default(), // static per solve run
             untouchables: IntSet::with_capacity_and_hasher(
@@ -278,7 +292,7 @@ impl NodeRouter {
         }
     }
 
-    fn idtree_weight(&self) -> (FixedBitSet, usize) {
+    pub fn idtree_weight(&self) -> (FixedBitSet, usize) {
         let active_nodes = self.idtree_active_indices.clone();
         let total_weight: usize = active_nodes.ones().map(|i| self.index_to_weight[i]).sum();
         (active_nodes, total_weight)
@@ -298,10 +312,85 @@ impl NodeRouter {
         )
     }
 
+    /// Set node router options by string, value
+    /// Options:
+    /// "max_removal_attempts" => usize
+    /// "max_frontier_rings" => usize
+    /// "ring_combo_cutoff" => usize
+    pub fn set_option(&mut self, option: &str, value: &str) -> Result<(), String> {
+        match option {
+            "max_removal_attempts" => {
+                let parsed: usize = value
+                    .parse()
+                    .map_err(|_| format!("invalid integer for {option}"))?;
+                if !(1..=1_000_000).contains(&parsed) {
+                    return Err(format!(
+                        "value {parsed} out of range for {option} (1–1_000_000)"
+                    ));
+                }
+                self.max_removal_attempts = parsed;
+            }
+
+            "max_frontier_rings" => {
+                let parsed: usize = value
+                    .parse()
+                    .map_err(|_| format!("invalid integer for {option}"))?;
+                if !(1..=100).contains(&parsed) {
+                    return Err(format!("value {parsed} out of range for {option} (1–100)"));
+                }
+
+                self.max_frontier_rings = parsed;
+                // Store the last combo cutoff value
+                let current_cutoff: usize = self.ring_combo_cutoff.last().copied().unwrap_or(0);
+                self.ring_combo_cutoff = vec![0; parsed as usize];
+
+                // Set all cutoffs to the current 'last' cutoff
+                self.ring_combo_cutoff
+                    .iter_mut()
+                    .for_each(|c| *c = current_cutoff);
+                // Increment the first position to be +1
+                self.ring_combo_cutoff[0] += 1;
+
+                println!("ring_combo_cutoff: {:?}", self.ring_combo_cutoff);
+            }
+
+            "ring_combo_cutoff" => {
+                let cutoff: usize = value
+                    .parse()
+                    .map_err(|_| format!("invalid integer for {option}"))?;
+                if cutoff > 100 {
+                    return Err(format!("value {cutoff} out of range for {option} (≤ 100)"));
+                }
+
+                // Build vector of exactly `max_frontier_rings` elements
+                self.ring_combo_cutoff = vec![cutoff; self.max_frontier_rings];
+                // Increase the first by 1
+                if let Some(first) = self.ring_combo_cutoff.first_mut() {
+                    *first += 1;
+                }
+            }
+            _ => return Err(format!("unknown option: {option}")),
+        }
+
+        if matches!(option, "max_frontier_rings" | "ring_combo_cutoff") {
+            self.bridge_generator = BridgeGenerator::new(
+                self.ref_graph.clone(),
+                self.index_to_neighbors.clone(),
+                self.max_frontier_rings,
+                self.ring_combo_cutoff.clone(),
+            );
+        }
+
+        Ok(())
+    }
+
     /// Solve for a list of terminal pairs [(terminal, root), ...]
     /// where root is an exploration data waypoint with attribute `is_base_town`
     /// or `99999` to indicate a super-terminal that can connect to any base town.
-    pub fn solve_for_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) -> Vec<usize> {
+    pub fn solve_for_terminal_pairs(
+        &mut self,
+        terminal_pairs: Vec<(usize, usize)>,
+    ) -> (Vec<usize>, usize) {
         self.clear_dynamic_state();
         self.init_terminal_pairs(terminal_pairs);
         self.generate_untouchables();
@@ -319,14 +408,15 @@ impl NodeRouter {
         self.bridge_heuristics(&mut ordered_removables.clone());
         let (rev_indices, rev_weight) = self.idtree_weight();
 
-        let winner = if fwd_weight < rev_weight {
-            fwd_indices
+        let (winner, weight) = if fwd_weight < rev_weight {
+            (fwd_indices, fwd_weight)
         } else {
-            rev_indices
+            (rev_indices, rev_weight)
         };
-        winner.ones().map(|i| self.index_to_waypoint[i]).collect()
+        let winner = winner.ones().map(|i| self.index_to_waypoint[i]).collect();
+        (winner, weight)
 
-        // Single pass testing setup
+        // Testing: Single pass setup
         // let ordered_removables = self.approximate();
         // self.bridge_heuristics(&mut ordered_removables.clone());
         // let (fwd_indices, _fwd_weight) = self.idtree_weight();

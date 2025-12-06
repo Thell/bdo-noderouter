@@ -28,11 +28,26 @@ document.getElementById("solveBtn").addEventListener("click", async () => {
     }
 
     try {
+        const opts = {
+            max_removal_attempts: document.getElementById("maxRemovalAttempts").value,
+            max_frontier_rings: document.getElementById("maxFrontierRings").value,
+            ring_combo_cutoff: document.getElementById("ringComboCutoff").value,
+        };
+        console.log(opts);
+        for (const [key, val] of Object.entries(opts)) {
+            try {
+                router.setOption(key, val);
+            } catch (err) {
+                output.innerHTML = `Error: Failed to set '${key}' — ${err}`;
+                return;
+            }
+        }
+
         const start = performance.now();
-        const result = router.solveForTerminalPairs(pairs);
+        const [result, cost] = router.solveForTerminalPairs(pairs);
         const end = performance.now();
 
-        output.innerHTML = `Elapsed: ${(end - start).toFixed(2)}ms<br>Result: [${result.join(", ")}]`;
+        output.innerHTML = `Elapsed: ${(end - start).toFixed(2)}ms, Cost: ${cost}<br>Result: [${result.join(", ")}]`;
     } catch (err) {
         output.innerHTML = `Error during solve: ${err}`;
     }

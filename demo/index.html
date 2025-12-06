@@ -22,6 +22,14 @@
     <label>Terminal,Root pairs (comma-separated, e.g., 1,2 3,4):</label><br>
     <textarea id="terminalPairs" rows="4" cols="40"></textarea><br>
 
+    <h2>Set Options</h2>
+    <label>Max removal attempts (1-500000) default: 350:</label>
+    <input id="maxRemovalAttempts" type="number" min="0" max="500000" value="350"><br>
+    <label>Max frontier rings (0-100) default: 3:</label>
+    <input id="maxFrontierRings" type="number" min="0" max="100" value="3"><br>
+    <label>Ring combo cutoff (0-100) default: 2:</label>
+    <input id="ringComboCutoff" type="number" min="0" max="100" value="2"><br>
+
     <button id="solveBtn">Solve</button>
 
     <h3>Output</h3>
