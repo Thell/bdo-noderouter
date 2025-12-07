@@ -8,7 +8,8 @@ Testing module for Steiner Forest Problem solver, providing:
 """
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from enum import Enum
+from typing import Any, TypedDict
 
 from pathlib import Path
 import json
@@ -20,7 +21,27 @@ from loguru import logger
 
 import data_store as ds
 from api_common import get_clean_exploration_data, save_graph, set_logger, SUPER_ROOT
-from api_exploration_graph import get_exploration_graph, generate_territory_root_sets
+from api_exploration_graph import (
+    get_exploration_graph,
+    generate_territory_root_sets,
+    get_neighboring_territories,
+)
+
+
+class TestCaseType(Enum):
+    RANDOM = "random"
+    TERRITORIAL = "territorial"
+    WORKERMAN = "workerman"
+
+
+class TestResult(TypedDict):
+    test_type: TestCaseType
+    param: int
+    duration: float
+    roots: int
+    workers: int
+    dangers: int
+    cost: int
 
 
 class TestCaseConfig:
@@ -147,6 +168,80 @@ def _generate_random_terminals(
     return src_dst, root_count, worker_count, danger_count
 
 
+def _generate_territorial_terminals(
+    worker_percent: int,
+    include_danger: bool = False,
+    max_danger: int | None = None,
+    seed: int = 42,
+    config: TestCaseConfig | None = None,
+) -> tuple[dict[int, int], int, int, int]:
+    """
+    Generate territorial terminals using the same worker_percent scaling as random_terminals.
+
+    This ensures perfect comparability: same budget → same % → same expected worker count
+    across random and territorial generators.
+
+    Args:
+        worker_percent: Percentage of total plantzones to use as workers (0–100).
+        include_danger: Include danger terminals if True.
+        max_danger: Maximum number of danger terminals.
+        seed: Random seed.
+        config: Test case configuration.
+
+    Returns:
+        terminals, root_count, worker_count, danger_count
+    """
+    _validate_worker_percent(worker_percent)
+    random.seed(seed)
+    config = config or TestCaseConfig()
+    exploration_data = config.get_exploration_data()
+    territory_root_sets = config.get_territory_root_sets()
+    territory_neighbors = get_neighboring_territories(exploration_data)
+
+    plantzone_nodes = [k for k, v in exploration_data.items() if v["is_workerman_plantzone"]]
+
+    # Pick a random starting plantzone and grow the connected empire
+    start_node = random.choice(plantzone_nodes)
+    start_territory = exploration_data[start_node]["territory_key"]
+
+    empire: set[int] = {start_territory}
+    frontier: set[int] = {start_territory}
+
+    while frontier:
+        current = frontier.pop()
+        for neighbor in territory_neighbors[current]:
+            if neighbor not in empire:
+                empire.add(neighbor)
+                frontier.add(neighbor)
+
+    # Candidates = all plantzones in the empire
+    candidates = [k for k in plantzone_nodes if exploration_data[k]["territory_key"] in empire]
+
+    # Apply the same percentage logic as random_terminals
+    num_workers = int(len(candidates) * worker_percent / 100)
+    selected_workers = random.sample(candidates, min(num_workers, len(candidates)))
+
+    src_dst: dict[int, int] = {}
+    for w in selected_workers:
+        terr = exploration_data[w]["territory_key"]
+        src_dst[w] = random.choice(territory_root_sets[terr])
+
+    # Danger nodes — same as workerman/random
+    selected_dangers = []
+    if include_danger:
+        danger_nodes = [k for k, v in exploration_data.items() if v["node_type"] == 9]
+        danger_cnt = (
+            max(round(len(src_dst) / 25), 1)
+            if max_danger is None
+            else random.randint(1, min(max_danger, len(danger_nodes)))
+        )
+        selected_dangers = _select_nodes(danger_nodes, danger_cnt, seed)
+        src_dst.update(_assign_danger_nodes(selected_dangers))
+
+    root_count, worker_count_out, danger_count = _count_metrics(src_dst)
+    return src_dst, root_count, worker_count_out, danger_count
+
+
 def _generate_workerman_terminals(
     cost: int = 5,
     include_danger: bool = False,
@@ -168,6 +263,7 @@ def _generate_workerman_terminals(
         Tuple of terminal-to-root mappings, root count, worker count, danger count.
     """
     _validate_cost(cost)
+    random.seed(seed)
     config = config or TestCaseConfig()
     incident_path = Path(ds.path()) / "workerman"
 
@@ -246,7 +342,7 @@ def random_terminals(
     include_danger: bool = False,
     max_danger: int | None = None,
     seed: int = 42,
-) -> float:
+) -> TestResult:
     """
     Run random terminals test.
 
@@ -259,7 +355,7 @@ def random_terminals(
         seed: Random seed for reproducibility.
 
     Returns:
-        Solve time in seconds.
+        objective_value, solve_time, terminals
     """
     logger.info("\n==> Random terminals test...")
     terminals, root_count, worker_count, danger_count = _generate_random_terminals(
@@ -268,13 +364,68 @@ def random_terminals(
     logger.info(f"{worker_percent=} {root_count=} {worker_count=} {danger_count=}")
     logger.info(f"{terminals=}\n")
 
-    solve_time, _, _ = _run_test(
+    solve_time, solution_graph, objective_value = _run_test(
         optimization_fn,
         config,
         terminals,
         {"percent": worker_percent, "roots": root_count, "workers": worker_count, "dangers": danger_count},
     )
-    return solve_time
+
+    result: TestResult = {
+        "test_type": TestCaseType.RANDOM,
+        "param": worker_percent,
+        "duration": solve_time,
+        "roots": root_count,
+        "workers": worker_count,
+        "dangers": danger_count,
+        "cost": objective_value,
+    }
+
+    return result
+
+
+def territorial_terminals(
+    optimization_fn: Callable[[rx.PyDiGraph, dict, dict], Mapping[str, Any]],
+    config: dict,
+    worker_percent: int,
+    include_danger: bool = False,
+    max_danger: int | None = None,
+    seed: int = 42,
+) -> TestResult:
+    """
+    Run territorial terminals test — clustered, realistic, using same % scaling as random.
+
+    Args:
+        optimization_fn: Solver function.
+        config: Configuration.
+        worker_percent: Percentage of plantzones in the empire to use as workers.
+        include_danger: Include danger nodes if True.
+        max_danger: Max danger nodes.
+        seed: Random seed.
+
+    Returns:
+        TestResult with cost, duration, metrics
+    """
+    logger.info("\n==> Territorial terminals test...")
+    terminals, roots, workers, dangers = _generate_territorial_terminals(
+        worker_percent, include_danger, max_danger, seed
+    )
+    logger.info(f"{worker_percent=} {roots=} {workers=} {dangers=}")
+    logger.info(f"{terminals=}\n")
+
+    duration, _, cost = _run_test(
+        optimization_fn, config, terminals, {"workers": workers, "roots": roots, "dangers": dangers}
+    )
+
+    return {
+        "test_type": TestCaseType.TERRITORIAL,
+        "param": worker_percent,
+        "duration": duration,
+        "roots": roots,
+        "workers": workers,
+        "dangers": dangers,
+        "cost": cost,
+    }
 
 
 def workerman_terminals(
@@ -284,7 +435,7 @@ def workerman_terminals(
     include_danger: bool = False,
     max_danger: int | None = None,
     seed: int = 42,
-) -> float:
+) -> TestResult:
     """
     Run workerman terminals test.
 
@@ -297,6 +448,7 @@ def workerman_terminals(
         seed: Random seed for reproducibility.
 
     Returns:
+        Objective value.
         Solve time in seconds.
     """
     logger.info("\n==> Workerman test set...")
@@ -320,7 +472,17 @@ def workerman_terminals(
         )
         save_graph(solution_graph, terminals, solution_filename)
 
-    return solve_time
+    result: TestResult = {
+        "test_type": TestCaseType.RANDOM,
+        "param": budget,
+        "duration": solve_time,
+        "roots": root_count,
+        "workers": worker_count,
+        "dangers": danger_count,
+        "cost": objective_value,
+    }
+
+    return result
 
 
 def baselines(
@@ -449,6 +611,8 @@ def _validate_baselines(
 
 if __name__ == "__main__":
     config = TestCaseConfig()
+
+    # Workerman terminals
     for cost in range(5, 555, 5):
         for include_danger in [False, True]:
             src_dst, root_count, worker_count, danger_count = _generate_workerman_terminals(
@@ -458,6 +622,8 @@ if __name__ == "__main__":
                 f"Workerman Terminals - Cost: {cost}, Danger: {include_danger} - "
                 f"Roots: {root_count}, Workers: {worker_count}, Dangers: {danger_count}, Terminals: {src_dst}"
             )
+
+    # Random terminals (percent-based)
     for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
         for include_danger in [False, True]:
             src_dst, root_count, worker_count, danger_count = _generate_random_terminals(
@@ -466,4 +632,23 @@ if __name__ == "__main__":
             logger.info(
                 f"Random Terminals - Percent: {percent}, Danger: {include_danger} - "
                 f"Roots: {root_count}, Workers: {worker_count}, Dangers: {danger_count}, Terminals: {src_dst}"
+            )
+
+    # Territorial terminals (worker count based)
+    for worker_count in [1, 3, 5, 10, 20, 30, 50, 75, 100]:
+        for include_danger in [False, True]:
+            src_dst, root_count, wc_out, danger_count = _generate_territorial_terminals(
+                worker_count, include_danger, config=config
+            )
+            logger.info(
+                f"Territorial Terminals - Workers: {worker_count}, Danger: {include_danger} - "
+                f"Roots: {root_count}, Workers: {wc_out}, Dangers: {danger_count}, Terminals: {src_dst}"
+            )
+            include_danger = True
+            src_dst, root_count, wc_out, danger_count = _generate_territorial_terminals(
+                worker_count, include_danger, config=config
+            )
+            logger.info(
+                f"Territorial Terminals - Workers: {worker_count}, Danger: {include_danger} - "
+                f"Roots: {root_count}, Workers: {wc_out}, Dangers: {danger_count}, Terminals: {src_dst}"
             )
