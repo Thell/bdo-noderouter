@@ -33,7 +33,7 @@ def inject_super_root(config: dict, G: rx.PyDiGraph, flow_direction: str = "inbo
     For reverse cumulative flow models this should be 'inbound' to signify flow from
     terminals to the roots.
     """
-    logger.info("Injecting super root...")
+    logger.debug("Injecting super root...")
     if flow_direction not in ["inbound", "outbound", "undirected", "none"]:
         raise ValueError(f"Invalid flow_direction: {flow_direction}")
     if "node_key_by_index" not in G.attrs:
@@ -51,7 +51,7 @@ def inject_super_root(config: dict, G: rx.PyDiGraph, flow_direction: str = "inbo
     node_key_by_index[super_root_index] = SUPER_ROOT
 
     if flow_direction != "none":
-        logger.info(f"  linking {flow_direction} to {super_root['link_list']}")
+        logger.debug(f"  linking {flow_direction} to {super_root['link_list']}")
         if flow_direction in ["inbound", "undirected"]:
             for node_key in super_root["link_list"]:
                 node_index = node_key_by_index.inv[node_key]
@@ -62,7 +62,7 @@ def inject_super_root(config: dict, G: rx.PyDiGraph, flow_direction: str = "inbo
                 G.add_edge(super_root_index, node_index, super_root)
 
     G.attrs["node_key_by_index"] = node_key_by_index
-    logger.info(f"  injected at index {super_root_index}...")
+    logger.debug(f"  injected at index {super_root_index}...")
 
 
 def subgraph_stable(

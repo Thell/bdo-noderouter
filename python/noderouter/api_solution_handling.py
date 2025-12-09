@@ -127,7 +127,7 @@ def extract_solution_from_x_vars(
     model: highspy.Highs, vars: dict, G: rx.PyDiGraph, config: dict
 ) -> rx.PyDiGraph:
     """Create a subgraph from the graph consisting of the node x vars from the solved model."""
-    logger.info("Extracting solution from x vars from highspy...")
+    logger.debug("Extracting solution from x vars from highspy...")
 
     x_vars = vars["x"]
 
@@ -159,7 +159,4 @@ def extract_solution_from_x_vars(
     if solution_options.get("cleanup", False):
         cleanup_solution(solution_graph)
 
-    if config.get("logger", {}).get("level", "INFO") in ["INFO", "DEBUG", "TRACE"]:
-        logger.info(f"Solution: {[n['waypoint_key'] for n in solution_graph.nodes()]}")
-        logger.info(f"Solution Cost: {sum(n['need_exploration_point'] for n in solution_graph.nodes())}")
     return solution_graph
