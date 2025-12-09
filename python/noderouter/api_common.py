@@ -1,5 +1,6 @@
 # api_common.py
 
+from enum import IntEnum
 from typing import TypedDict
 import sys
 
@@ -14,9 +15,30 @@ OQUILLAS_EYE_KEY = 1727
 SUPER_ROOT = 99999
 
 
+class NodeType(IntEnum):
+    normal = 0
+    village = 1
+    city = 2
+    gate = 3
+    farm = 4
+    trade = 5
+    collect = 6
+    quarry = 7
+    logging = 8
+    dangerous = 9
+    finance = 10
+    fish_trap = 11
+    minor_finance = 12
+    monopoly_farm = 13
+    craft = 14
+    excavation = 15
+    count = 16
+
+
 class ResultDict(TypedDict):
     solution_graph: rx.PyDiGraph
-    objective_value: int | None
+    objective_value: int
+    duration: float
 
 
 def set_logger(config: dict):

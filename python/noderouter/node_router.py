@@ -33,25 +33,27 @@ def optimize_with_terminals(
         exploration_json_dumps = json.dumps(exploration_data)
         NR = NodeRouter(exploration_json_dumps)
     logger.debug(f"Optimizing graph with {len(terminals)} terminals...")
+
     start_time = time.perf_counter()
-
     solution_waypoints, cost = NR.solve_for_terminal_pairs(list(terminals.items()))
+    duration = time.perf_counter() - start_time
 
-    logger.info(f"solution time (ms): {(time.perf_counter() - start_time) * 1000:.2f}")
+    logger.info(f"solution time (ms): {duration * 1000:.2f}")
     solution_indices = [WAYPOINT_TO_INDEX[w] for w in solution_waypoints]
     solution_graph = exploration_graph.subgraph(solution_indices)
-    return ResultDict({"solution_graph": solution_graph, "objective_value": cost})
+    return ResultDict({"solution_graph": solution_graph, "objective_value": cost, "duration": duration})
 
 
 if __name__ == "__main__":
     import testing as test
+    from testing_baselines import baselines
 
     config = ds.get_config("config")
     config["name"] = "node_router"
     set_logger(config)
 
     if config.get("actions", {}).get("baseline_tests", False):
-        success = test.baselines(optimize_with_terminals, config)
+        success = baselines(optimize_with_terminals, config)
         if not success:
             raise ValueError("Baseline tests failed!")
         logger.success("Baseline tests passed!")

@@ -1148,20 +1148,29 @@ def optimize_with_terminals(
     """Public-facing function to optimize graph with terminals."""
     logger.debug(f"Optimizing graph with {len(terminals)} terminals...")
     solver = PrimalDualNWSF(exploration_graph.copy(), terminals, config)
+
+    start_time = time.perf_counter()
     solution_graph = solver.solve()
+    duration = time.perf_counter() - start_time
+
     objective_value = sum(v["need_exploration_point"] for v in solution_graph.nodes())
-    return ResultDict({"solution_graph": solution_graph, "objective_value": objective_value})
+    return ResultDict({
+        "solution_graph": solution_graph,
+        "objective_value": objective_value,
+        "duration": duration,
+    })
 
 
 if __name__ == "__main__":
     import testing as test
+    from testing_baselines import baselines
 
     config = ds.get_config("config")
     config["name"] = "pd_approximation"
     set_logger(config)
 
     if config.get("actions", {}).get("baseline_tests", False):
-        success = test.baselines(optimize_with_terminals, config)
+        success = baselines(optimize_with_terminals, config)
         if not success:
             raise ValueError("Baseline tests failed!")
         logger.success("Baseline tests passed!")
