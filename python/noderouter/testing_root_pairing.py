@@ -97,7 +97,9 @@ class PairingStrategy(StrEnum):
     # Randomized (unconstrained)
     random_capital = "random_capital"
     random_town = "random_town"
-    random_terminal_to_terminal = "random_terminal_to_terminal"  # pathological stress test
+
+    # Disabled for normal fuzzing
+    # random_terminal_to_terminal = "random_terminal_to_terminal"  # pathological stress test
 
     def candidates(self, terminal: dict) -> list[int]:
         """
@@ -206,9 +208,9 @@ class PairingStrategy(StrEnum):
             case PairingStrategy.random_town:
                 return PAIRING_DATA.towns
 
-            case PairingStrategy.random_terminal_to_terminal:
-                # stress-test: allow any node to be treated as a root
-                return list(PAIRING_DATA.exploration_data.keys())
+            # case PairingStrategy.random_terminal_to_terminal:
+            #     # stress-test: allow any node to be treated as a root
+            #     return list(PAIRING_DATA.exploration_data.keys())
 
             case _:
                 raise ValueError(f"Unknown pairing type: {self}")
