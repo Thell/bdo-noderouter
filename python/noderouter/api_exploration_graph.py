@@ -1,197 +1,14 @@
 # api_exploration_graph.py
 
-from dataclasses import dataclass
-from enum import StrEnum
+from joblib import Memory
 
 import rustworkx as rx
 from bidict import bidict
 from loguru import logger
 
-import data_store as ds
-from api_common import get_clean_exploration_data, NodeType
+from api_common import get_clean_exploration_data
 
-
-PAIRING_NEAREST_N = 3  # number of nearest roots to consider
-
-
-@dataclass
-class PairingData:
-    def __init__(self):
-        config = ds.get_config("config")
-        exploration_data = get_clean_exploration_data(config)
-        graph = get_exploration_graph(exploration_data)
-
-        self.exploration_data = exploration_data
-        self.graph = graph
-
-        tmp = get_all_pairs_path_lengths(graph)
-        self.path_lengths = {
-            (graph[s]["waypoint_key"], graph[d]["waypoint_key"]): v for (s, d), v in tmp.items()
-        }
-
-        self.cartesian_distances = get_all_pairs_cartesian_distances(exploration_data)
-
-        self.territories = set(n["territory_key"] for n in exploration_data.values())
-        self.capitals = {
-            d["territory_key"]: n for n, d in exploration_data.items() if d["node_type"] == NodeType.city
-        }
-
-        self.towns = [n for n, d in exploration_data.items() if d.get("is_town", False)]
-        self.worker_towns = [n for n, d in exploration_data.items() if d.get("is_worker_npc_town", False)]
-
-        tmp = {territory: [] for territory in self.territories}
-        for t in self.towns:
-            tmp[exploration_data[t]["territory_key"]].append(t)
-        self.territory_towns = tmp
-
-    def path_length(self, u: int, v: int) -> int:
-        return self.path_lengths[(u, v)]
-
-    def cartesian_distance(self, u: int, v: int) -> int:
-        return self.cartesian_distances[(u, v)]
-
-    def towns_in_territory(self, territory: int) -> list[int]:
-        return self.territory_towns[territory]
-
-
-PAIRING_DATA: PairingData  # Instantiated at the bottom of this file
-
-
-class RootPairingType(StrEnum):
-    # Capital-based
-    capital = "capital"
-    nearest_capital = "nearest_capital"
-    cheapest_capital = "cheapest_capital"
-    territory_capital = "territory_capital"
-
-    # Town-based
-    town = "town"
-    nearest_town = "nearest_town"
-    cheapest_town = "cheapest_town"
-    nearest_town_in_territory = "nearest_town_in_territory"
-    cheapest_town_in_territory = "cheapest_town_in_territory"
-
-    # Randomized (unconstrained)
-    random_capital = "random_capital"
-    random_town = "random_town"
-    random_any_root = "random_any_root"
-    random_terminal_to_terminal = "random_terminal_to_terminal"
-
-    # Randomized (top-N constrained)
-    random_n_nearest_town = "random_n_nearest_town"
-    random_n_cheapest_town = "random_n_cheapest_town"
-    random_n_nearest_town_in_territory = "random_n_nearest_town_in_territory"
-    random_n_cheapest_town_in_territory = "random_n_cheapest_town_in_territory"
-
-    def candidates(self, terminal: dict) -> list[int]:
-        """
-        Return candidate root IDs for the given terminal under this pairing type.
-        """
-        match self:
-            # Capital-based
-            case RootPairingType.capital:
-                return list(PAIRING_DATA.capitals.values())
-
-            case RootPairingType.nearest_capital:
-                nearest = min(
-                    PAIRING_DATA.capitals.values(),
-                    key=lambda c: PAIRING_DATA.cartesian_distance(terminal["waypoint_key"], c),
-                )
-                return [nearest]
-
-            case RootPairingType.cheapest_capital:
-                cheapest = min(
-                    PAIRING_DATA.capitals.values(),
-                    key=lambda c: PAIRING_DATA.path_length(terminal["waypoint_key"], c),
-                )
-                return [cheapest]
-
-            case RootPairingType.territory_capital:
-                # territory capitals are pre‑marked in exploration_data
-                territory_id = terminal["territory_key"]
-                return [PAIRING_DATA.capitals[territory_id]]
-
-            # Town-based
-            case RootPairingType.town:
-                return PAIRING_DATA.towns
-
-            case RootPairingType.nearest_town:
-                nearest = min(
-                    PAIRING_DATA.towns,
-                    key=lambda t: PAIRING_DATA.cartesian_distance(terminal["waypoint_key"], t),
-                )
-                return [nearest]
-
-            case RootPairingType.cheapest_town:
-                cheapest = min(
-                    PAIRING_DATA.towns,
-                    key=lambda t: PAIRING_DATA.path_length(terminal["waypoint_key"], t),
-                )
-                return [cheapest]
-
-            case RootPairingType.nearest_town_in_territory:
-                towns = PAIRING_DATA.towns_in_territory(terminal["territory_key"])
-                nearest = min(
-                    towns,
-                    key=lambda t: PAIRING_DATA.cartesian_distance(terminal["waypoint_key"], t),
-                )
-                return [nearest]
-
-            case RootPairingType.cheapest_town_in_territory:
-                towns = PAIRING_DATA.towns_in_territory(terminal["territory_key"])
-                cheapest = min(
-                    towns,
-                    key=lambda t: PAIRING_DATA.path_length(terminal["waypoint_key"], t),
-                )
-                return [cheapest]
-
-            # Randomized (unconstrained)
-            case RootPairingType.random_capital:
-                return list(PAIRING_DATA.capitals.values())
-
-            case RootPairingType.random_town:
-                return PAIRING_DATA.towns
-
-            case RootPairingType.random_any_root:
-                return list(PAIRING_DATA.capitals.values()) + PAIRING_DATA.towns
-
-            case RootPairingType.random_terminal_to_terminal:
-                # stress-test: allow any node to be treated as a root
-                return list(PAIRING_DATA.exploration_data.keys())
-
-            # Randomized (top-N constrained)
-            case RootPairingType.random_n_nearest_town:
-                nearest_sorted = sorted(
-                    PAIRING_DATA.towns,
-                    key=lambda t: PAIRING_DATA.cartesian_distance(terminal["waypoint_key"], t),
-                )
-                return nearest_sorted[:PAIRING_NEAREST_N]
-
-            case RootPairingType.random_n_cheapest_town:
-                cheapest_sorted = sorted(
-                    PAIRING_DATA.towns,
-                    key=lambda t: PAIRING_DATA.path_length(terminal["waypoint_key"], t),
-                )
-                return cheapest_sorted[:PAIRING_NEAREST_N]
-
-            case RootPairingType.random_n_nearest_town_in_territory:
-                towns = PAIRING_DATA.towns_in_territory(terminal["territory_key"])
-                nearest_sorted = sorted(
-                    towns,
-                    key=lambda t: PAIRING_DATA.cartesian_distance(terminal["waypoint_key"], t),
-                )
-                return nearest_sorted[:PAIRING_NEAREST_N]
-
-            case RootPairingType.random_n_cheapest_town_in_territory:
-                towns = PAIRING_DATA.towns_in_territory(terminal["territory_key"])
-                cheapest_sorted = sorted(
-                    towns,
-                    key=lambda t: PAIRING_DATA.path_length(terminal["waypoint_key"], t),
-                )
-                return cheapest_sorted[:PAIRING_NEAREST_N]
-
-            case _:
-                raise ValueError(f"Unknown pairing type: {self}")
+memory = Memory(location=".cache", verbose=0)
 
 
 def exploration_graph_nw(data: dict, directed: bool = False) -> rx.PyGraph | rx.PyDiGraph:
@@ -307,7 +124,10 @@ def has_edge_weights(graph: rx.PyGraph | rx.PyDiGraph) -> bool:
     return has_edge_data
 
 
+@memory.cache
 def get_all_pairs_shortest_paths(graph: rx.PyGraph | rx.PyDiGraph) -> dict[tuple[int, int], list[int]]:
+    """Calculates and returns the node weighted shortest paths for all pairs."""
+    logger.trace("get_all_pairs_shortest_paths")
     if not has_edge_weights(graph):
         populate_edge_weights(graph)
     shortest_paths = rx.all_pairs_dijkstra_shortest_paths(
@@ -321,29 +141,40 @@ def get_all_pairs_shortest_paths(graph: rx.PyGraph | rx.PyDiGraph) -> dict[tuple
     return shortest_paths
 
 
+@memory.cache
 def get_all_pairs_path_lengths(graph: rx.PyGraph | rx.PyDiGraph) -> dict[tuple[int, int], int]:
     """Calculates and returns the node weighted shortest paths for all pairs."""
+    logger.trace("get_all_pairs_path_lengths")
     if not has_edge_weights(graph):
         populate_edge_weights(graph)
     shortest_paths = get_all_pairs_shortest_paths(graph)
-    return {
+    shortest_paths = {
         key: sum(graph[w]["need_exploration_point"] for w in path) for key, path in shortest_paths.items()
     }
+    shortest_paths.update({(n, n): 0 for n in graph.node_indices()})
+    return shortest_paths
 
 
-def get_all_pairs_cartesian_distances(exploration_data: dict) -> dict[tuple[int, int], int]:
+@memory.cache
+def get_all_pairs_cartesian_distances(exploration_data: dict) -> dict[tuple[int, int], float]:
     """Calculates and returns the cartesian distances for all pairs.
     Cordinates are taken from the exploration data's x, y, z positions where x and z are
     the horizontal and vertical positions from center of the map.
     """
+    import math
+
+    logger.trace("get_all_pairs_cartesian_distances")
     return {
-        (u, v): abs(exploration_data[u]["position"]["x"] - exploration_data[v]["position"]["x"])
-        + abs(exploration_data[u]["position"]["z"] - exploration_data[v]["position"]["z"])
+        (u, v): math.sqrt(
+            (exploration_data[u]["position"]["x"] - exploration_data[v]["position"]["x"]) ** 2
+            + (exploration_data[u]["position"]["z"] - exploration_data[v]["position"]["z"]) ** 2
+        )
         for u in exploration_data.keys()
         for v in exploration_data.keys()
     }
 
 
+@memory.cache
 def get_exploration_graph(config: dict) -> rx.PyGraph | rx.PyDiGraph:
     """Returns a rustworkx graph.
 
@@ -355,6 +186,7 @@ def get_exploration_graph(config: dict) -> rx.PyGraph | rx.PyDiGraph:
     will be split into an _in and _out node with a single directed arc
     between them with a weight equal to the node's cost.
     """
+    logger.trace("get_exploration_graph")
     directed: bool = config.get("exploration_data", {}).get("directed", False)
     edge_weighted: bool = config.get("exploration_data", {}).get("edge_weighted", False)
     if not isinstance(directed, bool) or not isinstance(edge_weighted, bool):
@@ -505,7 +337,3 @@ def get_super_root(config: dict) -> dict:
             "has_cashproduct_storage": False,
         },
     }
-
-
-# Module level pairing data
-PAIRING_DATA = PairingData()

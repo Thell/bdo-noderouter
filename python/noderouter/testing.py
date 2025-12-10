@@ -1,4 +1,10 @@
-# # testing.py
+# testing.py
+
+"""
+Testing utilities.
+
+NOTE: Running this file directly outputs the generated test paramaters.
+"""
 
 from __future__ import annotations
 
@@ -19,16 +25,33 @@ from loguru import logger
 import data_store as ds
 from api_common import NodeType, get_clean_exploration_data, ResultDict, SUPER_ROOT
 from api_exploration_graph import (
-    RootPairingType,
     get_exploration_graph,
 )
+from testing_root_pairing import PairingStrategy
 
+# joblib caching for mip results during fuzz testing.
 memory = Memory(location=".cache", verbose=0)
 
 
+# MARK: Test Instance Generation
 class TestCaseType(StrEnum):
-    STRICTNESS_LEVEL = "strictness_level"
+    STRATEGY = "strategy"
     WORKERMAN = "workerman"
+
+
+@dataclass
+class TerminalSpecs:
+    terminals: dict[int, int]
+    roots: int = 0
+    workers: int = 0
+    dangers: int = 0
+
+    def __post_init__(self):
+        # compute metrics from src_dst mapping
+        values = list(self.terminals.values())
+        self.roots = len(set(values) - {SUPER_ROOT})
+        self.workers = sum(1 for v in values if v != SUPER_ROOT)
+        self.dangers = len(self.terminals) - self.workers
 
 
 @dataclass
@@ -49,12 +72,8 @@ class TestInstance:
 
     budget: int | None
     percent: int
-    strictness: RootPairingType | None
-
-    roots: int
-    workers: int
-    dangers: int
-    terminals: dict[int, int]
+    strategy: PairingStrategy | None
+    specs: TerminalSpecs
 
     result: TestResult | None = None
 
@@ -62,7 +81,7 @@ class TestInstance:
         exploration_graph = get_exploration_graph(self.config)
         assert isinstance(exploration_graph, PyDiGraph)
 
-        result: ResultDict = self.optimization_fn(exploration_graph, self.terminals, self.config)
+        result: ResultDict = self.optimization_fn(exploration_graph, self.specs.terminals, self.config)
         solution_graph = result["solution_graph"]
         objective = result["objective_value"]
         duration = result["duration"]
@@ -79,217 +98,145 @@ class TestInstance:
             solution=solution,
         )
 
-        logger.info(f"Terminals: {self.terminals}")
+        logger.info(f"Terminals: {self.specs.terminals}")
         logger.info(f"Solution: {solution}")
 
         if self.test_type == TestCaseType.WORKERMAN:
             param_string = f"budget: {self.budget}"
         else:
-            assert self.strictness
-            param_string = f"strictness: {self.strictness.value}, percent: {self.percent}"
+            assert self.strategy
+            param_string = f"{self.strategy.value}, percent: {self.percent}"
 
         logger.success(
-            f"{self.test_type.value}, {param_string}, params: terminals={len(self.terminals)}, "
-            f"roots={self.roots}, workers={self.workers}, dangers={self.dangers}, "
+            f"{self.test_type.value}, {param_string}, params: terminals={len(self.specs.terminals)}, "
+            f"roots={self.specs.roots}, workers={self.specs.workers}, dangers={self.specs.dangers}, "
             f"result: nodes={solution_graph.num_nodes()}, edges={solution_graph.num_edges()}, "
             f"components={num_components}, cost={objective}, duration={duration:.6f}s"
         )
 
 
 @dataclass
-class TestCase:
+class TestContext:
     config: dict | None = None
 
     def __post_init__(self):
         if self.config is None:
             self.config = ds.get_config("config")
-        self._exploration_data: dict[int, dict] | None = None
-        self._territory_root_sets: dict[int, list[int]] | None = None
 
-    @property
-    def exploration_data(self) -> dict[int, dict]:
-        if self._exploration_data is None:
-            assert self.config
-            self._exploration_data = get_clean_exploration_data(self.config)
-        return self._exploration_data
+        # populate once at instantiation
+        self.exploration_data: dict[int, dict] = get_clean_exploration_data(self.config)
+        self.plantzones: list[int] = [
+            k for k, v in self.exploration_data.items() if v.get("is_workerman_plantzone")
+        ]
+        self.dangers: list[int] = [
+            k for k, v in self.exploration_data.items() if v.get("node_type") == NodeType.dangerous
+        ]
+        self.max_plantzone_count: int = len(self.plantzones)
+        self.max_danger_count: int = len(self.dangers)
 
-    # @property
-    # def territory_root_sets(self) -> dict[int, list[int]]:
-    #     if self._territory_root_sets is None:
-    #         self._territory_root_sets = generate_territory_root_sets(self.exploration_data)
-    #     return self._territory_root_sets
+    def select_terminals(self, worker_percent: int, random: random.Random) -> list[int]:
+        num_workers = int(self.max_plantzone_count * worker_percent / 100)
+        return random.sample(self.plantzones, min(num_workers, self.max_plantzone_count))
+
+    def select_dangers(self, selected_terminal_count: int, random: random.Random) -> list[int]:
+        danger_count = max(round(selected_terminal_count / 25), 1)
+        return random.sample(self.dangers, danger_count)
 
 
 class TestGenerator:
-    def __init__(self, test_case: TestCase, seed: int = 42):
-        self.test_case = test_case
+    def __init__(self, test_context: TestContext, seed: int):
+        self.context = test_context
         self.random = random.Random(seed)
 
-    def _count_metrics(self, src_dst: dict[int, int]) -> tuple[int, int, int]:
-        root_count = len(set(src_dst.values()) - {SUPER_ROOT})
-        worker_count = sum(1 for v in src_dst.values() if v != SUPER_ROOT)
-        danger_count = len(src_dst) - worker_count
-        return root_count, worker_count, danger_count
-
-    def max_plantzone_count(self) -> int:
-        return sum(1 for v in self.test_case.exploration_data.values() if v["is_workerman_plantzone"])
-
-    # --- Terminal generation internal methods ---
-    def _generate_random_terminals(
+    def _generate_terminal_pairs(
         self,
         worker_percent: int,
         include_danger: bool,
-        max_danger: int | None,
-        pairing_type: RootPairingType = RootPairingType.random_town,
-    ) -> tuple[dict[int, int], tuple[int, int, int]]:
-        ed = self.test_case.exploration_data
+        strategy: PairingStrategy = PairingStrategy.cheapest_town_in_territory,
+    ) -> TerminalSpecs:
+        """Generate terminal-to-root mappings based on a pairing strategy."""
+        exploration_data = self.context.exploration_data
 
-        # collect eligible worker terminals
-        plantzones = [k for k, v in ed.items() if v.get("is_workerman_plantzone")]
-        if not plantzones:
-            raise ValueError("No plantzone nodes available")
-
-        num_workers = int(len(plantzones) * worker_percent / 100)
-        selected_workers = self.random.sample(plantzones, min(num_workers, len(plantzones)))
-
-        # terminal‑centric assignment
+        # terminal assignment
+        selected_terminals = self.context.select_terminals(worker_percent, self.random)
         src_dst: dict[int, int] = {}
-        for w in selected_workers:
-            terminal = ed[w]
-            candidates = pairing_type.candidates(terminal)
-            if not candidates:
-                raise ValueError(f"No candidate roots found for terminal {w} under {pairing_type}")
-            root = self.random.choice(candidates)
-            src_dst[w] = root
+        for t in selected_terminals:
+            terminal = exploration_data[t]
+            candidates = strategy.candidates(terminal)
+            src_dst[t] = self.random.choice(candidates)
 
         # danger terminals
         if include_danger:
-            dangers = [k for k, v in ed.items() if v.get("node_type") == NodeType.dangerous]
-            if not dangers:
-                raise ValueError("No danger nodes available")
-            danger_count = (
-                min(round(1 + num_workers / 12.5), len(dangers))
-                if max_danger is None
-                else self.random.randint(1, min(max_danger, len(dangers)))
-            )
-            src_dst.update({d: SUPER_ROOT for d in self.random.sample(dangers, danger_count)})
+            dangers = self.context.select_dangers(len(src_dst), self.random)
+            src_dst.update({d: SUPER_ROOT for d in dangers})
 
-        return src_dst, self._count_metrics(src_dst)
+        return TerminalSpecs(src_dst)
 
-    def _generate_territorial_terminals(
-        self,
-        worker_percent: int,
-        include_danger: bool,
-        max_danger: int | None,
-        pairing_type: RootPairingType = RootPairingType.cheapest_town_in_territory,
-    ) -> tuple[dict[int, int], tuple[int, int, int]]:
-        """Generate terminal-to-root mappings based on a pairing strategy.
-
-        Args:
-            worker_percent: Percentage of worker terminals (0-100).
-            include_danger: Include danger terminals if True.
-            max_danger: Maximum number of danger terminals.
-            pairing_type: Strategy for computing candidate roots.
-
-        Returns:
-            Tuple of terminal-to-root mapping and metrics.
-        """
-        ed = self.test_case.exploration_data
-
-        # collect eligible worker terminals
-        plantzones = [k for k, v in ed.items() if v.get("is_workerman_plantzone")]
-        if not plantzones:
-            raise ValueError("No plantzone nodes available")
-
-        num_workers = int(len(plantzones) * worker_percent / 100)
-        selected_workers = self.random.sample(plantzones, min(num_workers, len(plantzones)))
-
-        # terminal‑centric assignment
-        src_dst: dict[int, int] = {}
-        for p in selected_workers:
-            terminal = ed[p]
-            candidates = pairing_type.candidates(terminal)
-            if not candidates:
-                raise ValueError(f"No candidate roots found for terminal {p} under {pairing_type}")
-            root = self.random.choice(candidates)
-            src_dst[p] = root
-
-        # danger terminals
-        if include_danger:
-            dangers = [k for k, v in ed.items() if v.get("node_type") == NodeType.dangerous]
-            if not dangers:
-                raise ValueError("No danger nodes available")
-            danger_count = (
-                max(round(len(src_dst) / 25), 1)
-                if max_danger is None
-                else self.random.randint(1, min(max_danger, len(dangers)))
-            )
-            src_dst.update({d: SUPER_ROOT for d in self.random.sample(dangers, danger_count)})
-
-        return src_dst, self._count_metrics(src_dst)
-
-    def _generate_workerman_terminals(
-        self, cost: int, include_danger: bool, max_danger: int | None
-    ) -> tuple[dict[int, int], tuple[int, int, int]]:
+    def _generate_workerman_terminals(self, cost: int, include_danger: bool) -> TerminalSpecs:
+        """Generate terminal-to-root mappings based on workerman data."""
+        # Optimal solutions only exist for certain budgets
         if cost % 5 != 0 or not 5 <= cost <= 550:
-            raise ValueError("Invalid workerman cost")
+            raise ValueError("Invalid workerman budget!")
+
+        # load workerman optimal terminals
         path = Path(ds.path()) / "workerman"
         files = list(path.glob(f"{cost}_*"))
         if not files:
-            raise ValueError(f"No workerman file found for cost {cost}")
+            raise ValueError(f"No workerman file found for budget {budget}")
         with open(files[0]) as f:
             incident = json.load(f)
+
+        # danger terminals
         src_dst = {int(w["job"]["pzk"]): int(w["job"]["storage"]) for w in incident["userWorkers"]}
         if include_danger:
-            dangers = [k for k, v in self.test_case.exploration_data.items() if v["node_type"] == 9]
-            danger_count = (
-                max(round(len(src_dst) / 25), 1)
-                if max_danger is None
-                else self.random.randint(1, min(max_danger, len(dangers)))
-            )
-            src_dst.update({d: SUPER_ROOT for d in self.random.sample(dangers, danger_count)})
-        return src_dst, self._count_metrics(src_dst)
+            dangers = self.context.select_dangers(len(src_dst), self.random)
+            src_dst.update({d: SUPER_ROOT for d in dangers})
+
+        return TerminalSpecs(src_dst)
 
 
-# --- Public module functions ---
+@memory.cache
+def _get_test_context(config: dict) -> TestContext:
+    return TestContext(config)
+
 
 _default_generator: TestGenerator | None = None
 
 
-def _get_default_generator(config: dict) -> TestGenerator:
+def _get_default_generator(config: dict, seed: int) -> TestGenerator:
     global _default_generator
-    if _default_generator is None:
-        _default_generator = TestGenerator(TestCase(config))
+    context = _get_test_context(config)
+    if _default_generator is None or _default_generator.context.config != config:
+        _default_generator = TestGenerator(context, seed)
     return _default_generator
+
+
+# --- Public module functions ---
 
 
 def generate_terminals_mip(
     optimization_fn,
     config: dict,
+    seed: int,
     worker_percent: int,
     include_danger: bool = False,
-    max_danger: int | None = None,
-    seed: int = 42,
-    strictness: RootPairingType = RootPairingType.nearest_town,
+    strategy: PairingStrategy = PairingStrategy.nearest_town,
 ) -> TestInstance:
+    """Launcher for fuzzer mip incidents via springboard for caching."""
     start_time = time.perf_counter()
-    incident = generate_terminals_cached(
-        optimization_fn, config, worker_percent, include_danger, max_danger, seed, strictness
+    incident = _generate_terminals_cached(
+        optimization_fn, config, seed, worker_percent, include_danger, strategy
     )
     duration = time.perf_counter() - start_time
 
     assert incident.result is not None
     if incident.result.duration > duration:
         # Cache hit - output log success msg
-        if incident.test_type == TestCaseType.WORKERMAN:
-            param_string = f"budget: {incident.budget}"
-        else:
-            assert incident.strictness
-            param_string = f"strictness: {incident.strictness.value}, percent: {incident.percent}"
-
+        assert incident.strategy
+        param_string = f"{incident.strategy.value}, percent: {incident.percent}"
         logger.success(
-            f"{incident.test_type.value}, {param_string}, params: terminals={len(incident.terminals)}, "
-            f"roots={incident.roots}, workers={incident.workers}, dangers={incident.dangers}, "
+            f"{incident.test_type.value}, {param_string}, params: terminals={len(incident.specs.terminals)}, "
+            f"roots={incident.specs.roots}, workers={incident.specs.workers}, dangers={incident.specs.dangers}, "
             f"result: nodes={incident.result.num_nodes}, edges={incident.result.num_edges}, "
             f"components={incident.result.num_components}, cost={incident.result.cost}, duration={incident.result.duration:.6f}s ♻️"
         )
@@ -298,121 +245,79 @@ def generate_terminals_mip(
 
 
 @memory.cache
-def generate_terminals_cached(
+def _generate_terminals_cached(
     optimization_fn,
     config: dict,
+    seed: int,
     worker_percent: int,
     include_danger: bool = False,
-    max_danger: int | None = None,
-    seed: int = 42,
-    strictness: RootPairingType = RootPairingType.nearest_town,
+    strategy: PairingStrategy = PairingStrategy.nearest_town,
 ) -> TestInstance:
-    return territorial_terminals(
-        optimization_fn, config, worker_percent, include_danger, max_danger, seed, strictness
-    )
+    """Springboard to the test case via cached mip solver."""
+    return generate_terminals(optimization_fn, config, seed, worker_percent, include_danger, strategy)
 
 
 def generate_terminals(
     optimization_fn,
     config: dict,
     worker_percent: int,
+    seed: int,
     include_danger: bool = False,
-    max_danger: int | None = None,
-    seed: int = 42,
-    strictness: RootPairingType = RootPairingType.nearest_town,
+    strategy: PairingStrategy = PairingStrategy.random_town,
 ) -> TestInstance:
     """
-    Generate a test instance with terminal-to-root mappings.
+    Generate and run a test instance with terminal-to-root mappings based on a pairing strategy.
 
     Args:
         optimization_fn: Optimization function to run.
         config: Configuration dictionary.
+        seed: Random seed for reproducibility.
         worker_percent: Percentage of worker terminals (0–100).
         include_danger: Whether to include danger terminals.
-        max_danger: Maximum number of danger terminals.
-        seed: Random seed for reproducibility.
-        strictness: Passed through to `generate_territory_root_sets` to control
-            locality assumptions. See `api_exploration_graph.py` for valid
-            values and their definitions.
+        strategy: Passed through to `_generate_terminal_pairs`.
 
     Returns:
         A TestInstance with results populated.
     """
-    gen = _get_default_generator(config)
+    gen = _get_default_generator(config, seed)
     gen.random = random.Random(seed)
 
-    terminals, (roots, workers, dangers) = gen._generate_territorial_terminals(
-        worker_percent, include_danger, max_danger, strictness
-    )
+    specs = gen._generate_terminal_pairs(worker_percent, include_danger, strategy)
 
     instance = TestInstance(
-        test_type=TestCaseType.STRICTNESS_LEVEL,
+        test_type=TestCaseType.STRATEGY,
         optimization_fn=optimization_fn,
         config=config,
         budget=None,
         percent=worker_percent,
-        strictness=strictness,
-        roots=roots,
-        workers=workers,
-        dangers=dangers,
-        terminals=terminals,
+        strategy=strategy,
+        specs=specs,
+        result=None,
     )
     instance.run()
     return instance
-
-
-def random_terminals(
-    optimization_fn, config: dict, worker_percent: int, include_danger=False, max_danger=None, seed=42
-) -> TestInstance:
-    return generate_terminals(
-        optimization_fn,
-        config,
-        worker_percent,
-        include_danger,
-        max_danger,
-        seed,
-        strictness=RootPairingType.random_any_root,
-    )
-
-
-def territorial_terminals(
-    optimization_fn,
-    config: dict,
-    worker_percent: int,
-    include_danger=False,
-    max_danger=None,
-    seed=42,
-    strictness=RootPairingType.nearest_town,
-) -> TestInstance:
-    return generate_terminals(
-        optimization_fn, config, worker_percent, include_danger, max_danger, seed, strictness
-    )
 
 
 def workerman_terminals_mip(
     optimization_fn,
     config: dict,
     budget: int,
+    seed: int,
     include_danger: bool = False,
-    max_danger: int | None = None,
-    seed: int = 42,
 ) -> TestInstance:
+    """Launcher for fuzzer mip incidents via springboard for caching."""
     start_time = time.perf_counter()
-    incident = workerman_terminals_cached(optimization_fn, config, budget, include_danger, max_danger, seed)
+    incident = _workerman_terminals_cached(optimization_fn, config, budget, seed, include_danger)
     duration = time.perf_counter() - start_time
 
     assert incident.result is not None
     if incident.result.duration > duration:
-        # Cache hit - output log success msg
-        if incident.test_type == TestCaseType.WORKERMAN:
-            param_string = f"budget: {incident.budget}"
-        else:
-            assert incident.strictness
-            param_string = f"strictness: {incident.strictness.value}, percent: {incident.percent}"
-
+        # Cache hit - output log success msg based on original results
+        assert incident.test_type == TestCaseType.WORKERMAN
+        param_string = f"budget: {incident.budget}"
         logger.success(
-            f"{incident.test_type.value}, {param_string}, params: terminals={len(incident.terminals)}, "
-            f"roots={incident.roots}, workers={incident.workers}, dangers={incident.dangers}, "
+            f"{incident.test_type.value}, {param_string}, params: terminals={len(incident.specs.terminals)}, "
+            f"roots={incident.specs.roots}, workers={incident.specs.workers}, dangers={incident.specs.dangers}, "
             f"result: nodes={incident.result.num_nodes}, edges={incident.result.num_edges}, "
             f"components={incident.result.num_components}, cost={incident.result.cost}, duration={incident.result.duration:.6f}s ♻️"
         )
@@ -421,66 +326,63 @@ def workerman_terminals_mip(
 
 
 @memory.cache
-def workerman_terminals_cached(
+def _workerman_terminals_cached(
     optimization_fn,
     config: dict,
     budget: int,
+    seed: int,
     include_danger: bool = False,
-    max_danger: int | None = None,
-    seed: int = 42,
 ) -> TestInstance:
-    return workerman_terminals(optimization_fn, config, budget, include_danger, max_danger, seed)
+    """Springboard to the workerman terminals test case via cached mip solver."""
+    return workerman_terminals(optimization_fn, config, budget, seed, include_danger)
 
 
 def workerman_terminals(
-    optimization_fn, config: dict, budget: int, include_danger=False, max_danger=None, seed=42
+    optimization_fn, config: dict, budget: int, seed: int, include_danger=False
 ) -> TestInstance:
-    gen = _get_default_generator(config)
+    """Generate and run a test instance with terminal-to-root mappings based on pre-optimized budget solution."""
+    gen = _get_default_generator(config, seed)
     gen.random = random.Random(seed)
-    terminals, (roots, workers, dangers) = gen._generate_workerman_terminals(
-        budget, include_danger, max_danger
-    )
+    specs = gen._generate_workerman_terminals(budget, include_danger)
     instance = TestInstance(
         test_type=TestCaseType.WORKERMAN,
         optimization_fn=optimization_fn,
         config=config,
         budget=budget,
-        percent=round(workers / gen.max_plantzone_count() * 100),
-        strictness=None,
-        roots=roots,
-        workers=workers,
-        dangers=dangers,
-        terminals=terminals,
+        percent=round(specs.workers / gen.context.max_plantzone_count * 100),
+        strategy=None,
+        specs=specs,
+        result=None,
     )
     instance.run()
     return instance
 
 
 if __name__ == "__main__":
-    config = TestCase()
-    generator = TestGenerator(config)
+    from api_common import set_logger
+
+    config = ds.get_config("config")
+    config["name"] = "test_parms"
+    set_logger(config)
+
+    config = TestContext()
+    generator = TestGenerator(config, seed=42)
 
     # Workerman terminals
-    # for budget in range(5, 555, 5):
-    for budget in [5]:
+    for budget in range(5, 555, 5):
         for include_danger in [False, True]:
-            terminals, (roots, workers, dangers) = generator._generate_workerman_terminals(
-                budget, include_danger, max_danger=None
-            )
+            specs = generator._generate_workerman_terminals(budget, include_danger)
             logger.info(
                 f"Workerman Terminals - Budget: {budget}, Danger: {include_danger} - "
-                f"Roots: {roots}, Workers: {workers}, Dangers: {dangers}, Terminals: {terminals}"
+                f"Roots: {specs.roots}, Workers: {specs.workers}, Dangers: {specs.dangers}, Terminals: {specs.terminals}"
             )
 
-    # Strictness-level terminals (percent-based)
-    for pairing_type in RootPairingType:
-        # for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
-        for percent in [5]:
+    # strategy-level terminals (percent-based)
+    for pairing_type in PairingStrategy:
+        for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
             for include_danger in [False, True]:
-                terminals, (roots, workers, dangers) = generator._generate_territorial_terminals(
-                    percent, include_danger, max_danger=None, pairing_type=pairing_type
-                )
+                specs = generator._generate_terminal_pairs(percent, include_danger, strategy=pairing_type)
                 logger.info(
-                    f"Strictness: {pairing_type.value} - Percent: {percent}, Danger: {include_danger} - "
-                    f"Roots: {roots}, Workers: {workers}, Dangers: {dangers}, Terminals: {terminals}"
+                    f"strategy: {pairing_type.value} - Percent: {percent}, Danger: {include_danger} - "
+                    f"Roots: {specs.roots}, Workers: {specs.workers}, Dangers: {specs.dangers}, Terminals: {specs.terminals}"
                 )

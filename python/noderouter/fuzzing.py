@@ -1,4 +1,4 @@
-# fuzz_test.py
+# fuzzing.py
 
 from __future__ import annotations
 import time
@@ -15,8 +15,9 @@ from tabulate import tabulate
 import data_store as ds
 import testing as test
 from api_common import set_logger
-from mip_baseline_rust import optimize_with_terminals as mip_optimize
+from mip_baseline import optimize_with_terminals as mip_optimize
 from node_router import optimize_with_terminals as nr_optimize
+from testing_root_pairing import PairingStrategy
 
 _shutdown_requested = False
 
@@ -24,10 +25,10 @@ _shutdown_requested = False
 @dataclass
 class FuzzInstanceMetrics:
     seed: int
-    test_type: str
+    test_type: test.TestCaseType
     budget: int
     percent: int
-    strictness: test.RootPairingType | None
+    strategy: PairingStrategy | None
     include_danger: bool
     roots: int
     workers: int
@@ -69,7 +70,7 @@ def run_single_config(
     Args:
         samples: Number of instances to generate.
         budget: Workerman budget or basis for percent coverage.
-        test_type: Either "workerman" or "strictness_level".
+        test_type: Either "workerman" or "strategy".
         include_danger: Whether to include danger nodes.
 
     Returns:
@@ -82,26 +83,26 @@ def run_single_config(
     base_seed = 10_000
     all_metrics: list[FuzzInstanceMetrics] = []
 
-    # Build the job list: one entry for workerman, or one per strictness level
+    # Build the job list: one entry for workerman, or one per strategy
     if test_type == "workerman":
-        jobs: list[tuple[test.RootPairingType | None, int, test.TestCaseType]] = [
+        jobs: list[tuple[PairingStrategy | None, int, test.TestCaseType]] = [
             (None, budget, test.TestCaseType.WORKERMAN)
         ]
-    elif test_type == "strictness_level":
+    elif test_type == "strategy":
         percent = round(budget / 550 * 100)
-        jobs = [(s, percent, test.TestCaseType.STRICTNESS_LEVEL) for s in test.RootPairingType]
+        jobs = [(s, percent, test.TestCaseType.STRATEGY) for s in PairingStrategy]
     else:
         raise ValueError(f"Unknown test_type: {test_type}")
 
-    for strictness, value, case_type in jobs:
+    for strategy, value, case_type in jobs:
         if _shutdown_requested:
             break
 
         if case_type == test.TestCaseType.WORKERMAN:
             desc = f"workerman budget={budget:3} | danger={'yes' if include_danger else 'no'}"
         else:
-            assert strictness is not None
-            desc = f"strictness={strictness} {value:3}% workers (budget {budget:3}) "
+            assert strategy is not None
+            desc = f"strategy={strategy.value} {value:3}% workers (budget {budget:3}) "
             desc += f"| danger={'yes' if include_danger else 'no'}"
 
         print(f"\nStarting: {desc} | samples={samples}")
@@ -115,18 +116,16 @@ def run_single_config(
 
             if case_type == test.TestCaseType.WORKERMAN:
                 mip_instance = test.workerman_terminals_mip(
-                    mip_optimize, config, budget, include_danger, None, seed
+                    mip_optimize, config, budget, seed, include_danger
                 )
-                nr_instance = test.workerman_terminals(
-                    nr_optimize, config, budget, include_danger, None, seed
-                )
+                nr_instance = test.workerman_terminals(nr_optimize, config, budget, seed, include_danger)
             else:
-                assert strictness is not None
+                assert strategy is not None
                 mip_instance = test.generate_terminals_mip(
-                    mip_optimize, config, value, include_danger, None, seed, strictness
+                    mip_optimize, config, value, seed, include_danger, strategy
                 )
                 nr_instance = test.generate_terminals(
-                    nr_optimize, config, value, include_danger, None, seed, strictness
+                    nr_optimize, config, value, seed, include_danger, strategy
                 )
 
             assert mip_instance.result and nr_instance.result
@@ -136,11 +135,11 @@ def run_single_config(
                 test_type=case_type,
                 budget=budget,
                 percent=nr_instance.percent,
-                strictness=strictness if case_type == test.TestCaseType.STRICTNESS_LEVEL else None,
+                strategy=strategy if case_type == test.TestCaseType.STRATEGY else None,
                 include_danger=include_danger,
-                roots=nr_instance.roots,
-                workers=nr_instance.workers,
-                dangers=nr_instance.dangers,
+                roots=nr_instance.specs.roots,
+                workers=nr_instance.specs.workers,
+                dangers=nr_instance.specs.dangers,
                 mip_cost=mip_instance.result.cost,
                 mip_duration=mip_instance.result.duration,
                 nr_cost=nr_instance.result.cost,
@@ -197,13 +196,13 @@ def _print_global_summary(all_metrics: list[FuzzInstanceMetrics]) -> None:
 
     grouped = defaultdict(list)
     for m in all_metrics:
-        key = (m.test_type, m.budget, m.strictness, m.include_danger)
+        key = (m.test_type, m.budget, m.strategy, m.include_danger)
         grouped[key].append(m)
 
     def sort_key(item):
-        case_type, budget, strictness, inc_danger = item[0]
-        strictness_order = list(test.RootPairingType).index(strictness) if strictness else -1
-        return (case_type.value, budget or 0, strictness_order, inc_danger)
+        case_type, budget, strategy, inc_danger = item[0]
+        strategy_order = list(PairingStrategy).index(strategy) if strategy else -1
+        return (case_type.value, budget or 0, strategy_order, inc_danger)
 
     max_inst = max(len(metrics) for metrics in grouped.values())
     have_incomplete = False
@@ -212,7 +211,7 @@ def _print_global_summary(all_metrics: list[FuzzInstanceMetrics]) -> None:
     all_ratios, all_speedups = [], []
     total_instances, total_optimal = 0, 0
 
-    for (case_type, budget, strictness, inc_danger), metrics in sorted(grouped.items(), key=sort_key):
+    for (case_type, budget, strategy, _include_danger), metrics in sorted(grouped.items(), key=sort_key):
         instances = len(metrics)
         optimal = sum(1 for m in metrics if m.nr_cost == m.mip_cost)
         ratios = [m.ratio for m in metrics]
@@ -231,7 +230,7 @@ def _print_global_summary(all_metrics: list[FuzzInstanceMetrics]) -> None:
             else ""
         )
 
-        case_type_string = "workerman" if case_type == test.TestCaseType.WORKERMAN else strictness
+        case_type_string = "workerman" if case_type == test.TestCaseType.WORKERMAN else strategy.value
 
         if instances < max_inst:
             have_incomplete = True
@@ -290,7 +289,7 @@ def _print_global_summary(all_metrics: list[FuzzInstanceMetrics]) -> None:
     ]
 
     print("\n" + "#" * 160)
-    logger.success("GLOBAL SUMMARY — BY TEST TYPE, BUDGET, STRICTNESS, AND PERCENT")
+    logger.success("GLOBAL SUMMARY — BY TEST TYPE, BUDGET, strategy, AND PERCENT")
     print(tabulate(table_data, headers=headers, tablefmt="simple", stralign="right", numalign="right"))
     if have_incomplete:
         logger.warning("* incomplete test type.")
@@ -309,7 +308,7 @@ def _print_global_summary(all_metrics: list[FuzzInstanceMetrics]) -> None:
             print(
                 f"seed={m.seed:<5d} | {m.test_type:<15} | "
                 f"budget={m.budget if m.budget else '':<3} | "
-                f"strictness={m.strictness.value if m.strictness else '':<8} | "
+                f"strategy={m.strategy.value if m.strategy else '':<8} | "
                 f"percent={m.percent if m.percent is not None else '':<3} | "
                 f"roots={m.roots:2d} | workers={m.workers:3d} | dngr={m.dangers:1d} | "
                 f"|T|={m.roots + m.workers + m.dangers:3d} | "
@@ -332,7 +331,7 @@ def run_fuzz_comparison(samples: int = 100, budgets: list[int] | None = None) ->
     try:
         for budget in budgets:
             for include_danger in (False, True):
-                for test_type in ("workerman", "strictness_level"):
+                for test_type in ("workerman", "strategy"):
                     if _shutdown_requested:
                         raise KeyboardInterrupt
                     metrics = run_single_config(samples, budget, test_type, include_danger)

@@ -77,6 +77,6 @@ if __name__ == "__main__":
             test.workerman_terminals(optimize_with_terminals, config, budget, True)
         for percent in [1, 2, 3, 4, 5]:
             print(f"Test: random terminals coverage percent: {percent}")
-            test.random_terminals(optimize_with_terminals, config, percent, False, max_danger=5)
-            test.random_terminals(optimize_with_terminals, config, percent, True, max_danger=5)
+            test.generate_terminals(optimize_with_terminals, config, percent, False)
+            test.generate_terminals(optimize_with_terminals, config, percent, True)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")

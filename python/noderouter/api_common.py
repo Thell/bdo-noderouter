@@ -1,5 +1,7 @@
 # api_common.py
 
+from joblib import Memory
+
 from enum import IntEnum
 from typing import TypedDict
 import sys
@@ -10,6 +12,9 @@ import rustworkx as rx
 
 import data_store as ds
 
+memory = Memory(location=".cache", verbose=0)
+
+# Constants
 GREAT_OCEAN_TERRITORY = 5
 OQUILLAS_EYE_KEY = 1727
 SUPER_ROOT = 99999
@@ -49,6 +54,7 @@ def set_logger(config: dict):
     return logger
 
 
+@memory.cache
 def get_clean_exploration_data(config: dict):
     """Read exploration.json from data store and recursively:
     - Remove all entries with an empty link list
@@ -56,6 +62,7 @@ def get_clean_exploration_data(config: dict):
     - If config.exploration_data.valid_nodes is a non-empty list then only valid nodes are kept
     - If config.exploration_data.omit_great_ocean is true omits all non-routable ocean nodes.
     """
+    logger.trace("get_clean_exploration_data")
     data = {int(k): v for k, v in ds.read_json("exploration.json").items()}
 
     valid_nodes = config.get("exploration_data", {}).get("valid_nodes", [])
