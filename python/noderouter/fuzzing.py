@@ -33,9 +33,9 @@ class FuzzInstanceMetrics:
     roots: int
     workers: int
     dangers: int
-    mip_cost: float
+    mip_cost: int
     mip_duration: float
-    nr_cost: float
+    nr_cost: int
     nr_duration: float
 
     @property
@@ -56,7 +56,7 @@ def _signal_handler(signum, frame, containers):
     print("\nShutdown requested — finishing current test and reporting results...", file=sys.stderr)
 
 
-def install_graceful_shutdown(containers):
+def install_shutdown_handler(containers):
     handler = partial(_signal_handler, containers=containers)
     signal.signal(signal.SIGINT, handler)
 
@@ -326,7 +326,7 @@ def run_fuzz_comparison(samples: int = 100, budgets: list[int] | None = None) ->
         budgets = list(range(5, 551, 5))
 
     all_metrics: list[FuzzInstanceMetrics] = []
-    install_graceful_shutdown((all_metrics,))
+    install_shutdown_handler((all_metrics,))
 
     try:
         for budget in budgets:
@@ -350,7 +350,7 @@ if __name__ == "__main__":
     if config.get("actions", {}).get("fuzz_test", True):
         cfg = config.get("fuzz_test_config", {})
         run_fuzz_comparison(
-            samples=cfg.get("samples", 10),
+            samples=cfg.get("samples", 50),
             budgets=cfg.get("budgets", range(5, 555, 5)),
         )
         logger.success("Fuzz test suite finished")
