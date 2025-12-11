@@ -16,7 +16,7 @@ import folium.map
 import rustworkx as rx
 from folium.plugins import FeatureGroupSubGroup, GroupedLayerControl
 
-import data_store as ds
+import api_data_store as ds
 from api_common import get_clean_exploration_data, SUPER_ROOT
 from api_exploration_graph import get_exploration_graph
 from api_rx_pydigraph import inject_super_root, set_graph_terminal_sets_attribute

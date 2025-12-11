@@ -11,7 +11,7 @@ import unittest
 from dataclasses import dataclass
 from enum import StrEnum
 
-import data_store as ds
+import api_data_store as ds
 from api_common import NodeType
 from api_exploration_graph import (
     get_all_pairs_path_lengths,

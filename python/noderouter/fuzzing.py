@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from loguru import logger
 from tabulate import tabulate
 
-import data_store as ds
+import api_data_store as ds
 import testing as test
 from api_common import set_logger
 from mip_baseline import optimize_with_terminals as mip_optimize

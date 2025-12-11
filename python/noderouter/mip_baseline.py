@@ -16,7 +16,7 @@ import time
 from loguru import logger
 import rustworkx as rx
 
-import data_store as ds
+import api_data_store as ds
 from api_common import set_logger, ResultDict, SUPER_ROOT
 from api_rx_pydigraph import set_graph_terminal_sets_attribute, inject_super_root
 from api_highs_model import get_highs, create_model, solve

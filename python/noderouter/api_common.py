@@ -10,7 +10,7 @@ from bidict import bidict
 from loguru import logger
 import rustworkx as rx
 
-import data_store as ds
+import api_data_store as ds
 
 memory = Memory(location=".cache", verbose=0)
 
