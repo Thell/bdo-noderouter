@@ -16,8 +16,8 @@ from api_common import NodeType
 from api_exploration_graph import (
     get_all_pairs_path_lengths,
     get_all_pairs_cartesian_distances,
-    get_exploration_graph,
     get_clean_exploration_data,
+    get_exploration_graph,
 )
 
 # number of nearest/cheapest roots to consider for pairing

@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 import time
-from collections import defaultdict
 from functools import partial
-from statistics import mean, stdev
 import signal
 import sys
-from dataclasses import dataclass
 
 from loguru import logger
-from tabulate import tabulate
+import polars as pl
 
 import api_data_store as ds
 import testing as test
@@ -22,29 +19,51 @@ from testing_root_pairing import PairingStrategy
 _shutdown_requested = False
 
 
-@dataclass
-class FuzzInstanceMetrics:
-    seed: int
-    test_type: test.TestCaseType
-    budget: int
-    percent: int
-    strategy: PairingStrategy | None
-    include_danger: bool
-    roots: int
-    workers: int
-    dangers: int
-    mip_cost: int
-    mip_duration: float
-    nr_cost: int
-    nr_duration: float
+class FuzzInstanceMetrics(dict):
+    """Factory for producing Polars rows from test incidents."""
 
-    @property
-    def ratio(self) -> float:
-        return self.nr_cost / self.mip_cost
+    def __init__(
+        self,
+        seed: int,
+        case_type: test.TestCaseType,
+        budget: int,
+        include_danger: bool,
+        strategy: PairingStrategy | None,
+        nr_instance: test.TestInstance,
+        mip_instance: test.TestInstance,
+    ):
+        # If any of these fail, something is wrong with either the MIP/NodeRouter input or
+        # the solution extraction/result assignment. This should never happen!
+        assert mip_instance.result, f"MIP handling error!: {mip_instance.result=}"
+        assert mip_instance.result.cost > 0, f"MIP handling error!: {mip_instance.result.cost=}"
+        assert mip_instance.result.duration > 0, f"MIP handling error!: {mip_instance.result.duration=}"
 
-    @property
-    def speedup(self) -> float:
-        return self.mip_duration / self.nr_duration if self.nr_duration > 0 else float("inf")
+        assert nr_instance.result, f"NodeRouter handling error!: {nr_instance.result=}"
+        assert nr_instance.result.cost > 0, f"NodeRouter handling error!: {nr_instance.result.cost=}"
+        assert nr_instance.result.duration > 0, f"NodeRouter handling error!: {nr_instance.result.duration=}"
+
+        ratio = nr_instance.result.cost / mip_instance.result.cost
+        assert ratio >= 1.0, "NodeRouter should never have lower cost than MIP!"
+        speedup = mip_instance.result.duration / nr_instance.result.duration
+        assert speedup > 0, "NodeRouter should always be faster than MIP!"
+
+        super().__init__({
+            "seed": seed,
+            "test_type": case_type.value,
+            "budget": budget,
+            "strategy": strategy.value if strategy else "",
+            "include_danger": include_danger,
+            "percent": nr_instance.percent,
+            "roots": nr_instance.specs.roots,
+            "workers": nr_instance.specs.workers,
+            "dangers": nr_instance.specs.dangers,
+            "mip_cost": mip_instance.result.cost,
+            "mip_duration": mip_instance.result.duration,
+            "nr_cost": nr_instance.result.cost,
+            "nr_duration": nr_instance.result.duration,
+            "ratio": ratio,
+            "speedup": speedup,
+        })
 
 
 def _signal_handler(signum, frame, containers):
@@ -61,9 +80,7 @@ def install_shutdown_handler(containers):
     signal.signal(signal.SIGINT, handler)
 
 
-def run_single_config(
-    samples: int, budget: int, test_type: str, include_danger: bool
-) -> list[FuzzInstanceMetrics]:
+def run_single_config(samples: int, budget: int, test_type: str, include_danger: bool) -> pl.DataFrame:
     """
     Run a fuzz test for a single configuration.
 
@@ -77,11 +94,9 @@ def run_single_config(
         List of FuzzInstanceMetrics for all instances in this config.
     """
     config = ds.get_config("config")
-    config["name"] = "fuzz_test"
-    set_logger(config)
 
     base_seed = 10_000
-    all_metrics: list[FuzzInstanceMetrics] = []
+    all_cases_df = pl.DataFrame()
 
     # Build the job list: one entry for workerman, or one per strategy
     if test_type == "workerman":
@@ -107,7 +122,7 @@ def run_single_config(
 
         print(f"\nStarting: {desc} | samples={samples}")
 
-        case_metrics: list[FuzzInstanceMetrics] = []
+        case_rows: list[FuzzInstanceMetrics] = []
 
         for i in range(samples):
             if _shutdown_requested:
@@ -128,204 +143,145 @@ def run_single_config(
                     nr_optimize, config, value, seed, include_danger, strategy
                 )
 
+            row = FuzzInstanceMetrics(
+                seed,
+                case_type,
+                budget,
+                include_danger,
+                strategy,
+                nr_instance,
+                mip_instance,
+            )
+            case_rows.append(row)
+
             assert mip_instance.result and nr_instance.result
 
-            metric = FuzzInstanceMetrics(
-                seed=seed,
-                test_type=case_type,
-                budget=budget,
-                percent=nr_instance.percent,
-                strategy=strategy if case_type == test.TestCaseType.STRATEGY else None,
-                include_danger=include_danger,
-                roots=nr_instance.specs.roots,
-                workers=nr_instance.specs.workers,
-                dangers=nr_instance.specs.dangers,
-                mip_cost=mip_instance.result.cost,
-                mip_duration=mip_instance.result.duration,
-                nr_cost=nr_instance.result.cost,
-                nr_duration=nr_instance.result.duration,
-            )
-            case_metrics.append(metric)
-            all_metrics.append(metric)
-
-            if metric.nr_cost > metric.mip_cost:
-                gap = metric.nr_cost - metric.mip_cost
-                logger.warning(f"SUBOPTIMAL → {desc} | seed={seed} | +{gap}")
-
-            print(
+            row_str = (
                 f"[{i + 1:>4}/{samples}] seed={seed:5}  {desc:65}  "
-                f"|T|={metric.roots + metric.workers + metric.dangers:>3} "
-                f"w:{metric.workers:>3} d:{metric.dangers:>2}  "
-                f"MIP {metric.mip_cost:>4} ({metric.mip_duration:6.3f}s) → "
-                f"NR {metric.nr_cost:>4} ({metric.nr_duration:6.3f}s)  "
-                f"ratio={metric.ratio:5.3f}  {metric.speedup:7.1f}x"
+                f"|T|={row['roots'] + row['workers'] + row['dangers']:>3} "
+                f"w:{row['workers']:>3} d:{row['dangers']:>2}  "
+                f"MIP {row['mip_cost']:>4} ({row['mip_duration']:6.3f}s) → "
+                f"NR {row['nr_cost']:>4} ({row['nr_duration']:6.3f}s)  "
+                f"ratio={row['ratio']:5.3f}  {row['speedup']:7.1f}x"
             )
+            if (gap := row["nr_cost"] - row["mip_cost"]) > 0:
+                logger.warning(f"SUBOPTIMAL → {row_str} (gap: +{gap})")
+            else:
+                # use level greater on par with success but without success coloring
+                logger.log(25, f"   OPTIMAL → {row_str}")
 
-        # --- per‑case summary (scoped to this single job) ---
-        if case_metrics:
-            ratios = [m.ratio for m in case_metrics]
-            optimal = sum(1 for m in case_metrics if m.nr_cost == m.mip_cost)
-            suboptimal = len(case_metrics) - optimal
+        case_df = pl.DataFrame(case_rows)
+        all_cases_df = all_cases_df.vstack(case_df)
 
-            print("\n" + "=" * 110)
-            print(f"SUMMARY — {desc}")
-            print(f"Instances tested       : {len(case_metrics)}")
-            print(f"NodeRouter optimal     : {optimal} ({optimal / len(case_metrics):.1%})")
-            print(f"NodeRouter suboptimal  : {suboptimal} ({suboptimal / len(case_metrics):.1%})")
-            print(f"Avg approx ratio       : {mean(ratios):.4f} ± {stdev(ratios):.4f}")
-            print(f"Best / Worst ratio     : {min(ratios):.3f} / {max(ratios):.3f}")
-            print(f"Avg speedup            : {mean([m.speedup for m in case_metrics]):.0f}x")
-            print(
-                f"Avg roots / workers / dangers : "
-                f"{mean([m.roots for m in case_metrics]):.1f} / "
-                f"{mean([m.workers for m in case_metrics]):.1f} / "
-                f"{mean([m.dangers for m in case_metrics]):.1f}"
-            )
-            logger.success(f"Completed: {desc}")
-            print("=" * 110)
+        case_summary = case_df.group_by(["test_type", "budget", "strategy", "include_danger"]).agg([
+            pl.len().alias("instances"),
+            (pl.col("nr_cost") == pl.col("mip_cost")).sum().alias("optimal"),
+            (pl.col("nr_cost") != pl.col("mip_cost")).sum().alias("suboptimal"),
+            pl.mean("ratio").alias("avg_ratio"),
+            pl.max("ratio").alias("worst_ratio"),
+            pl.mean("speedup").alias("avg_speedup"),
+        ])
+        with pl.Config(tbl_hide_column_data_types=True, tbl_hide_dataframe_shape=True, set_tbl_cols=-1):
+            print(case_summary)
 
-    return all_metrics
+    return all_cases_df
 
 
-def _print_global_summary(all_metrics: list[FuzzInstanceMetrics]) -> None:
-    if not all_metrics:
+def _print_global_summary(all_cases_df: pl.DataFrame) -> None:
+    if all_cases_df.is_empty():
         logger.warning("No results to summarize.")
         return
 
     start_time = time.perf_counter()
 
-    grouped = defaultdict(list)
-    for m in all_metrics:
-        key = (m.test_type, m.budget, m.strategy, m.include_danger)
-        grouped[key].append(m)
-
-    def sort_key(item):
-        case_type, budget, strategy, inc_danger = item[0]
-        strategy_order = list(PairingStrategy).index(strategy) if strategy else -1
-        return (case_type.value, budget or 0, strategy_order, inc_danger)
-
-    max_inst = max(len(metrics) for metrics in grouped.values())
-    have_incomplete = False
-
-    table_data = []
-    all_ratios, all_speedups = [], []
-    total_instances, total_optimal = 0, 0
-
-    for (case_type, budget, strategy, _include_danger), metrics in sorted(grouped.items(), key=sort_key):
-        instances = len(metrics)
-        optimal = sum(1 for m in metrics if m.nr_cost == m.mip_cost)
-        ratios = [m.ratio for m in metrics]
-        speedups = [m.speedup for m in metrics]
-        terminals = [m.roots + m.workers + m.dangers for m in metrics]
-
-        total_instances += instances
-        total_optimal += optimal
-        all_ratios.extend(ratios)
-        all_speedups.extend(speedups)
-
-        # include percent (average across metrics in this group)
-        avg_percent = (
-            mean([m.percent for m in metrics if m.percent is not None])
-            if any(m.percent is not None for m in metrics)
-            else ""
+    # --- Workerman summary ---
+    workerman_df = all_cases_df.filter(pl.col("test_type") == "workerman")
+    if not workerman_df.is_empty():
+        workerman_summary = (
+            workerman_df.group_by(["test_type", "budget", "include_danger"])
+            .agg([
+                pl.len().alias("instances"),
+                (pl.col("nr_cost") == pl.col("mip_cost")).sum().alias("optimal"),
+                (pl.col("nr_cost") != pl.col("mip_cost")).sum().alias("suboptimal"),
+                (pl.col("nr_cost") == pl.col("mip_cost")).mean().alias("optimal_percent"),
+                pl.mean("ratio").alias("avg_ratio"),
+                pl.max("ratio").alias("worst_ratio"),
+                pl.mean("speedup").alias("avg_speedup"),
+                pl.mean("roots").alias("avg_roots"),
+                pl.mean("workers").alias("avg_workers"),
+                pl.mean("dangers").alias("avg_dangers"),
+                (pl.col("roots") + pl.col("workers") + pl.col("dangers")).mean().alias("avg_terminals"),
+            ])
+            .sort(by=["budget", "include_danger"])
+            .drop(["include_danger", "test_type"])
         )
+        print("\n### WORKERMAN SUMMARY ###")
+        with pl.Config(
+            tbl_hide_column_data_types=True, tbl_hide_dataframe_shape=True, set_tbl_cols=-1, tbl_rows=-1
+        ):
+            print(workerman_summary)
 
-        case_type_string = "workerman" if case_type == test.TestCaseType.WORKERMAN else strategy.value
+    # --- Strategy summary ---
+    strategy_df = all_cases_df.filter(pl.col("test_type") == "strategy")
+    if not strategy_df.is_empty():
+        strategy_summary = (
+            strategy_df.group_by(["strategy", "budget", "include_danger"])
+            .agg([
+                pl.mean("roots").alias("avg_roots"),
+                pl.mean("workers").alias("avg_workers"),
+                pl.mean("dangers").alias("avg_dangers"),
+                pl.len().alias("instances"),
+                (pl.col("nr_cost") == pl.col("mip_cost")).sum().alias("optimal"),
+                (pl.col("nr_cost") != pl.col("mip_cost")).sum().alias("suboptimal"),
+                (pl.col("nr_cost") == pl.col("mip_cost")).mean().alias("optimal_percent"),
+                pl.mean("ratio").alias("avg_ratio"),
+                pl.max("ratio").alias("worst_ratio"),
+                pl.mean("speedup").alias("avg_speedup"),
+                (pl.col("roots") + pl.col("workers") + pl.col("dangers")).mean().alias("avg_terminals"),
+            ])
+            .sort(["strategy", "budget", "include_danger"])
+            .drop("include_danger")
+        )
+        print("\n### STRATEGY SUMMARY ###")
+        with pl.Config(
+            tbl_hide_column_data_types=True, tbl_hide_dataframe_shape=True, set_tbl_cols=-1, tbl_rows=-1
+        ):
+            print(strategy_summary)
 
-        if instances < max_inst:
-            have_incomplete = True
-            case_type_string += "*"
+    # --- Suboptimal breakdown diagnostics ---
+    sub_df = all_cases_df.filter(pl.col("nr_cost") > pl.col("mip_cost"))
+    if not sub_df.is_empty():
+        breakdown = (
+            sub_df.group_by(["strategy", "include_danger"])
+            .agg([
+                pl.min("budget").alias("first_budget"),
+                pl.max("budget").alias("last_budget"),
+                pl.len().alias("instances"),
+                pl.mean("ratio").alias("avg_ratio"),
+                pl.max("ratio").alias("worst_ratio"),
+                pl.mean("speedup").alias("avg_speedup"),
+                pl.col("ratio")
+                .filter(pl.col("budget") == pl.min("budget"))
+                .mean()
+                .alias("ratio_at_first_budget"),
+                pl.col("ratio")
+                .filter(pl.col("budget") == pl.max("budget"))
+                .mean()
+                .alias("ratio_at_last_budget"),
+            ])
+            .sort(["avg_ratio"], descending=True)
+        )
+        print("\n### SUBOPTIMAL BREAKDOWN ###")
+        with pl.Config(
+            tbl_hide_column_data_types=True, tbl_hide_dataframe_shape=True, set_tbl_cols=-1, tbl_rows=-1
+        ):
+            print(breakdown)
 
-        table_data.append([
-            case_type_string,
-            budget,
-            avg_percent,
-            f"{mean([m.roots for m in metrics]):.1f}",
-            f"{mean([m.workers for m in metrics]):.0f}",
-            f"{mean([m.dangers for m in metrics]):.0f}",
-            f"{mean(terminals):.1f}",
-            instances,
-            optimal,
-            instances - optimal,
-            f"{optimal / instances:.1%}",
-            f"{mean(ratios):.4f}",
-            f"{max(ratios):.3f}",
-            f"{mean(speedups):.0f}x",
-        ])
-
-    # TOTAL row
-    table_data.append([
-        "TOTAL",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        total_instances,
-        total_optimal,
-        total_instances - total_optimal,
-        f"{total_optimal / total_instances:.1%}",
-        f"{mean(all_ratios):.4f}",
-        f"{max(all_ratios):.3f}",
-        f"{mean(all_speedups):.0f}x",
-    ])
-
-    headers = [
-        "Type",
-        "Budget",
-        "Percent",
-        "Roots",
-        "Workers",
-        "Dangers",
-        "Terminals",
-        "Inst",
-        "Opt",
-        "Sub",
-        "% Opt",
-        "Avg Ratio",
-        "Worst",
-        "Speedup",
-    ]
-
-    print("\n" + "#" * 160)
-    logger.success("GLOBAL SUMMARY — BY TEST TYPE, BUDGET, strategy, AND PERCENT")
-    print(tabulate(table_data, headers=headers, tablefmt="simple", stralign="right", numalign="right"))
-    if have_incomplete:
-        logger.warning("* incomplete test type.")
-    print("#" * 160)
-
-    # Worst suboptimal instances
-    subopts = [m for m in all_metrics if m.nr_cost > m.mip_cost]
-    if subopts:
-        worst_sorted = sorted(subopts, key=lambda m: m.ratio, reverse=True)[:20]
-
-        print("\nWORST SUBOPTIMAL INSTANCES (top 20)")
-        print("-" * 100)
-
-        for m in worst_sorted:
-            gap = m.nr_cost - m.mip_cost
-            print(
-                f"seed={m.seed:<5d} | {m.test_type:<15} | "
-                f"budget={m.budget if m.budget else '':<3} | "
-                f"strategy={m.strategy.value if m.strategy else '':<8} | "
-                f"percent={m.percent if m.percent is not None else '':<3} | "
-                f"roots={m.roots:2d} | workers={m.workers:3d} | dngr={m.dangers:1d} | "
-                f"|T|={m.roots + m.workers + m.dangers:3d} | "
-                f"MIP={m.mip_cost:4d} → NR={m.nr_cost:4d} (+{gap:2d}) | "
-                f"ratio={m.ratio:.3f}"
-            )
-
-    print("#" * 160)
-    logger.success("Fuzz test suite completed")
     print(f"\nSummary Completed in {time.perf_counter() - start_time:.3f}s")
 
 
-def run_fuzz_comparison(samples: int = 100, budgets: list[int] | None = None) -> None:
-    if budgets is None:
-        budgets = list(range(5, 551, 5))
-
-    all_metrics: list[FuzzInstanceMetrics] = []
+def run_fuzz_comparison(samples: int, budgets: list[int]) -> None:
+    all_metrics: pl.DataFrame = pl.DataFrame()
     install_shutdown_handler((all_metrics,))
 
     try:
@@ -335,7 +291,7 @@ def run_fuzz_comparison(samples: int = 100, budgets: list[int] | None = None) ->
                     if _shutdown_requested:
                         raise KeyboardInterrupt
                     metrics = run_single_config(samples, budget, test_type, include_danger)
-                    all_metrics.extend(metrics)
+                    all_metrics = all_metrics.vstack(metrics)
 
         _print_global_summary(all_metrics)
 
@@ -347,12 +303,7 @@ def run_fuzz_comparison(samples: int = 100, budgets: list[int] | None = None) ->
 
 if __name__ == "__main__":
     config = ds.get_config("config")
-    if config.get("actions", {}).get("fuzz_test", True):
-        cfg = config.get("fuzz_test_config", {})
-        run_fuzz_comparison(
-            samples=cfg.get("samples", 50),
-            budgets=cfg.get("budgets", range(5, 555, 5)),
-        )
-        logger.success("Fuzz test suite finished")
-    else:
-        logger.info("fuzz_test not enabled — set actions.fuzz_test: true in config")
+    set_logger(config)
+
+    run_fuzz_comparison(samples=5, budgets=list(range(5, 11, 5)))
+    logger.success("Fuzz test suite finished")

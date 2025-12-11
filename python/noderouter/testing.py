@@ -173,15 +173,15 @@ class TestGenerator:
 
         return TerminalSpecs(src_dst)
 
-    def _generate_workerman_terminals(self, cost: int, include_danger: bool) -> TerminalSpecs:
+    def _generate_workerman_terminals(self, budget: int, include_danger: bool) -> TerminalSpecs:
         """Generate terminal-to-root mappings based on workerman data."""
         # Optimal solutions only exist for certain budgets
-        if cost % 5 != 0 or not 5 <= cost <= 550:
+        if budget % 5 != 0 or not 5 <= budget <= 550:
             raise ValueError("Invalid workerman budget!")
 
         # load workerman optimal terminals
         path = Path(ds.path()) / "workerman"
-        files = list(path.glob(f"{cost}_*"))
+        files = list(path.glob(f"{budget}_*"))
         if not files:
             raise ValueError(f"No workerman file found for budget {budget}")
         with open(files[0]) as f:
