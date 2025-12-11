@@ -82,11 +82,12 @@ class TestInstance:
         assert isinstance(exploration_graph, PyDiGraph)
 
         result: ResultDict = self.optimization_fn(exploration_graph, self.specs.terminals, self.config)
+
         solution_graph = result["solution_graph"]
-        objective = result["objective_value"]
+        solution = result["solution"]
+        objective = result["objective"]
         duration = result["duration"]
 
-        solution = [n["waypoint_key"] for n in solution_graph.nodes()]
         num_components = len(rx.strongly_connected_components(solution_graph))
 
         self.result = TestResult(

@@ -42,7 +42,8 @@ class NodeType(IntEnum):
 
 class ResultDict(TypedDict):
     solution_graph: rx.PyDiGraph
-    objective_value: int
+    solution: list[int]
+    objective: int
     duration: float
 
 

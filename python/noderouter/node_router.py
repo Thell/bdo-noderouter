@@ -38,10 +38,16 @@ def optimize_with_terminals(
     solution_waypoints, cost = NR.solve_for_terminal_pairs(list(terminals.items()))
     duration = time.perf_counter() - start_time
 
-    logger.info(f"solution time (ms): {duration * 1000:.2f}")
     solution_indices = [WAYPOINT_TO_INDEX[w] for w in solution_waypoints]
     solution_graph = exploration_graph.subgraph(solution_indices)
-    return ResultDict({"solution_graph": solution_graph, "objective_value": cost, "duration": duration})
+
+    logger.info(f"solution time (ms): {duration * 1000:.2f}")
+    return ResultDict({
+        "solution_graph": solution_graph,
+        "solution": solution_waypoints,
+        "objective": cost,
+        "duration": duration,
+    })
 
 
 if __name__ == "__main__":
@@ -78,5 +84,5 @@ if __name__ == "__main__":
     exploration_graph = get_exploration_graph(config)
     assert isinstance(exploration_graph, rx.PyDiGraph)
     result = optimize_with_terminals(exploration_graph, terminals, config)
-    print([n["waypoint_key"] for n in result["solution_graph"].nodes()])
-    print(result["objective_value"])
+    print(result["solution"])
+    print(result["objective"])

@@ -47,11 +47,12 @@ def optimize_with_terminals(exploration_graph: rx.PyDiGraph, terminals: dict, co
     if calculated_cost != objective_value:
         logger.warning("Objective value does not match calculated cost!")
 
-    return {
+    return ResultDict({
         "solution_graph": solution_graph,
-        "objective_value": objective_value,
+        "solution": list(solution_graph.attrs["node_key_by_index"].values()),
+        "objective": objective_value,
         "duration": duration,
-    }
+    })
 
 
 if __name__ == "__main__":

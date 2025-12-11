@@ -1,5 +1,4 @@
 # testing_baselines.py
-
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 import time
@@ -118,16 +117,16 @@ def _validate_baselines(
     """
     solution_graph = result["solution_graph"]
     assert isinstance(solution_graph, rx.PyDiGraph)
+    objective = result["objective"]
 
-    cost = sum(n["need_exploration_point"] for n in solution_graph.nodes())
-    logger.info(f"Expected Cost: {expected_objective_value}, Actual: {cost}")
+    logger.info(f"Expected Cost: {expected_objective_value}, Actual: {objective}")
     logger.info(f"Connected components: {len(rx.strongly_connected_components(solution_graph))}")
 
     success = True
     if result["objective_value"] != expected_objective_value:
         logger.error(f"❌ Test: {name}: fail optimization")
         success = False
-    elif cost != expected_objective_value:
+    elif objective != expected_objective_value:
         logger.warning(f"🟠 Test: {name}: fail extraction")
         success = False
     else:
