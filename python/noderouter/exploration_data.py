@@ -142,6 +142,7 @@ def get_exploration_data():
     logger.trace("get_exploration_data")
 
     data, hash = _get_source_data_and_hash()
+    logger.trace(f"  hash: {hash}")
     return _get_exploration_data(data, hash)
 
 
@@ -153,6 +154,7 @@ def _get_source_data_and_hash() -> tuple[dict[int, dict], str]:
     Returns:
         tuple[dict, str]: The cleaned exploration data and its hash.
     """
+    logger.trace("get_source_data_and_hash")
     import hashlib
     import json
     import api_data_store as ds
@@ -166,8 +168,11 @@ def _get_source_data_and_hash() -> tuple[dict[int, dict], str]:
     hash_file = f"{source_filename}.sha256"
     old_hash = ds.read_text(hash_file) if ds.is_file(hash_file) else None
 
-    if new_hash != old_hash:
+    have_clean = ds.is_file("clean_exploration.json")
+
+    if new_hash != old_hash and have_clean:
         ds.remove_file("clean_exploration.json")
+    if new_hash != old_hash:
         ds.write_text(hash_file, new_hash)
 
     # Generate the cleaned data
@@ -178,6 +183,7 @@ def _get_source_data_and_hash() -> tuple[dict[int, dict], str]:
 
 @memory.cache
 def _get_exploration_data(exploration_data: dict, new_hash: str):
+    logger.trace("_get_exploration_data")
     return ExplorationData(exploration_data, new_hash)
 
 
@@ -192,6 +198,7 @@ def _get_clean_exploration_data(hash_key: str):
 
     NOTE: If 'clean_exploration.json' is present then it is used instead of being generated.
     """
+    logger.trace("_get_clean_exploration_data")
     import api_data_store as ds
     from api_common import GREAT_OCEAN_TERRITORY
 
@@ -210,7 +217,7 @@ def _get_clean_exploration_data(hash_key: str):
     def non_base_great_ocean_node(k: int, v: dict) -> bool:
         return v["territory_key"] == GREAT_OCEAN_TERRITORY and not v["is_base_town"]
 
-    data = {k: v for k, v in data.items() if non_base_great_ocean_node}
+    data = {k: v for k, v in data.items() if not non_base_great_ocean_node(k, v)}
 
     # Recursive removals:
     while True:
@@ -231,7 +238,7 @@ def _get_clean_exploration_data(hash_key: str):
 
 
 @memory.cache
-def _get_exploration_graph(data: dict) -> PyDiGraph:
+def _get_exploration_graph(data: dict[int, dict]) -> PyDiGraph:
     """Generate and return a node weighted PyGraph graph from 'exploration.json'.
 
     - Graph will have anti-parallel bi-direcitonal edges and no self-loops.
