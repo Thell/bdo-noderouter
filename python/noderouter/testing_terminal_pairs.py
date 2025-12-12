@@ -6,10 +6,10 @@ terminal, root pair assignments by strategy.
 - running this file directly unit tests the pairing strategies
 """
 
-from exploration_data import get_exploration_data
-
 import unittest
 from enum import StrEnum
+
+from exploration_data import get_exploration_data
 
 # number of nearest/cheapest roots to consider for pairing
 PAIRING_TOP_N = 3
@@ -311,7 +311,16 @@ class TestPairingStrategies(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    import time
+    import api_data_store as ds
+    from api_common import set_logger
+
+    set_logger(ds.get_config("config"))
+
+    start_time = time.time()
     data = get_exploration_data()
+    print(f"Loading exploration data took {time.time() - start_time:.2f}s")
+
     print("Pairing data:")
     print(f"{len(data.capitals)} territories and {len(data.towns)} towns.")
     print(f"Territory capitals: {data.capitals}")

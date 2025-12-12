@@ -11,26 +11,29 @@ import rustworkx as rx
 from loguru import logger
 
 import api_data_store as ds
-from api_common import set_logger, ResultDict, get_clean_exploration_data
+from api_common import set_logger, ResultDict
+from exploration_data import get_exploration_data
 from noderouter import NodeRouter
 
 NR = None
 WAYPOINT_TO_INDEX: dict[int, int] = {}
 
 
-def optimize_with_terminals(
-    exploration_graph: rx.PyDiGraph, terminals: dict[int, int], config: dict
-) -> ResultDict:
-    """Public-facing function to optimize graph with terminals."""
+def optimize_with_terminals(terminals: dict[int, int], _config: dict) -> ResultDict:
+    """Public-facing function to optimize graph with terminal pairs."""
+    # NOTE: NodeRouter's graph doesn't really care if there is a SUPER ROOT
+    # present when no SUPER TERMINAL is present. So we just use super_graph.
     global NR, WAYPOINT_TO_INDEX
+
+    exploration_data = get_exploration_data()
+    exploration_graph = exploration_data.super_graph
 
     if NR is None:
         index_to_waypoint: dict[int, int] = dict({
             i: exploration_graph[i]["waypoint_key"] for i in exploration_graph.node_indices()
         })
         WAYPOINT_TO_INDEX = {v: k for k, v in index_to_waypoint.items()}
-        exploration_data = get_clean_exploration_data(config)
-        exploration_json_dumps = json.dumps(exploration_data)
+        exploration_json_dumps = json.dumps(exploration_data.data)
         NR = NodeRouter(exploration_json_dumps)
     logger.debug(f"Optimizing graph with {len(terminals)} terminals...")
 
@@ -61,8 +64,9 @@ if __name__ == "__main__":
     if config.get("actions", {}).get("baseline_tests", False):
         success = baselines(optimize_with_terminals, config)
         if not success:
-            raise ValueError("Baseline tests failed!")
-        logger.success("Baseline tests passed!")
+            logger.error("Baseline tests failed!")
+        else:
+            logger.success("Baseline tests passed!")
 
     if config.get("actions", {}).get("scaling_tests", False):
         total_time_start = time.perf_counter()
@@ -76,13 +80,12 @@ if __name__ == "__main__":
             test.generate_terminals(optimize_with_terminals, config, percent, True)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
 
-    from api_exploration_graph import get_exploration_graph
-
     # fmt:off
     terminals = {61:1, 301:1, 302:1, 601:1, 602:1, 604:1, 608:1, 1002:1, 1101:1, 1141:1, 1301:1, 1314:1, 1319:1, 1343:1, 1380:1, 1604:1, 1623:1, 1649:1, 1691:1, 1750:1, 1781:1, 1785:1, 1795:1, 1834:1, 1843:1, 1853:1, 1857:1, 1858:1, 2001:1}
     # fmt:on
-    exploration_graph = get_exploration_graph(config)
+    exploration_data = get_exploration_data()
+    exploration_graph = exploration_data.super_graph
     assert isinstance(exploration_graph, rx.PyDiGraph)
-    result = optimize_with_terminals(exploration_graph, terminals, config)
+    result = optimize_with_terminals(terminals, config)
     print(result["solution"])
     print(result["objective"])

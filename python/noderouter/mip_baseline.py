@@ -11,35 +11,44 @@ Given:
 """
 
 from __future__ import annotations
+from copy import deepcopy
 import time
 
 from loguru import logger
-import rustworkx as rx
 
 import api_data_store as ds
 from api_common import set_logger, ResultDict, SUPER_ROOT
-from api_rx_pydigraph import set_graph_terminal_sets_attribute, inject_super_root
+from api_rx_pydigraph import set_graph_terminal_sets_attribute
 from api_highs_model import get_highs, create_model, solve
 from api_solution_handling import extract_solution_from_x_vars
+from exploration_data import get_exploration_data
 
 
-def optimize_with_terminals(exploration_graph: rx.PyDiGraph, terminals: dict, config: dict) -> ResultDict:
-    G = exploration_graph
+def optimize_with_terminals(terminals: dict, config: dict) -> ResultDict:
+    """Public-facing function to optimize graph with terminal pairs."""
+    # NOTE: The MIP solver (HiGHS) model will have many extra variables if
+    # there is a SUPER ROOT present when no SUPER TERMINAL is present.
+    # So we need to test for this and use the correct exploration graph.
+    exploration_data = get_exploration_data()
 
-    if SUPER_ROOT in terminals.values():
-        inject_super_root(config, G)
-    set_graph_terminal_sets_attribute(G, terminals)
+    has_super = SUPER_ROOT in terminals.values()
+    if has_super:
+        exploration_graph = deepcopy(exploration_data.super_graph.copy())
+    else:
+        exploration_graph = deepcopy(exploration_data.graph.copy())
+
+    set_graph_terminal_sets_attribute(exploration_graph, terminals)
 
     logger.debug(f"Optimizing with terminals: {terminals}")
 
     model = get_highs(config)
-    model, vars = create_model(model, graph=G)
+    model, vars = create_model(model, graph=exploration_graph)
 
     start_time = time.perf_counter()
     model = solve(model, config)
     duration = time.perf_counter() - start_time
 
-    solution_graph = extract_solution_from_x_vars(model, vars, G, config)
+    solution_graph = extract_solution_from_x_vars(model, vars, exploration_graph, config)
 
     objective_value = model.getObjectiveValue()
     objective_value = round(objective_value) if objective_value else 0

@@ -1,6 +1,5 @@
 # testing_baselines.py
 from collections.abc import Callable, Mapping
-from copy import deepcopy
 import time
 from typing import Any
 
@@ -8,11 +7,11 @@ from loguru import logger
 import rustworkx as rx
 
 from api_common import set_logger, SUPER_ROOT
-from api_exploration_graph import get_exploration_graph
+from exploration_data import get_exploration_data
 
 
 def baselines(
-    optimization_fn: Callable[[rx.PyDiGraph, dict, dict], Mapping[str, Any]],
+    optimization_fn: Callable[[dict, dict], Mapping[str, Any]],
     config: dict,
 ) -> bool:
     """
@@ -83,14 +82,14 @@ def baselines(
 
     logger.info(f"*** Solving {config.get('name', 'unknown')} ***")
 
-    exploration_graph = get_exploration_graph(config)
+    exploration_data = get_exploration_data()
+    exploration_graph = exploration_data.graph
     assert isinstance(exploration_graph, rx.PyDiGraph)
 
     start_time = time.perf_counter()
     all_pass = True
     for test_name, terminals, expected_value in test_cases:
-        graph = deepcopy(exploration_graph.copy())
-        result = optimization_fn(graph, terminals, config)
+        result = optimization_fn(terminals, config)
         all_pass &= _validate_baselines(test_name, result, expected_value, config)
 
     logger.info(f"Total testing time: {(time.perf_counter() - start_time):.6f}s")
@@ -123,7 +122,7 @@ def _validate_baselines(
     logger.info(f"Connected components: {len(rx.strongly_connected_components(solution_graph))}")
 
     success = True
-    if result["objective_value"] != expected_objective_value:
+    if result["objective"] != expected_objective_value:
         logger.error(f"❌ Test: {name}: fail optimization")
         success = False
     elif objective != expected_objective_value:
