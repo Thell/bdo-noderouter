@@ -19,6 +19,11 @@ def read_text(filename: str) -> str:
     return path().joinpath(filename).read_text(encoding="utf-8")
 
 
+def write_text(filename: str, content: str) -> None:
+    with path().joinpath(filename).open("w", encoding="utf-8") as data_file:
+        data_file.write(content)
+
+
 def read_strings_csv(filename: str) -> dict:
     import csv
 
@@ -46,6 +51,11 @@ def write_json(filename: str, data: dict | str) -> None:
 def read_toml(path: Path) -> dict:
     with path.open("rb") as f:
         return tomllib.load(f)
+
+
+def remove_file(filename: str) -> None:
+    path().joinpath(filename).unlink()
+    return
 
 
 def initialized(last_sha: str, filenames: list[str]) -> bool:
