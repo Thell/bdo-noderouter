@@ -1,4 +1,4 @@
-# testing_terminal_pairs.py
+# pairing_strategy.py
 
 """
 terminal, root pair assignments by strategy.
