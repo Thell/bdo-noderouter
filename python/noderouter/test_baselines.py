@@ -12,6 +12,43 @@ from api_exploration_data import get_exploration_data, SUPER_ROOT
 from orchestrator_types import Solution, OptimizationFn
 
 
+def _validate_baselines(
+    name: str,
+    solution: Solution,
+    expected_objective_value: int,
+    _config: dict,
+) -> bool:
+    """
+    Validate baseline test results.
+
+    Args:
+        name: Test case name.
+        result: Optimization result.
+        expected_objective_value: Expected objective value.
+        config: Configuration dictionary.
+
+    Returns:
+        True if test passes, False otherwise.
+    """
+    objective = solution.cost
+
+    logger.info(f"Expected Cost: {expected_objective_value}, Actual: {objective}")
+    logger.info(f"Connected components: {solution.num_components}")
+
+    success = True
+    if objective != expected_objective_value:
+        logger.error(f"❌ Test: {name}: fail optimization")
+        success = False
+    elif objective != expected_objective_value:
+        logger.warning(f"🟠 Test: {name}: fail extraction")
+        success = False
+    else:
+        logger.success(f"✅ Test: {name}: success")
+
+    logger.info("=" * 100)
+    return success
+
+
 def baselines(
     optimization_fn: OptimizationFn,
     config: dict,
@@ -96,40 +133,3 @@ def baselines(
 
     logger.info(f"Total testing time: {(time.perf_counter() - start_time):.6f}s")
     return all_pass
-
-
-def _validate_baselines(
-    name: str,
-    result: Solution,
-    expected_objective_value: int,
-    _config: dict,
-) -> bool:
-    """
-    Validate baseline test results.
-
-    Args:
-        name: Test case name.
-        result: Optimization result.
-        expected_objective_value: Expected objective value.
-        config: Configuration dictionary.
-
-    Returns:
-        True if test passes, False otherwise.
-    """
-    objective = result.cost
-
-    logger.info(f"Expected Cost: {expected_objective_value}, Actual: {objective}")
-    logger.info(f"Connected components: {result.num_components}")
-
-    success = True
-    if objective != expected_objective_value:
-        logger.error(f"❌ Test: {name}: fail optimization")
-        success = False
-    elif objective != expected_objective_value:
-        logger.warning(f"🟠 Test: {name}: fail extraction")
-        success = False
-    else:
-        logger.success(f"✅ Test: {name}: success")
-
-    logger.info("=" * 100)
-    return success
