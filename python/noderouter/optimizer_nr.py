@@ -10,79 +10,26 @@ import time
 import rustworkx as rx
 from loguru import logger
 
-import api_data_store as ds
-from api_common import set_logger, memory
 from api_exploration_data import get_exploration_data
 from noderouter import NodeRouter
-from orchestrator_terminal_pairs import PairingStrategy
 from orchestrator import Solution
 
-NR = None
-WAYPOINT_TO_INDEX: dict[int, int] = {}
+_NODEROUTER: NodeRouter | None = None
 
 
-def optimize_with_terminals(terminals: dict[int, int], _config: dict) -> Solution:
-    """Public-facing function to optimize graph with terminal pairs."""
-    # NOTE: NodeRouter's graph doesn't really care if there is a SUPER ROOT
-    # present when no SUPER TERMINAL is present. So we just use super_graph.
-    global NR, WAYPOINT_TO_INDEX
-
-    exploration_data = get_exploration_data()
-    exploration_graph = exploration_data.super_graph
-
-    if NR is None:
-        index_to_waypoint: dict[int, int] = dict({
-            i: exploration_graph[i]["waypoint_key"] for i in exploration_graph.node_indices()
-        })
-        WAYPOINT_TO_INDEX = {v: k for k, v in index_to_waypoint.items()}
-        exploration_json_dumps = json.dumps(exploration_data.data)
-        NR = NodeRouter(exploration_json_dumps)
+def _optimize_with_terminals(nr: NodeRouter, terminals: dict[int, int]) -> Solution:
     logger.debug(f"Optimizing graph with {len(terminals)} terminals...")
 
-    start_time = time.perf_counter()
-    solution_waypoints, cost = NR.solve_for_terminal_pairs(list(terminals.items()))
-    duration = time.perf_counter() - start_time
-    NR = None  # Resetting releases the NodeRouter instance.
-
-    solution_indices = [WAYPOINT_TO_INDEX[w] for w in solution_waypoints]
-    solution_graph = exploration_graph.subgraph(solution_indices)
-
-    logger.info(f"solution time (ms): {duration * 1000:.2f}")
-
-    return Solution(
-        duration=duration,
-        cost=cost,
-        num_nodes=solution_graph.num_nodes(),
-        num_edges=solution_graph.num_edges(),
-        num_components=len(rx.strongly_connected_components(solution_graph)),
-        waypoints=solution_waypoints,
-    )
-
-
-def optimize_with_terminals_single(terminals: dict[int, int], _config: dict) -> Solution:
-    """Visualizer function to optimize graph with terminal pairs."""
-    # NOTE: NodeRouter's graph doesn't really care if there is a SUPER ROOT
-    # present when no SUPER TERMINAL is present. So we just use super_graph.
-    exploration_data = get_exploration_data()
-    exploration_graph = exploration_data.super_graph
-
-    index_to_waypoint: dict[int, int] = dict({
-        i: exploration_graph[i]["waypoint_key"] for i in exploration_graph.node_indices()
-    })
-    waypoint_to_index = {v: k for k, v in index_to_waypoint.items()}
-
-    exploration_json_dumps = json.dumps(exploration_data.data)
-    nr = NodeRouter(exploration_json_dumps)
-
-    logger.debug(f"Optimizing graph with {len(terminals)} terminals...")
     start_time = time.perf_counter()
     solution_waypoints, cost = nr.solve_for_terminal_pairs(list(terminals.items()))
     duration = time.perf_counter() - start_time
-
-    solution_indices = [waypoint_to_index[w] for w in solution_waypoints]
-    solution_graph = exploration_graph.subgraph(solution_indices)
-
     logger.info(f"solution time (ms): {duration * 1000:.2f}")
+
+    exploration_graph = get_exploration_data().super_graph
+    node_key_by_index = exploration_graph.attrs["node_key_by_index"]
+
+    solution_indices = [node_key_by_index.inv[w] for w in solution_waypoints]
+    solution_graph = exploration_graph.subgraph(solution_indices)
 
     return Solution(
         duration=duration,
@@ -94,7 +41,41 @@ def optimize_with_terminals_single(terminals: dict[int, int], _config: dict) -> 
     )
 
 
+def optimize_with_terminals(terminals: dict[int, int], _config: dict) -> Solution:
+    """Primary optimization entry point using a long-lived NodeRouter instance.
+
+    The NodeRouter instance is constructed once and reused across calls to avoid
+    repeated initialization overhead.
+
+    SAFETY: Not thread-safe. The underlying Rust implementation is not Send;
+    moving the instance across thread boundaries will panic.
+    """
+    global _NODEROUTER
+    if _NODEROUTER is None:
+        exploration_data = get_exploration_data()
+        exploration_json_dumps = json.dumps(exploration_data.data)
+        _NODEROUTER = NodeRouter(exploration_json_dumps)
+
+    return _optimize_with_terminals(_NODEROUTER, terminals)
+
+
+def optimize_with_terminals_single(terminals: dict[int, int], _config: dict) -> Solution:
+    """One-off optimization creating a fresh NodeRouter instance each call.
+
+    Constructs and immediately destroys the NodeRouter within the same thread,
+    avoiding any cross-thread lifetime issues.
+
+    SAFETY: Thread-safe.
+    """
+    exploration_data = get_exploration_data()
+    exploration_json_dumps = json.dumps(exploration_data.data)
+    nr = NodeRouter(exploration_json_dumps)
+    return _optimize_with_terminals(nr, terminals)
+
+
 if __name__ == "__main__":
+    import api_data_store as ds
+    from api_common import set_logger
     from orchestrator import execute_plan, Plan
     from orchestrator_terminal_pairs import PairingStrategy
     from test_baselines import baselines
