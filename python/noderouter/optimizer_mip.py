@@ -27,19 +27,20 @@ from orchestrator import Solution
 
 
 def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
-    """Public-facing function to optimize graph with terminal pairs."""
-    # NOTE: The MIP solver (HiGHS) model will have many extra variables if
-    # there is a SUPER ROOT present when no SUPER TERMINAL is present.
-    exploration_data = get_exploration_data()
+    """Optimization entry point using the HiGHS MIP solver."""
+    logger.debug(f"Optimizing with terminals: {terminals}")
 
+    # NOTE: The MIP problem will have many extra variables if there
+    #       is a SUPER ROOT present when no SUPER TERMINAL is present.
+    exploration_data = get_exploration_data()
     has_super = SUPER_ROOT in terminals.values()
+
+    # SAFETY: Deepcopy is required to avoid modifying the original graph upon attribute modification
     if has_super:
         exploration_graph = deepcopy(exploration_data.super_graph.copy())
     else:
         exploration_graph = deepcopy(exploration_data.graph.copy())
-
     set_graph_terminal_sets_attribute(exploration_graph, terminals)
-    logger.debug(f"Optimizing with terminals: {terminals}")
 
     model = get_highs(config)
     model, vars = create_model(model, graph=exploration_graph)
