@@ -13,6 +13,10 @@ MAX_BUDGET = 550
 
 
 def set_logger(config: dict):
+    """Sets logger accoring to the config dict's 'logger' options.
+
+    Defaults to short format INFO logging to stdout.
+    """
     log_level = config.get("logger", {}).get("level", "INFO")
     log_format = config.get("logger", {}).get("format", "<level>{message}</level>")
     logger.remove()
