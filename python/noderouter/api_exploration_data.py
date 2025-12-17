@@ -48,6 +48,8 @@ class GraphCoords:
     """
     Handles coordinate extraction and mapping between geographic (lat/lon)
     and scaled Cartesian (x/y) coordinates derived from graph node attributes x,z.
+
+    NOTE: coord entries are based on nodes in super_graph.
     """
 
     def __init__(self, G, scale: float = TILE_SCALE):
@@ -98,6 +100,11 @@ class GraphCoords:
 
 @dataclass
 class ExplorationData:
+    """Exploration data container with cached properties for the most common operations.
+
+    Note: Methods are not cached.
+    """
+
     data: dict[int, dict]
     hash: str
 
@@ -216,6 +223,7 @@ class ExplorationData:
         return rng.sample(self.plantzones, min(num_workers, self.max_plantzone_count))
 
     def select_dangers(self, selected_terminal_count: int, rng: random.Random) -> list[int]:
+        # NOTE: The artificial limit of terminal count / 25 is to prevent to many dangers.
         danger_count = max(round(selected_terminal_count / 25), 1)
         return rng.sample(self.dangers, danger_count)
 
