@@ -36,14 +36,12 @@ def get_highs(config: dict) -> Highs:
 
 
 def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
-    """Populates model with variables and constraints using a model of type and
-    arguments in kwargs which is passed to the create_model function.
+    """Populates HiGHS model using the graph in kwargs['graph'].
 
     Requires:
       - the kwarg 'graph'
       - a graph with attrs member containing 'terminal_sets' and 'terminals'
       - requires nodes with a payload containing 'need_exploration_point'
-
     """
     logger.debug("Creating MIP Baseline model using highspy...")
 
@@ -80,7 +78,7 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
 
     # Constraints
 
-    # Node/flow based constraints
+    # Node/flow based constraints (terminals are sources and roots are sinks)
     all_terminals = terminal_sets.keys() | set().union(*terminal_sets.values())
     for i in G.node_indices():
         predecessors = G.predecessor_indices(i)
@@ -108,12 +106,12 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
             out_flow = model.qsum(f_k[k, i, j] for j in successors)
 
             if i == k:
-                # Flow at root node
+                # Flow at root node (sink)
                 model.addConstr(out_flow == 0)
                 model.addConstr(in_flow == len(terminal_set))
 
             elif i in terminal_set:
-                # Flow at terminal node
+                # Flow at terminal node (source)
                 model.addConstr(out_flow - in_flow == 1)
 
             else:
@@ -276,7 +274,7 @@ def extract_solution(model: Highs, vars: dict, G: rx.PyDiGraph, config: dict) ->
 
     solution_graph = subgraph_stable(G, solution_nodes)
     if solution_graph.num_nodes() == 0:
-        # This is an error but not fatal because some input may be self looped
+        # NOTE: This is an error but not fatal because input can be contrived to cause this.
         logger.error("Result is an empty solution.")
         return solution_graph
 
@@ -287,32 +285,32 @@ def extract_solution(model: Highs, vars: dict, G: rx.PyDiGraph, config: dict) ->
 
 def _cleanup_solution(solution_graph: rx.PyDiGraph):
     """Cleanup solution: remove nodes not used in any path of terminal_sets."""
-    # Since the mip model's objective is to minimize cost and not terminal or
+    # NOTE: Since the mip model's objective is to minimize cost and not terminal or
     # edge counts zero-cost nodes/edges can be present in the solution.
-    # To follow a least inclusive solution mind-set we remove these nodes.
+    # Following a least inclusive solution mind-set we remove these nodes.
     logger.info("Cleaning solution...")
 
     terminal_sets = solution_graph.attrs["terminal_sets"]
     node_key_by_index = solution_graph.attrs["node_key_by_index"]
     root_indices_in_graph = {v for v in solution_graph.node_indices() if solution_graph[v]["is_base_town"]}
 
-    # remove any isolated nodes
+    # Isolated node removal
     isolates = list(rx.isolates(solution_graph))
-    # sanity check - it would be an error if any isolates were not 0 cost nodes
     isolate_cost = sum([solution_graph[i]["need_exploration_point"] for i in isolates])
+    # Sanity check
     if isolate_cost > 0:
         logger.error(f"  isolates cost: {isolate_cost}")
         raise ValueError("Something is wrong with the mip model!")
     solution_graph.remove_nodes_from(isolates)
 
-    # remove any unused nodes
-    # first accumulate all nodes from each terminal to root path
+    # Unused node removal...
+    # First accumulate all nodes from each terminal to root path
     used_nodes = set()
     for r_index, terminal_set in terminal_sets.items():
         r_key = node_key_by_index[r_index]
         for t_index in terminal_set:
             if r_key == SUPER_ROOT:
-                # a super root can connect to any base town
+                # Super Terminals must connect to a base town
                 for potential_root in root_indices_in_graph:
                     if potential_root != SUPER_ROOT:
                         if not rx.has_path(solution_graph, potential_root, t_index):
@@ -322,10 +320,9 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
                         used_nodes.add(potential_root)
                         break
                 else:
-                    # A super terminal not connected to any base town is an error
                     raise ValueError("Something is wrong with the mip model!")
             else:
-                # a terminal not connected to its root is an error
+                # Terminals must connect to assigned root
                 if not rx.has_path(solution_graph, r_index, t_index):
                     raise ValueError("Something is wrong with the mip model!")
                 path = rx.dijkstra_shortest_paths(solution_graph, r_index, t_index)
@@ -335,7 +332,7 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
     logger.debug(
         f"  removing {len(unused_nodes)} unused nodes! ({[node_key_by_index[i] for i in unused_nodes]})"
     )
-    # sanity check - it would be an error if any unused nodes were not 0 cost nodes
+    # Sanity check
     unused_cost = sum([solution_graph[i]["need_exploration_point"] for i in unused_nodes])
     if unused_cost > 0:
         logger.error(f"  unused nodes cost: {unused_cost}")
