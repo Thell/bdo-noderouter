@@ -1,4 +1,4 @@
-# highs_model_api.py
+# api_highs_solver.py
 
 from dataclasses import dataclass
 from multiprocessing import cpu_count
@@ -6,10 +6,13 @@ from threading import Lock, Thread
 import queue
 import time
 
-from highspy import Highs, kHighsInf, ObjSense
+from highspy import Highs, HighsModelStatus, kHighsInf, ObjSense
 from loguru import logger
 import numpy as np
 import rustworkx as rx
+
+from api_rx_pydigraph import subgraph_stable
+from api_exploration_data import SUPER_ROOT
 
 
 @dataclass
@@ -254,3 +257,87 @@ def solve(model: Highs, config: dict) -> Highs:
         print(message, end="")
 
     return clones[first_to_finish]
+
+
+def extract_solution(model: Highs, vars: dict, G: rx.PyDiGraph, config: dict) -> rx.PyDiGraph:
+    """Create a subgraph from the graph consisting of the node x vars from the solved model."""
+    logger.debug("Extracting solution from x vars from highspy...")
+
+    x_vars = vars["x"]
+
+    solution_nodes = []
+    status = model.getModelStatus()
+    if status == HighsModelStatus.kOptimal or HighsModelStatus.kInterrupt:
+        col_values = model.getSolution().col_value
+        solution_nodes = [i for i in G.node_indices() if round(col_values[x_vars[i].index]) == 1]
+    else:
+        logger.error(f"ERROR: Non optimal result status of {status}!")
+        raise ValueError("Non optimal result status!")
+
+    solution_graph = subgraph_stable(G, solution_nodes)
+    if solution_graph.num_nodes() == 0:
+        # This is an error but not fatal because some input may be self looped
+        logger.error("Result is an empty solution.")
+        return solution_graph
+
+    _cleanup_solution(solution_graph)
+
+    return solution_graph
+
+
+def _cleanup_solution(solution_graph: rx.PyDiGraph):
+    """Cleanup solution: remove nodes not used in any path of terminal_sets."""
+    # Since the mip model's objective is to minimize cost and not terminal or
+    # edge counts zero-cost nodes/edges can be present in the solution.
+    # To follow a least inclusive solution mind-set we remove these nodes.
+    logger.info("Cleaning solution...")
+
+    terminal_sets = solution_graph.attrs["terminal_sets"]
+    node_key_by_index = solution_graph.attrs["node_key_by_index"]
+    root_indices_in_graph = {v for v in solution_graph.node_indices() if solution_graph[v]["is_base_town"]}
+
+    # remove any isolated nodes
+    isolates = list(rx.isolates(solution_graph))
+    # sanity check - it would be an error if any isolates were not 0 cost nodes
+    isolate_cost = sum([solution_graph[i]["need_exploration_point"] for i in isolates])
+    if isolate_cost > 0:
+        logger.error(f"  isolates cost: {isolate_cost}")
+        raise ValueError("Something is wrong with the mip model!")
+    solution_graph.remove_nodes_from(isolates)
+
+    # remove any unused nodes
+    # first accumulate all nodes from each terminal to root path
+    used_nodes = set()
+    for r_index, terminal_set in terminal_sets.items():
+        r_key = node_key_by_index[r_index]
+        for t_index in terminal_set:
+            if r_key == SUPER_ROOT:
+                # a super root can connect to any base town
+                for potential_root in root_indices_in_graph:
+                    if potential_root != SUPER_ROOT:
+                        if not rx.has_path(solution_graph, potential_root, t_index):
+                            continue
+                        path = rx.dijkstra_shortest_paths(solution_graph, potential_root, t_index)
+                        used_nodes.update(path[t_index])
+                        used_nodes.add(potential_root)
+                        break
+                else:
+                    # A super terminal not connected to any base town is an error
+                    raise ValueError("Something is wrong with the mip model!")
+            else:
+                # a terminal not connected to its root is an error
+                if not rx.has_path(solution_graph, r_index, t_index):
+                    raise ValueError("Something is wrong with the mip model!")
+                path = rx.dijkstra_shortest_paths(solution_graph, r_index, t_index)
+                used_nodes.update(path[t_index])
+
+    unused_nodes = list(set(solution_graph.node_indices()) - used_nodes)
+    logger.debug(
+        f"  removing {len(unused_nodes)} unused nodes! ({[node_key_by_index[i] for i in unused_nodes]})"
+    )
+    # sanity check - it would be an error if any unused nodes were not 0 cost nodes
+    unused_cost = sum([solution_graph[i]["need_exploration_point"] for i in unused_nodes])
+    if unused_cost > 0:
+        logger.error(f"  unused nodes cost: {unused_cost}")
+        raise ValueError("Something is wrong with the mip model!")
+    solution_graph.remove_nodes_from(unused_nodes)

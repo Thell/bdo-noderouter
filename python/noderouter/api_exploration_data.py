@@ -1,18 +1,99 @@
-# exploration_data.py
+# api_exploration_data.py
 
-import random
+from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import IntEnum
 from functools import cached_property, lru_cache
+import random
 from typing import Any
 
 from bidict import bidict
-from joblib import Memory
 from loguru import logger
 from rustworkx import PyDiGraph
+from shapely.geometry import Point, MultiPoint
 
-from api_common import NodeType
+from api_common import memory
 
-memory = Memory(location=".cache", verbose=0)
+
+# Constants
+GREAT_OCEAN_TERRITORY = 5
+OQUILLAS_EYE_KEY = 1727
+SUPER_ROOT = 99999
+TILE_SCALE = 12800
+
+
+class NodeType(IntEnum):
+    """Exploration node types."""
+
+    normal = 0
+    village = 1
+    city = 2
+    gate = 3
+    farm = 4
+    trade = 5
+    collect = 6
+    quarry = 7
+    logging = 8
+    dangerous = 9
+    finance = 10
+    fish_trap = 11
+    minor_finance = 12
+    monopoly_farm = 13
+    craft = 14
+    excavation = 15
+    count = 16
+
+
+class GraphCoords:
+    """
+    Handles coordinate extraction and mapping between geographic (lat/lon)
+    and scaled Cartesian (x/y) coordinates derived from graph node attributes x,z.
+    """
+
+    def __init__(self, G, scale: float = TILE_SCALE):
+        self.G = G
+        self.scale = scale
+        self.xz = {
+            n: (G[n]["position"]["x"] / scale, G[n]["position"]["z"] / scale) for n in G.node_indices()
+        }
+
+    # Single-node accessors
+    def as_cartesian(self, idx: int) -> tuple[float, float]:
+        return self.xz[idx]
+
+    def as_geographic(self, idx: int) -> tuple[float, float]:
+        x, z = self.xz[idx]
+        return (z, x)
+
+    def as_cartesian_point(self, idx: int) -> Point:
+        x, z = self.xz[idx]
+        return Point(x, z)
+
+    def as_geographic_point(self, idx: int) -> Point:
+        lat, lon = self.as_geographic(idx)
+        return Point(lon, lat)
+
+    # Iterable versions
+    def _indices(self, indices: Iterable[int] | None) -> Iterable[int]:
+        return indices if indices is not None else self.xz.keys()
+
+    def as_cartesians(self, indices: Iterable[int] | None = None) -> list[tuple[float, float]]:
+        return [self.as_cartesian(i) for i in self._indices(indices)]
+
+    def as_geographics(self, indices: Iterable[int] | None = None) -> list[tuple[float, float]]:
+        return [self.as_geographic(i) for i in self._indices(indices)]
+
+    def as_cartesian_points(self, indices: Iterable[int] | None = None) -> list[Point]:
+        return [self.as_cartesian_point(i) for i in self._indices(indices)]
+
+    def as_geographic_points(self, indices: Iterable[int] | None = None) -> list[Point]:
+        return [self.as_geographic_point(i) for i in self._indices(indices)]
+
+    def as_cartesian_multipoint(self, indices: Iterable[int] | None = None) -> MultiPoint:
+        return MultiPoint(self.as_cartesian_points(indices))
+
+    def as_geographic_multipoint(self, indices: Iterable[int] | None = None) -> MultiPoint:
+        return MultiPoint(self.as_geographic_points(indices))
 
 
 @dataclass
@@ -43,6 +124,11 @@ class ExplorationData:
     def cartesian_distances(self) -> dict[tuple[int, int], float]:
         """Lazily calculates cartesian distances, leveraging the joblib function cache."""
         return _get_all_pairs_cartesian_distances(self.data)
+
+    @cached_property
+    def coords(self) -> GraphCoords:
+        """Scaled coordinate accessors."""
+        return GraphCoords(self.graph)
 
     @cached_property
     def plantzones(self) -> list[int]:
@@ -125,13 +211,13 @@ class ExplorationData:
     def towns_in_territory(self, territory: int) -> list[int]:
         return self.territory_towns[territory]
 
-    def select_terminals(self, worker_percent: int, random: random.Random) -> list[int]:
+    def select_terminals(self, worker_percent: int, rng: random.Random) -> list[int]:
         num_workers = int(self.max_plantzone_count * worker_percent / 100)
-        return random.sample(self.plantzones, min(num_workers, self.max_plantzone_count))
+        return rng.sample(self.plantzones, min(num_workers, self.max_plantzone_count))
 
-    def select_dangers(self, selected_terminal_count: int, random: random.Random) -> list[int]:
+    def select_dangers(self, selected_terminal_count: int, rng: random.Random) -> list[int]:
         danger_count = max(round(selected_terminal_count / 25), 1)
-        return random.sample(self.dangers, danger_count)
+        return rng.sample(self.dangers, danger_count)
 
 
 # This is a singleton, upon initialization it will invalidate the joblib cache
@@ -200,7 +286,6 @@ def _get_clean_exploration_data(hash_key: str):
     """
     logger.trace("_get_clean_exploration_data")
     import api_data_store as ds
-    from api_common import GREAT_OCEAN_TERRITORY
 
     logger.trace("get_clean_exploration_data")
 
@@ -326,7 +411,9 @@ def _get_all_pairs_cartesian_distances(exploration_data: dict) -> dict[tuple[int
     }
 
 
-@memory.cache
+# TODO: Research why the @memory.cache decorator doesn't work for this function
+# most likely because it modifies the graph in place instead of returning a new graph
+# @memory.cache
 def _inject_super_root(G: PyDiGraph, super_root: dict[str, Any]):
     """Injects the superroot node into the graph using arcs between the super root
     and all nodes in its "link_list".
@@ -334,8 +421,6 @@ def _inject_super_root(G: PyDiGraph, super_root: dict[str, Any]):
     NOTE: Flow for Super Root is always inbound. In terms of source, sink the terminals
     are the sources and the super root is the sink.
     """
-    from api_common import SUPER_ROOT
-
     logger.debug("Injecting super root...")
 
     if "node_key_by_index" not in G.attrs:

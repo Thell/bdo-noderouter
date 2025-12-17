@@ -1,17 +1,19 @@
-# testing_baselines.py
-from collections.abc import Callable, Mapping
+# test_baselines.py
+
+"""Baseline unit tests for simple cases."""
+
 import time
-from typing import Any
 
 from loguru import logger
 import rustworkx as rx
 
-from api_common import set_logger, SUPER_ROOT
-from exploration_data import get_exploration_data
+from api_common import set_logger
+from api_exploration_data import get_exploration_data, SUPER_ROOT
+from orchestrator_types import Solution, OptimizationFn
 
 
 def baselines(
-    optimization_fn: Callable[[dict, dict], Mapping[str, Any]],
+    optimization_fn: OptimizationFn,
     config: dict,
 ) -> bool:
     """
@@ -98,9 +100,9 @@ def baselines(
 
 def _validate_baselines(
     name: str,
-    result: Mapping[str, Any],
+    result: Solution,
     expected_objective_value: int,
-    config: dict,
+    _config: dict,
 ) -> bool:
     """
     Validate baseline test results.
@@ -114,15 +116,13 @@ def _validate_baselines(
     Returns:
         True if test passes, False otherwise.
     """
-    solution_graph = result["solution_graph"]
-    assert isinstance(solution_graph, rx.PyDiGraph)
-    objective = result["objective"]
+    objective = result.cost
 
     logger.info(f"Expected Cost: {expected_objective_value}, Actual: {objective}")
-    logger.info(f"Connected components: {len(rx.strongly_connected_components(solution_graph))}")
+    logger.info(f"Connected components: {result.num_components}")
 
     success = True
-    if result["objective"] != expected_objective_value:
+    if objective != expected_objective_value:
         logger.error(f"❌ Test: {name}: fail optimization")
         success = False
     elif objective != expected_objective_value:

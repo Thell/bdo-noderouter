@@ -1,4 +1,4 @@
-# data_store.py
+# api_data_store.py
 
 import importlib.resources
 import json
@@ -35,7 +35,17 @@ def read_strings_csv(filename: str) -> dict:
 
 def read_json(filename: str) -> dict:
     content = read_text(filename)
-    return json.loads(content)
+
+    def convert_keys_to_int(obj_pairs):
+        new_dict = {}
+        for k, v in obj_pairs:
+            try:
+                new_dict[int(k)] = v
+            except ValueError:
+                new_dict[k] = v  # Keep as string if not convertible to int
+        return new_dict
+
+    return json.loads(content, object_pairs_hook=convert_keys_to_int)
 
 
 def write_json(filename: str, data: dict | str) -> None:
@@ -58,10 +68,10 @@ def remove_file(filename: str) -> None:
     return
 
 
-def initialized(last_sha: str, filenames: list[str]) -> bool:
-    filename = "git_commit.txt"
-    current_sha = read_text(filename) if is_file(filename) else None
-    return last_sha == current_sha and all(is_file(f) for f in filenames)
+# def initialized(last_sha: str, filenames: list[str]) -> bool:
+#     filename = "git_commit.txt"
+#     current_sha = read_text(filename) if is_file(filename) else None
+#     return last_sha == current_sha and all(is_file(f) for f in filenames)
 
 
 def get_config(filename: str | Path) -> dict:

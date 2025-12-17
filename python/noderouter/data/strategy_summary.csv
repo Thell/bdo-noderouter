@@ -1,0 +1,16 @@
+strategy,budget,instances,optimal,suboptimal,optimal_percent,avg_terminals,avg_roots,avg_workers,avg_dangers,avg_ratio,worst_ratio,avg_speedup
+cheapest_capital,5,20,20,0,1.0,3.0,2.7,3.0,0.0,1.0,1.0,344.929
+cheapest_town,5,20,20,0,1.0,3.0,2.95,3.0,0.0,1.0,1.0,384.386
+cheapest_town_in_territory,5,20,19,1,0.95,3.0,2.95,3.0,0.0,1.004,1.087,315.299
+nearest_capital,5,20,19,1,0.95,3.0,2.75,3.0,0.0,1.002,1.048,336.658
+nearest_town,5,20,20,0,1.0,3.0,2.95,3.0,0.0,1.0,1.0,321.938
+nearest_town_in_territory,5,20,20,0,1.0,3.0,2.9,3.0,0.0,1.0,1.0,350.844
+random_capital,5,20,12,8,0.6,3.0,2.65,3.0,0.0,1.025,1.109,1242.972
+random_n_cheapest_capital,5,20,17,3,0.85,3.0,2.6,3.0,0.0,1.016,1.257,234.869
+random_n_cheapest_town,5,20,20,0,1.0,3.0,2.9,3.0,0.0,1.0,1.0,227.619
+random_n_cheapest_town_in_territory,5,20,19,1,0.95,3.0,2.85,3.0,0.0,1.004,1.087,257.242
+random_n_nearest_capital,5,20,18,2,0.9,3.0,2.6,3.0,0.0,1.006,1.097,477.416
+random_n_nearest_town,5,20,19,1,0.95,3.0,2.9,3.0,0.0,1.01,1.2,217.328
+random_n_nearest_town_in_territory,5,20,20,0,1.0,3.0,2.8,3.0,0.0,1.0,1.0,311.306
+random_town,5,16,8,8,0.5,3.0,2.75,3.0,0.0,1.033,1.157,1179.228
+territory_capital,5,20,18,2,0.9,3.0,2.7,3.0,0.0,1.005,1.048,286.852
