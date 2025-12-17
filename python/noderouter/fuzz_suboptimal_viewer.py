@@ -116,7 +116,7 @@ class _RootColor:
         # NOTE: Suboptimal roots are those that are in a different component in the
         # noderouter graph than in the mip graph.
         def get_root_groups(G: PyDiGraph) -> dict[int, frozenset[int]]:
-            ccs = rx.weakly_connected_components(G)
+            ccs = rx.strongly_connected_components(G)
             cc_roots = {i: {idx for idx in cc if idx in terminal_sets} for i, cc in enumerate(ccs)}
             return {root: frozenset(roots) for roots in cc_roots.values() for root in roots}
 
@@ -213,14 +213,17 @@ def _add_terminal_sets_markers(m: Map, G: PyDiGraph, root_color: _RootColor) -> 
     coords = get_exploration_data().coords
     terminal_sets = G.attrs["terminal_sets"]
 
-    for root, terminal_set in terminal_sets.items():
+    for root in sorted(list(terminal_sets)):
+        terminal_set = terminal_sets[root]
+
+        is_suboptimal = root_color.is_suboptimal(root)
         layer_name = f"Terminal Set {G[root]['waypoint_key']}"
-        fg_terminal_set = FeatureGroupSubGroup(fg_terminal_sets_master, name=layer_name, show=False)
+        fg_terminal_set = FeatureGroupSubGroup(fg_terminal_sets_master, name=layer_name, show=is_suboptimal)
         fg_terminal_set.add_to(m)
         terminal_set_feature_groups[layer_name] = fg_terminal_set
 
         active_background_color = root_color.terminal_color(root)
-        active_border_color = "black" if root_color.is_suboptimal(root) else "white"
+        active_border_color = "black" if is_suboptimal else "white"
 
         cost = G[root]["need_exploration_point"]
         key = G[root]["waypoint_key"]
@@ -267,8 +270,8 @@ def _visualize_solution_graphs(
     tile_layer.add_to(m)
 
     logger.debug("Setting up main graph layer...")
-    fg_main_nodes = FeatureGroup(name="Main Nodes", show=True)
-    fg_main_edges = FeatureGroup(name="Main Edges", show=True)
+    fg_main_nodes = FeatureGroup(name="Main Nodes", show=False)
+    fg_main_edges = FeatureGroup(name="Main Edges", show=False)
     _add_node_markers_from_graph(fg_main_nodes, main_graph)
     _add_edges_from_graph(fg_main_edges, main_graph)
 
@@ -378,17 +381,20 @@ def _visualize_instances(
     exploration_data = get_exploration_data()
     if mip_instance.terminals.dangers > 0:
         graph = exploration_data.super_graph
+        # SAFETY: Super root is always the last node
+        super_root = [graph.num_nodes() - 1]
     else:
         graph = exploration_data.graph
+        super_root = []
 
     node_key_by_index = graph.attrs["node_key_by_index"]
 
     # SAFETY: deepcopy is required to avoid modifying the original graph upon attribute modification
-    mip_solution_indices = [node_key_by_index.inv[i] for i in mip_instance.solution.waypoints]
+    mip_solution_indices = super_root + [node_key_by_index.inv[i] for i in mip_instance.solution.waypoints]
     mip_graph = deepcopy(subgraph_stable(graph, mip_solution_indices))
     set_graph_terminal_sets_attribute(mip_graph, nr_instance.terminals.terminals)
 
-    nr_solution_indices = [node_key_by_index.inv[i] for i in nr_instance.solution.waypoints]
+    nr_solution_indices = super_root + [node_key_by_index.inv[i] for i in nr_instance.solution.waypoints]
     nr_graph = deepcopy(subgraph_stable(graph, nr_solution_indices))
     set_graph_terminal_sets_attribute(nr_graph, nr_instance.terminals.terminals)
 
@@ -473,7 +479,7 @@ def _process_selected_plan(plan_data):
     _visualize_instances(mip_instance, nr_instance)
 
 
-def suboptimal_viewer_ui(page: ft.Page):
+def _suboptimal_viewer_ui(page: ft.Page):
     def submit_custom(e):
         try:
             assert (input := custom_input.value)
@@ -526,7 +532,7 @@ def suboptimal_viewer_ui(page: ft.Page):
 
 def main():
     set_logger(ds.get_config("config"))
-    ft.app(target=suboptimal_viewer_ui)
+    ft.app(target=_suboptimal_viewer_ui)
 
 
 if __name__ == "__main__":

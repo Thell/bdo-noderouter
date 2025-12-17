@@ -128,7 +128,7 @@ class ExplorationData:
     @cached_property
     def coords(self) -> GraphCoords:
         """Scaled coordinate accessors."""
-        return GraphCoords(self.graph)
+        return GraphCoords(self.super_graph)
 
     @cached_property
     def plantzones(self) -> list[int]:
