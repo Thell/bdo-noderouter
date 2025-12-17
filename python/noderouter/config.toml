@@ -8,14 +8,11 @@ scaling_tests = true
 level = "SUCCESS"
 format = "<level>{message}</level>"
 
-# The loguru default format string.
+# The loguru default format string (useful when debugging).
 # level = "DEBUG"
 # format = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 
-# Solver is not used by the approximation functions but needs
-# to be present for the current scaling tests setup and will be
-# used in the future for solving the terminal clusters after
-# the approximation.
+# HiGHS MIP solver options.
 [solver]
 log_to_console = false
 mip_heuristic_run_root_reduced_cost = false
