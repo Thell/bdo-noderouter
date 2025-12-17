@@ -37,13 +37,7 @@ def read_json(filename: str) -> dict:
     content = read_text(filename)
 
     def convert_keys_to_int(obj_pairs):
-        new_dict = {}
-        for k, v in obj_pairs:
-            try:
-                new_dict[int(k)] = v
-            except ValueError:
-                new_dict[k] = v  # Keep as string if not convertible to int
-        return new_dict
+        return {int(k) if k.isdigit() else k: v for k, v in obj_pairs}
 
     return json.loads(content, object_pairs_hook=convert_keys_to_int)
 
