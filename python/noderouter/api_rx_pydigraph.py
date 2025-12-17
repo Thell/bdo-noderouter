@@ -27,11 +27,10 @@ def set_graph_terminal_sets_attribute(graph: PyDiGraph, terminals: dict[int, int
 
 
 def subgraph_stable(graph: PyDiGraph, indices: list[int] | set[int], inclusive: bool = True) -> PyDiGraph:
-    """Copies ref graph and deletes all nodes not in indices if inclusive is True.
+    """Shallow copies ref graph and deletes all nodes not in indices if inclusive is True.
+    Generates a 1:1 indexed subgraph of ref_graph eliminating node mapping.
 
-    This generates a subgraph that has 1:1 index matching with ref_graph which eliminates
-    the need for node_map. If any nodes are added to this copy those nodes will **NOT**
-    have the same indices as they would in ref_graph.
+    SAFETY: Nodes added to this copy will NOT have 1:1 indexing with ref_graph.
     """
     sub_graph = graph.copy()
     if not inclusive:
