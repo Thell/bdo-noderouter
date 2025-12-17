@@ -232,6 +232,27 @@ def generate_summary_total(df: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame([padded_strings], schema=total_df.schema, orient="row")
 
 
+def generate_strategy_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame:
+    return (
+        summary_df.group_by("strategy")
+        .agg([
+            pl.lit("-").alias("budget"),
+            pl.col("instances").sum(),
+            pl.col("optimal").sum(),
+            pl.col("suboptimal").sum(),
+            pl.col("optimal_percent").mean(),
+            pl.mean("avg_terminals").alias("avg_terminals"),
+            pl.mean("avg_roots").alias("avg_roots"),
+            pl.mean("avg_workers").alias("avg_workers"),
+            pl.mean("avg_dangers").alias("avg_dangers"),
+            pl.col("avg_ratio").mean(),
+            pl.col("worst_ratio").max(),
+            pl.col("avg_speedup").mean(),
+        ])
+        .sort("strategy")
+    )
+
+
 def generate_suboptimal_breakdown(df: pl.DataFrame) -> pl.DataFrame:
     return (
         df.group_by(["strategy", "include_danger"])
@@ -362,12 +383,14 @@ def generate_summaries(all_cases_df: pl.DataFrame) -> None:
     strategy_df = all_cases_df.filter(pl.col("strategy") != PairingStrategy.optimized.value)
     if not strategy_df.is_empty():
         strategy_df_summary = generate_summary(strategy_df).drop(["include_danger"])
+        strategy_df_aggregate_summary = generate_strategy_aggregate_summary(strategy_df_summary)
         strategy_df_total = generate_summary_total(strategy_df_summary)
         out_path = ds.path() / "strategy_summary.csv"
         strategy_df_summary.with_columns(pl.selectors.float().round(3)).write_csv(out_path)
 
         print("\n### STRATEGY SUMMARY ###")
         print_summary(strategy_df_summary)
+        print_summary(strategy_df_aggregate_summary)
         print_total(strategy_df_total)
 
     # --- Suboptimal breakdown diagnostics ---
