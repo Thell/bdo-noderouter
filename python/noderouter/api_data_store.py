@@ -7,6 +7,7 @@ import tomllib
 
 
 def path() -> Path:
+    """Resolves to {package_dir}/data/"""
     with importlib.resources.as_file(importlib.resources.files().joinpath("data")) as path:
         return path
 
@@ -59,16 +60,10 @@ def read_toml(path: Path) -> dict:
 
 def remove_file(filename: str) -> None:
     path().joinpath(filename).unlink()
-    return
-
-
-# def initialized(last_sha: str, filenames: list[str]) -> bool:
-#     filename = "git_commit.txt"
-#     current_sha = read_text(filename) if is_file(filename) else None
-#     return last_sha == current_sha and all(is_file(f) for f in filenames)
 
 
 def get_config(filename: str | Path) -> dict:
+    """Returns the contents of a TOML file from {project_dir}."""
     if isinstance(filename, str) and not filename.endswith(".toml"):
         project_path = path().parent
         filename = Path(filename).with_suffix(".toml")
