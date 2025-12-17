@@ -11,11 +11,9 @@ import tempfile
 from copy import deepcopy
 from enum import Enum
 
-import branca
 from branca.element import Element
 import colorcet as cc
 import flet as ft
-import matplotlib.colors as mcolors
 import webbrowser
 from folium import CircleMarker, FeatureGroup, Map, Marker, PolyLine, TileLayer
 from folium.plugins import FeatureGroupSubGroup, GroupedLayerControl, BeautifyIcon
@@ -37,6 +35,7 @@ from optimizer_mip import optimize_with_terminals as mip_optimize
 from optimizer_nr import optimize_with_terminals_single as nr_optimize
 
 TerminalsFG = tuple[FeatureGroup, dict[str, FeatureGroupSubGroup]]
+GraphFG = tuple[FeatureGroup, FeatureGroup]
 
 RE_TR_PAIRS = r"(\d+)\s*[:,]\s*(\d+)"
 
@@ -61,13 +60,13 @@ NR_EDGE_WEIGHT = 3
 
 
 class _GraphType(Enum):
-    BASE = 0
+    MAIN = 0
     MIP = 1
     NR = 2
 
     @property
     def edge_color(self):
-        if self == _GraphType.BASE:
+        if self == _GraphType.MAIN:
             return BASE_EDGE_COLOR
         elif self == _GraphType.MIP:
             return MIP_EDGE_COLOR
@@ -76,7 +75,7 @@ class _GraphType(Enum):
 
     @property
     def edge_weight(self):
-        if self == _GraphType.BASE:
+        if self == _GraphType.MAIN:
             return BASE_EDGE_WEIGHT
         elif self == _GraphType.MIP:
             return MIP_EDGE_WEIGHT
@@ -85,7 +84,7 @@ class _GraphType(Enum):
 
     @property
     def node_color(self):
-        if self == _GraphType.BASE:
+        if self == _GraphType.MAIN:
             return BASE_NODE_COLOR
         elif self == _GraphType.MIP:
             return MIP_NODE_COLOR
@@ -94,12 +93,19 @@ class _GraphType(Enum):
 
     @property
     def node_radius(self):
-        if self == _GraphType.BASE:
+        if self == _GraphType.MAIN:
             return BASE_NODE_RADIUS
         elif self == _GraphType.MIP:
             return MIP_NODE_RADIUS
         elif self == _GraphType.NR:
             return NR_NODE_RADIUS
+
+    @property
+    def show_fg(self):
+        if self == _GraphType.MAIN:
+            return False
+        else:
+            return True
 
 
 class _RootColor:
@@ -109,12 +115,9 @@ class _RootColor:
     def __init__(self, mip_graph: PyDiGraph, nr_graph: PyDiGraph):
         terminal_sets = mip_graph.attrs["terminal_sets"]
         roots = sorted(list(terminal_sets))
-        n_needed = len(roots)
-        root_colors = [mcolors.rgb2hex(c) for c in cc.glasbey_category10[:n_needed]]  # type: ignore
-        self.colors = {r: c for r, c in zip(roots, root_colors)}
+        self.colors = {r: c for r, c in zip(roots, cc.b_glasbey_category10[: len(roots)])}
 
-        # NOTE: Suboptimal roots are those that are in a different component in the
-        # noderouter graph than in the mip graph.
+        # NOTE: Suboptimal roots are those in a different cc cluster in the nr_graph then the mip_graph.
         def get_root_groups(G: PyDiGraph) -> dict[int, frozenset[int]]:
             ccs = rx.strongly_connected_components(G)
             cc_roots = {i: {idx for idx in cc if idx in terminal_sets} for i, cc in enumerate(ccs)}
@@ -142,7 +145,7 @@ def _add_edges_from_graph(fg: FeatureGroup, G: PyDiGraph):
         u_key = G[u_idx]["waypoint_key"]
         v_key = G[v_idx]["waypoint_key"]
         # SAFETY: Edges are anti-parallel bi-directional edges with no self-loops
-        # except for SUPER_ROOT incident edges.
+        #         except for SUPER_ROOT incident edges.
         if v_idx < u_idx and SUPER_ROOT not in [u_key, v_key]:
             PolyLine(
                 locations=coords.as_geographics([u_idx, v_idx]),
@@ -239,6 +242,21 @@ def _add_terminal_sets_markers(m: Map, G: PyDiGraph, root_color: _RootColor) -> 
     return fg_terminal_sets_master, terminal_set_feature_groups
 
 
+def _add_graph_layer(m: Map, G: PyDiGraph) -> GraphFG:
+    """Add graph nodes and edges feature groups to the map."""
+    g_type = G.attrs["graph_type"]
+    logger.debug(f"Setting up {g_type.name} graph layer...")
+
+    fg_nodes = FeatureGroup(name=f"{g_type.name} Nodes", show=g_type.show_fg)
+    fg_edges = FeatureGroup(name=f"{g_type.name} Edges", show=g_type.show_fg)
+    _add_node_markers_from_graph(fg_nodes, G)
+    _add_edges_from_graph(fg_edges, G)
+    fg_nodes.add_to(m)
+    fg_edges.add_to(m)
+
+    return fg_nodes, fg_edges
+
+
 def _visualize_solution_graphs(
     main_graph: PyDiGraph,
     mip_graph: PyDiGraph,
@@ -246,15 +264,9 @@ def _visualize_solution_graphs(
     nr_graph: PyDiGraph,
     nr_instance: Instance,
 ):
-    m = Map(
-        crs="Simple",
-        location=[32.5, 0],
-        zoom_start=1.9,  # type: ignore
-        zoom_snap=0.25,
-        tiles=None,
-    )
+    m = Map(crs="Simple", location=[32.5, 0], zoom_start=2, zoom_snap=0.25, tiles=None)
 
-    tile_pane = CustomPane("tile_pane", z_index=1)  # type: ignore
+    tile_pane = CustomPane("tile_pane", z_index=1)
     m.add_child(tile_pane)
 
     tile_layer = TileLayer(
@@ -269,35 +281,14 @@ def _visualize_solution_graphs(
     )
     tile_layer.add_to(m)
 
-    logger.debug("Setting up main graph layer...")
-    fg_main_nodes = FeatureGroup(name="Main Nodes", show=False)
-    fg_main_edges = FeatureGroup(name="Main Edges", show=False)
-    _add_node_markers_from_graph(fg_main_nodes, main_graph)
-    _add_edges_from_graph(fg_main_edges, main_graph)
+    fg_main_nodes, fg_main_edges = _add_graph_layer(m, main_graph)
+    fg_mip_nodes, fg_mip_edges = _add_graph_layer(m, mip_graph)
+    fg_nr_nodes, fg_nr_edges = _add_graph_layer(m, nr_graph)
 
-    logger.debug("Setting up mip graph layer...")
-    fg_mip_nodes = FeatureGroup(name="MIP Nodes", show=True)
-    fg_mip_edges = FeatureGroup(name="MIP Edges", show=True)
-    _add_node_markers_from_graph(fg_mip_nodes, mip_graph)
-    _add_edges_from_graph(fg_mip_edges, mip_graph)
-
-    logger.debug("Setting up nr graph layer...")
-    fg_nr_nodes = FeatureGroup(name="NodeRouter Nodes", show=True)
-    fg_nr_edges = FeatureGroup(name="NodeRouter Edges", show=True)
-    _add_node_markers_from_graph(fg_nr_nodes, nr_graph)
-    _add_edges_from_graph(fg_nr_edges, nr_graph)
-
-    # Terminal sets of mip and nr are the same...
+    # NOTE: Terminal sets and colors of mip and nr are the same.
     logger.debug("Setting up terminal sets layer...")
     color_map = _RootColor(mip_graph, nr_graph)
     fg_terminal_master, terminal_groups = _add_terminal_sets_markers(m, mip_graph, color_map)
-
-    fg_main_nodes.add_to(m)
-    fg_main_edges.add_to(m)
-    fg_mip_nodes.add_to(m)
-    fg_mip_edges.add_to(m)
-    fg_nr_nodes.add_to(m)
-    fg_nr_edges.add_to(m)
 
     m.keep_in_front(
         fg_main_edges,
@@ -322,24 +313,21 @@ def _visualize_solution_graphs(
     group_layer_control.add_to(m)
 
     group_layer_control = GroupedLayerControl(
-        groups={
-            "Terminal Sets": [fg_terminal_master, *terminal_groups.values()],
-        },
+        groups={"Terminal Sets": [fg_terminal_master, *terminal_groups.values()]},
         collapsed=False,
         exclusive_groups=False,
         position="bottomright",
     )
     group_layer_control.add_to(m)
 
-    # Add the graph stats to the map
-    logger.debug("Setting up graph stats panel...")
+    logger.debug("Setting up graph and solution stats panel...")
     assert mip_instance.solution and nr_instance.solution
     stats_html = f"""
         <div style="position:absolute; z-index:100000; left:10px; top:10px;
                     background-color:#E0E0E0; padding:10px; border:1px solid black;">
             <h2>Stats</h2>
-            <p>Main Nodes: {len(main_graph.nodes())}</p>
-            <p>Main Edges: {len(main_graph.edge_list())}</p>
+            <p>Main Nodes: {main_graph.num_nodes()}</p>
+            <p>Main Edges: {main_graph.num_edges()}</p>
             <hr>
             <p>Roots: {mip_instance.terminals.roots}</p>
             <p>Terminals: {mip_instance.terminals.workers}</p>
@@ -356,10 +344,7 @@ def _visualize_solution_graphs(
             <p>NR Cost: {nr_instance.solution.cost}</p>
         </div>
     """
-
-    root = m.get_root()
-    if isinstance(root, branca.element.Figure):  # (mostly for Pylance)
-        root.html.add_child(Element(stats_html))
+    m.get_root().html.add_child(Element(stats_html))  # type: ignore
 
     tmp_file = os.path.join(tempfile.gettempdir(), "suboptimal_map.html")
     m.save(tmp_file)
@@ -378,6 +363,10 @@ def _visualize_instances(
     logger.info(f"mip: {mip_instance.solution.waypoints}")
     logger.info(f" nr: {nr_instance.solution.waypoints}")
 
+    # NOTE: Technically we could use super graph for all instances but
+    # the MIP problem would have many extra variables and take significantly
+    # longer to solve when the cache is not primed which would be true for
+    # most custom plans.
     exploration_data = get_exploration_data()
     if mip_instance.terminals.dangers > 0:
         graph = exploration_data.super_graph
@@ -398,7 +387,7 @@ def _visualize_instances(
     nr_graph = deepcopy(subgraph_stable(graph, nr_solution_indices))
     set_graph_terminal_sets_attribute(nr_graph, nr_instance.terminals.terminals)
 
-    graph.attrs["graph_type"] = _GraphType.BASE
+    graph.attrs["graph_type"] = _GraphType.MAIN
     mip_graph.attrs["graph_type"] = _GraphType.MIP
     nr_graph.attrs["graph_type"] = _GraphType.NR
 
@@ -465,8 +454,8 @@ def _process_custom_plan(terminal_pairs: dict[int, int]):
 
 
 def _process_selected_plan(plan_data):
-    mip_plan = _make_plan(plan_data, mip_optimize, True)
-    nr_plan = _make_plan(plan_data, nr_optimize)
+    mip_plan = _make_plan(plan_data, mip_optimize, True, False)
+    nr_plan = _make_plan(plan_data, nr_optimize, False, False)
 
     try:
         mip_instance = execute_plan(mip_plan)
