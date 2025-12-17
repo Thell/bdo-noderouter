@@ -51,14 +51,13 @@ def generate_terminal_pairs(plan: Plan) -> Terminals:
     elif plan.strategy == PairingStrategy.custom:
         src_dst = _load_custom_terminal_pairs()
     else:
-        # Candidate-based strategies
+        # Strategy based terminal selection
         selected_terminals = exploration_data.select_terminals(plan.worker_percent, rng)
         for t in selected_terminals:
             terminal = exploration_data.data[t]
             candidates = plan.strategy.candidates(terminal)
             src_dst[t] = rng.choice(candidates)
 
-    # Danger terminals (applies to both categories)
     if plan.include_danger:
         dangers = exploration_data.select_dangers(len(src_dst), rng)
         src_dst.update({d: SUPER_ROOT for d in dangers})
