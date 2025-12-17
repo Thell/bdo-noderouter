@@ -10,38 +10,7 @@ from api_exploration_data import get_exploration_data, SUPER_ROOT
 from orchestrator_types import PairingStrategy, Plan, Terminals
 
 
-def generate_terminal_pairs(plan: Plan) -> Terminals:
-    """
-    Generate terminal→root mappings for any pairing strategy.
-
-    - For candidate-based strategies: select terminals, then assign roots from candidates().
-    - For optimized strategy: load pre-solved pairs from file.
-    """
-    exploration_data = get_exploration_data()
-    src_dst: dict[int, int] = {}
-    rng = random.Random(plan.seed)
-
-    if plan.strategy == PairingStrategy.optimized:
-        src_dst = load_optimized_terminal_pairs(plan)
-    elif plan.strategy == PairingStrategy.custom:
-        src_dst = load_custom_terminal_pairs()
-    else:
-        # Candidate-based strategies
-        selected_terminals = exploration_data.select_terminals(plan.worker_percent, rng)
-        for t in selected_terminals:
-            terminal = exploration_data.data[t]
-            candidates = plan.strategy.candidates(terminal)
-            src_dst[t] = rng.choice(candidates)
-
-    # Danger terminals (applies to both categories)
-    if plan.include_danger:
-        dangers = exploration_data.select_dangers(len(src_dst), rng)
-        src_dst.update({d: SUPER_ROOT for d in dangers})
-
-    return Terminals(src_dst)
-
-
-def load_optimized_terminal_pairs(plan: Plan) -> dict[int, int]:
+def _load_optimized_terminal_pairs(plan: Plan) -> dict[int, int]:
     if plan.budget is None or plan.budget % 5 != 0 or not 5 <= plan.budget <= 550:
         raise ValueError("Optimized strategy requires valid budget (5–550, step 5).")
 
@@ -59,7 +28,39 @@ def load_optimized_terminal_pairs(plan: Plan) -> dict[int, int]:
     return {int(w["job"]["pzk"]): int(w["job"]["storage"]) for w in incident["userWorkers"]}
 
 
-def load_custom_terminal_pairs() -> dict[int, int]:
+def _load_custom_terminal_pairs() -> dict[int, int]:
     import api_data_store as ds
 
     return ds.read_json("custom_strategy_terminal_pairs.json")
+
+
+def generate_terminal_pairs(plan: Plan) -> Terminals:
+    """
+    Generate terminal→root mappings for any pairing strategy.
+
+    - For candidate-based strategies: select terminals, then assign roots from candidates().
+    - For optimized strategy: load pre-solved pairs from file.
+    - For custom strategy: load pairs from file.
+    """
+    exploration_data = get_exploration_data()
+    src_dst: dict[int, int] = {}
+    rng = random.Random(plan.seed)
+
+    if plan.strategy == PairingStrategy.optimized:
+        src_dst = _load_optimized_terminal_pairs(plan)
+    elif plan.strategy == PairingStrategy.custom:
+        src_dst = _load_custom_terminal_pairs()
+    else:
+        # Candidate-based strategies
+        selected_terminals = exploration_data.select_terminals(plan.worker_percent, rng)
+        for t in selected_terminals:
+            terminal = exploration_data.data[t]
+            candidates = plan.strategy.candidates(terminal)
+            src_dst[t] = rng.choice(candidates)
+
+    # Danger terminals (applies to both categories)
+    if plan.include_danger:
+        dangers = exploration_data.select_dangers(len(src_dst), rng)
+        src_dst.update({d: SUPER_ROOT for d in dangers})
+
+    return Terminals(src_dst)
