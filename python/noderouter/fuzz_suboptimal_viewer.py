@@ -530,10 +530,10 @@ def _suboptimal_viewer_ui(page: ft.Page):
     page.window.center()
 
 
-def main():
+def viewer_main():
     set_logger(ds.get_config("config"))
     ft.app(target=_suboptimal_viewer_ui)
 
 
 if __name__ == "__main__":
-    main()
+    viewer_main()
