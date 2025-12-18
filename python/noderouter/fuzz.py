@@ -166,8 +166,7 @@ def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.Da
             pl.max("ratio").alias("worst_ratio"),
             pl.mean("speedup").alias("avg_speedup"),
         ])
-        with pl.Config(tbl_hide_column_data_types=True, tbl_hide_dataframe_shape=True, set_tbl_cols=-1):
-            print(case_summary)
+        _print_summary(case_summary)
 
     return all_cases_df
 
