@@ -20,7 +20,7 @@ from optimizer_mip import optimize_with_terminals as mip_optimize
 from optimizer_nr import optimize_with_terminals as nr_optimize
 
 FLOAT_DECIMALS = 3
-WORST_SUBOPTIMAL_REPORTING_COUNT = 20
+WORST_SUBOPTIMAL_REPORTING_COUNT = 50
 _shutdown_requested = False
 
 
@@ -380,6 +380,7 @@ def _generate_summaries(all_cases_df: pl.DataFrame) -> None:
 
     # --- Strategy summary (all non-optimized) ---
     strategy_df = all_cases_df.filter(pl.col("strategy") != PairingStrategy.optimized.value)
+
     if not strategy_df.is_empty():
         strategy_df_summary = _generate_summary(strategy_df).drop(["include_danger"])
         strategy_df_aggregate_summary = _generate_strategy_aggregate_summary(strategy_df_summary)
@@ -394,6 +395,10 @@ def _generate_summaries(all_cases_df: pl.DataFrame) -> None:
 
     # --- Suboptimal breakdown diagnostics ---
     suboptimal_df = all_cases_df.filter(pl.col("nr_cost") > pl.col("mip_cost"))
+
+    subset = ["strategy", "seed", "roots", "workers", "dangers"]
+    suboptimal_df = suboptimal_df.sort(["ratio"], descending=True).unique(subset=subset, keep="first")
+
     if not suboptimal_df.is_empty():
         suboptimal_breakdown_df = _generate_suboptimal_breakdown(suboptimal_df)
         print("\n### SUBOPTIMAL BREAKDOWN ###")
