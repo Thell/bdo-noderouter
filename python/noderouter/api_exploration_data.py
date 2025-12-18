@@ -295,24 +295,21 @@ def _get_clean_exploration_data(hash_key: str):
     logger.trace("_get_clean_exploration_data")
     import api_data_store as ds
 
-    logger.trace("get_clean_exploration_data")
-
     filename = "clean_exploration.json"
     clean_data = ds.read_json(filename) if ds.is_file(filename) else None
 
     if clean_data:
         return clean_data
 
-    # Read exploration data
-    data = {int(k): v for k, v in ds.read_json("exploration.json").items()}
+    data = ds.read_json("exploration.json")
 
-    # Remove all non valid entries from link lists
+    # NOTE: Great ocean nodes can not be traversed by workers.
     def non_base_great_ocean_node(k: int, v: dict) -> bool:
         return v["territory_key"] == GREAT_OCEAN_TERRITORY and not v["is_base_town"]
 
     data = {k: v for k, v in data.items() if not non_base_great_ocean_node(k, v)}
 
-    # Recursive removals:
+    # Recursive removals: previously removed nodes will have left entries in link lists
     while True:
         valid_keys = {k for k, v in data.items() if v["link_list"]}
 
@@ -324,15 +321,14 @@ def _get_clean_exploration_data(hash_key: str):
             break
         data = new_data
 
-    # Write clean exploration data
-    ds.write_json(ds.path().joinpath("clean_exploration.json").as_posix(), data)
+    ds.write_json(filename, data)
 
     return data
 
 
 @memory.cache
 def _get_exploration_graph(data: dict[int, dict]) -> PyDiGraph:
-    """Generate and return a node weighted PyGraph graph from 'exploration.json'.
+    """Generate and return a node weighted PyDiGraph graph from 'exploration.json'.
 
     - Graph will have anti-parallel bi-direcitonal edges and no self-loops.
     - Graph edges will have an edge weight equal to the head node's cost.
