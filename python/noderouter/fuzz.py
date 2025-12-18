@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 import signal
 import sys
@@ -13,7 +14,7 @@ from loguru import logger
 import api_data_store as ds
 from api_common import MAX_BUDGET, set_logger
 from orchestrator import execute_plan
-from orchestrator_types import Plan, Instance
+from orchestrator_types import Plan, Instance, SeedType
 from orchestrator_pairing_strategy import PairingStrategy
 
 from optimizer_mip import optimize_with_terminals as mip_optimize
@@ -29,7 +30,7 @@ class _FuzzInstanceMetrics(dict):
 
     def __init__(
         self,
-        seed: int,
+        seed: SeedType,
         budget: int,
         percent: int,
         include_danger: bool,
@@ -91,6 +92,17 @@ def _install_shutdown_handler():
     signal.signal(signal.SIGINT, handler)
 
 
+def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
+    """Produce a deterministic seed for a given sample."""
+    # NOTE: For reproducibility purposes we use deterministic seeds.
+    # This ensures that each sample's random terminals are not a 'core' of future budgets.
+    # This is not tied to the danger inclusion for a pairing strategy.
+    # The solver's methodology for handling dangers can potentially 'break' an otherwise
+    # optimally solved problem and by keeping them fixed for danger inclusive and exclusive
+    # samples we ensure that such cases are identifiable.
+    return hashlib.sha256(f"{budget}:{strategy.value}:{i}".encode("utf-8")).hexdigest()[:7]
+
+
 def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.DataFrame:
     """
     Run fuzz tests for a given budget across all pairing strategies.
@@ -99,7 +111,6 @@ def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.Da
     config = ds.get_config("config")
 
     all_cases_df = pl.DataFrame()
-    base_seed = 10_000
 
     assert budget <= MAX_BUDGET
     percent = round(budget / MAX_BUDGET * 100)
@@ -119,8 +130,8 @@ def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.Da
         for i in range(samples):
             if _shutdown_requested:
                 break
-            seed = base_seed + i
 
+            seed = _make_seed(budget, strategy, i)
             mip_plan = Plan(mip_optimize, config, budget, percent, seed, include_danger, strategy, True)
             nr_plan = Plan(nr_optimize, config, budget, percent, seed, include_danger, strategy, False)
 

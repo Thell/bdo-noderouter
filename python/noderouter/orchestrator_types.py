@@ -9,6 +9,9 @@ from api_exploration_data import SUPER_ROOT
 from orchestrator_pairing_strategy import PairingStrategy
 
 
+SeedType = int | float | str | bytes | bytearray | None
+
+
 @dataclass
 class Solution:
     duration: float
@@ -42,7 +45,7 @@ class Plan:
     config: dict
     budget: int  # used for optimized
     worker_percent: int  # required for candidate strategies
-    seed: int
+    seed: SeedType
     include_danger: bool
     strategy: PairingStrategy
     allow_cache: bool
