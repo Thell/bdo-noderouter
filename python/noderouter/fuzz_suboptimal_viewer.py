@@ -49,11 +49,6 @@ SUPER_ROOT_COLOR = "darkblue"
 MIP_NODE_COLOR = "green"
 NR_NODE_COLOR = "orange"
 
-ROOT_CIRCLE_RADIUS = 2
-BASE_NODE_RADIUS = 1
-MIP_NODE_RADIUS = 2
-NR_NODE_RADIUS = 2
-
 BASE_EDGE_WEIGHT = 1
 MIP_EDGE_WEIGHT = 6
 NR_EDGE_WEIGHT = 3
@@ -90,15 +85,6 @@ class _GraphType(Enum):
             return MIP_NODE_COLOR
         elif self == _GraphType.NR:
             return NR_NODE_COLOR
-
-    @property
-    def node_radius(self):
-        if self == _GraphType.MAIN:
-            return BASE_NODE_RADIUS
-        elif self == _GraphType.MIP:
-            return MIP_NODE_RADIUS
-        elif self == _GraphType.NR:
-            return NR_NODE_RADIUS
 
     @property
     def show_fg(self):
