@@ -20,7 +20,7 @@ from orchestrator_pairing_strategy import PairingStrategy, MAX_LEN_PAIRING_STRAT
 from optimizer_mip import optimize_with_terminals as mip_optimize
 from optimizer_nr import optimize_with_terminals as nr_optimize
 
-FLOAT_DECIMALS = 3
+SUMMARY_FLOAT_PRECISION = 3
 WORST_SUBOPTIMAL_REPORTING_COUNT = 50
 
 _shutdown_requested = False
@@ -105,50 +105,12 @@ def _signal_handler(signum, frame):
     print("\nShutdown requested — finishing current test and reporting results...", file=sys.stderr)
 
 
-def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
-    """Produce a deterministic seed for a given sample."""
-    # NOTE: For reproducibility purposes we use deterministic seeds.
-    # This ensures that each sample's random terminals are not a 'core' of future budgets.
-    # This is not tied to the danger inclusion for a pairing strategy.
-    # The solver's methodology for handling dangers can potentially 'break' an otherwise
-    # optimally solved problem and by keeping them fixed for danger inclusive and exclusive
-    # samples we ensure that such cases are identifiable.
-    return hashlib.sha256(f"{budget}:{strategy.value}:{i}".encode("utf-8")).hexdigest()[:7]
-
-
 def _install_shutdown_handler():
     handler = partial(_signal_handler)
     signal.signal(signal.SIGINT, handler)
 
 
 # MARK: Summary Reporting
-def _print_summary(df: pl.DataFrame) -> None:
-    with pl.Config(
-        set_float_precision=FLOAT_DECIMALS,
-        set_fmt_str_lengths=100,
-        tbl_hide_column_data_types=True,
-        tbl_hide_dataframe_shape=True,
-        set_tbl_cols=-1,
-        tbl_rows=-1,
-        tbl_width_chars=-1,
-    ):
-        print(df)
-
-
-def _print_total(df: pl.DataFrame) -> None:
-    with pl.Config(
-        set_float_precision=FLOAT_DECIMALS,
-        set_fmt_str_lengths=100,
-        set_tbl_hide_column_names=True,
-        tbl_hide_column_data_types=True,
-        tbl_hide_dataframe_shape=True,
-        set_tbl_cols=-1,
-        tbl_rows=-1,
-        tbl_width_chars=-1,
-    ):
-        print(df)
-
-
 def _generate_all_cases_summaries(all_cases_df: pl.DataFrame) -> None:
     if all_cases_df.is_empty():
         logger.warning("No results to summarize.")
@@ -271,7 +233,7 @@ def _generate_summary_total(df: pl.DataFrame) -> pl.DataFrame:
 
     # Round and cast to string
     total_df = total_df.with_columns([
-        pl.col(c).cast(pl.Float64).round(FLOAT_DECIMALS).cast(pl.String).alias(c)
+        pl.col(c).cast(pl.Float64).round(SUMMARY_FLOAT_PRECISION).cast(pl.String).alias(c)
         for c in total_df.select(pl.selectors.numeric()).columns
     ]).with_columns(pl.all().cast(pl.String))
 
@@ -382,7 +344,7 @@ def _generate_suboptimal_by_danger_total(suboptimal_by_danger_df: pl.DataFrame) 
     ])
 
     total = total.with_columns([
-        pl.col(c).cast(pl.Float64).round(FLOAT_DECIMALS).cast(pl.String).alias(c)
+        pl.col(c).cast(pl.Float64).round(SUMMARY_FLOAT_PRECISION).cast(pl.String).alias(c)
         for c in total.select(pl.selectors.numeric()).columns
     ]).with_columns(pl.all().cast(pl.String))
 
@@ -417,7 +379,45 @@ def _generate_worst_suboptimal_summary(suboptimal_df: pl.DataFrame) -> pl.DataFr
     )
 
 
+def _print_summary(df: pl.DataFrame) -> None:
+    with pl.Config(
+        set_float_precision=SUMMARY_FLOAT_PRECISION,
+        set_fmt_str_lengths=100,
+        tbl_hide_column_data_types=True,
+        tbl_hide_dataframe_shape=True,
+        set_tbl_cols=-1,
+        tbl_rows=-1,
+        tbl_width_chars=-1,
+    ):
+        print(df)
+
+
+def _print_total(df: pl.DataFrame) -> None:
+    with pl.Config(
+        set_float_precision=SUMMARY_FLOAT_PRECISION,
+        set_fmt_str_lengths=100,
+        set_tbl_hide_column_names=True,
+        tbl_hide_column_data_types=True,
+        tbl_hide_dataframe_shape=True,
+        set_tbl_cols=-1,
+        tbl_rows=-1,
+        tbl_width_chars=-1,
+    ):
+        print(df)
+
+
 # MARK: Main Fuzzer
+def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
+    """Produce a deterministic seed for a given sample."""
+    # NOTE: For reproducibility purposes we use deterministic seeds.
+    # This ensures that each sample's random terminals are not a 'core' of future budgets.
+    # This is not tied to the danger inclusion for a pairing strategy.
+    # The solver's methodology for handling dangers can potentially 'break' an otherwise
+    # optimally solved problem and by keeping them fixed for danger inclusive and exclusive
+    # samples we ensure that such cases are identifiable.
+    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode("utf-8")).hexdigest()[:7]
+
+
 def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.DataFrame:
     """
     Run fuzz tests for a given budget across all pairing strategies.
