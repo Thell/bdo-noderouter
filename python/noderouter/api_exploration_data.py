@@ -447,3 +447,31 @@ def _inject_super_root(G: PyDiGraph, super_root: dict[str, Any]):
 
     G.attrs["node_key_by_index"] = node_key_by_index
     logger.debug(f"  injected at index {super_root_index}...")
+
+
+def prune_NTD1(graph: PyDiGraph, non_removables: set[int] | None = None):
+    """Prunes non terminal nodes of degree 1."""
+    if non_removables is None:
+        non_removables = set(
+            graph.attrs.get("root_indices", [i for i in graph.node_indices() if graph[i]["is_town"]])
+        )
+        non_removables.update(
+            set(
+                graph.attrs.get(
+                    "terminal_indices", [i for i in graph.node_indices() if graph[i]["is_terminal"]]
+                )
+            )
+        )
+        if graph.attrs.get("super_root_index", None) is not None:
+            non_removables.add(graph.attrs["super_root_index"])
+            non_removables.update(set(graph.attrs.get("super_terminal_indices", [])))
+
+    num_removed = 0
+    while removal_nodes := [
+        v for v in graph.node_indices() if graph.out_degree(v) == 1 and v not in non_removables
+    ]:
+        graph.remove_nodes_from(removal_nodes)
+        num_removed += len(removal_nodes)
+        removal_nodes = []
+
+    return num_removed

@@ -8,16 +8,16 @@ NOTE: Sourcing this file directly starts the UI.
 import os
 import re
 import tempfile
+import webbrowser
 from copy import deepcopy
 from enum import Enum
 
 from branca.element import Element
 import colorcet as cc
 import flet as ft
-import webbrowser
-from folium import CircleMarker, FeatureGroup, Map, Marker, PolyLine, TileLayer
-from folium.plugins import FeatureGroupSubGroup, GroupedLayerControl, BeautifyIcon
+from folium import FeatureGroup, Map, Marker, PolyLine, TileLayer
 from folium.map import CustomPane
+from folium.plugins import FeatureGroupSubGroup, GroupedLayerControl, BeautifyIcon
 
 import rustworkx as rx
 from loguru import logger
@@ -25,7 +25,7 @@ from rustworkx import PyDiGraph
 
 import api_data_store as ds
 from api_common import MAX_BUDGET, set_logger
-from api_exploration_data import SUPER_ROOT, get_exploration_data
+from api_exploration_data import SUPER_ROOT, get_exploration_data, prune_NTD1
 from api_rx_pydigraph import subgraph_stable, set_graph_terminal_sets_attribute
 from orchestrator import execute_plan
 from orchestrator_types import Plan, OptimizationFn, Instance
@@ -144,6 +144,7 @@ def _add_edges_from_graph(fg: FeatureGroup, G: PyDiGraph):
     for u_idx, v_idx in G.edge_list():
         u_key = G[u_idx]["waypoint_key"]
         v_key = G[v_idx]["waypoint_key"]
+
         # SAFETY: Edges are anti-parallel bi-directional edges with no self-loops
         #         except for SUPER_ROOT incident edges.
         if v_idx < u_idx and SUPER_ROOT not in [u_key, v_key]:
@@ -157,33 +158,34 @@ def _add_edges_from_graph(fg: FeatureGroup, G: PyDiGraph):
 
 
 def _add_node_markers_from_graph(fg: FeatureGroup, G: PyDiGraph):
-    """Add markers for each node in the main graph."""
     coords = get_exploration_data().coords
     graph_type = G.attrs["graph_type"]
 
     for node_idx in G.node_indices():
         node = G[node_idx]
-        key = G[node_idx]["waypoint_key"]
-        cost = G[node_idx]["need_exploration_point"]
+        key = node["waypoint_key"]
+        cost = node["need_exploration_point"]
+
         popup_text = f"Node Key: {key}, Cost: {cost}"
-
         node_color = graph_type.node_color
-        circle_radius = graph_type.node_radius
 
-        # NOTE: The SUPER_ROOT is a special base town so it must come first
+        # NOTE: SUPER_ROOT is also a base town so it must be checked first
         if key == SUPER_ROOT:
             popup_text += " (Super Root)"
             node_color = SUPER_ROOT_COLOR
-            circle_radius = ROOT_CIRCLE_RADIUS
         elif node["is_base_town"]:
             node_color = BASE_TOWN_NODE_COLOR
-            circle_radius = BASE_NODE_RADIUS
 
-        CircleMarker(
+        Marker(
             location=coords.as_geographic(node_idx),
-            radius=circle_radius,
-            color=node_color,
-            fill_color=node_color,
+            icon=BeautifyIcon(
+                border_color=node_color,
+                icon_size=[16, 16],
+                icon_anchor=[8, 8],
+                inner_icon_style="margin-top:-2px;",
+                number=cost,
+                text_color="black",
+            ),  # type: ignore
             popup=popup_text,
             tooltip=popup_text,
         ).add_to(fg)
@@ -216,22 +218,22 @@ def _add_terminal_sets_markers(m: Map, G: PyDiGraph, root_color: _RootColor) -> 
     coords = get_exploration_data().coords
     terminal_sets = G.attrs["terminal_sets"]
 
-    for root in sorted(list(terminal_sets)):
-        terminal_set = terminal_sets[root]
+    for root_idx in sorted(list(terminal_sets)):
+        is_suboptimal = root_color.is_suboptimal(root_idx)
+        root_key = G[root_idx]["waypoint_key"]
+        terminal_set = terminal_sets[root_idx]
 
-        is_suboptimal = root_color.is_suboptimal(root)
-        layer_name = f"Terminal Set {G[root]['waypoint_key']}"
+        layer_name = f"Terminal Set {root_key}"
         fg_terminal_set = FeatureGroupSubGroup(fg_terminal_sets_master, name=layer_name, show=is_suboptimal)
         fg_terminal_set.add_to(m)
         terminal_set_feature_groups[layer_name] = fg_terminal_set
 
-        active_background_color = root_color.terminal_color(root)
+        active_background_color = root_color.terminal_color(root_idx)
         active_border_color = "black" if is_suboptimal else "white"
 
-        cost = G[root]["need_exploration_point"]
-        key = G[root]["waypoint_key"]
-        location = coords.as_geographic(root)
-        add_marker("Root", location, key, cost, fg_terminal_set)
+        cost = G[root_idx]["need_exploration_point"]
+        location = coords.as_geographic(root_idx)
+        add_marker("Root", location, root_key, cost, fg_terminal_set)
 
         for terminal in terminal_set:
             cost = G[terminal]["need_exploration_point"]
@@ -285,7 +287,7 @@ def _visualize_solution_graphs(
     fg_mip_nodes, fg_mip_edges = _add_graph_layer(m, mip_graph)
     fg_nr_nodes, fg_nr_edges = _add_graph_layer(m, nr_graph)
 
-    # NOTE: Terminal sets and colors of mip and nr are the same.
+    # NOTE: Terminal sets of roots and root colors of mip and nr are the same.
     logger.debug("Setting up terminal sets layer...")
     color_map = _RootColor(mip_graph, nr_graph)
     fg_terminal_master, terminal_groups = _add_terminal_sets_markers(m, mip_graph, color_map)
@@ -352,10 +354,7 @@ def _visualize_solution_graphs(
     webbrowser.open("file://" + tmp_file)
 
 
-def _visualize_instances(
-    mip_instance: Instance,
-    nr_instance: Instance,
-):
+def _visualize_instances(mip_instance: Instance, nr_instance: Instance):
     """Visualizes the mip and noderouter solutions on the BDO map."""
 
     assert mip_instance.solution and nr_instance.solution
@@ -364,9 +363,8 @@ def _visualize_instances(
     logger.info(f" nr: {nr_instance.solution.waypoints}")
 
     # NOTE: Technically we could use super graph for all instances but
-    # the MIP problem would have many extra variables and take significantly
-    # longer to solve when the cache is not primed which would be true for
-    # most custom plans.
+    # the MIP problem would have more variables and take longer to solve
+    # when the cache is not primed which is true for most custom plans.
     exploration_data = get_exploration_data()
     if mip_instance.terminals.dangers > 0:
         graph = exploration_data.super_graph
@@ -387,11 +385,19 @@ def _visualize_instances(
     nr_graph = deepcopy(subgraph_stable(graph, nr_solution_indices))
     set_graph_terminal_sets_attribute(nr_graph, nr_instance.terminals.terminals)
 
-    graph.attrs["graph_type"] = _GraphType.MAIN
+    # NOTE: graph still has all leaf nodes in it and no leaf nodes need to be present other
+    #       than the ones in the solution. This speeds up rendering and declutters the map.
+    # SAFETY: copy() is shallow and deepcopy is required to avoid modifying the original graph upon node removal
+    non_removables = set(mip_instance.solution.waypoints) | set(nr_instance.solution.waypoints)
+    non_removables = {node_key_by_index.inv[i] for i in non_removables}
+    main_graph = deepcopy(graph.copy())
+    prune_NTD1(main_graph, non_removables)
+
+    main_graph.attrs["graph_type"] = _GraphType.MAIN
     mip_graph.attrs["graph_type"] = _GraphType.MIP
     nr_graph.attrs["graph_type"] = _GraphType.NR
 
-    _visualize_solution_graphs(graph, mip_graph, mip_instance, nr_graph, nr_instance)
+    _visualize_solution_graphs(main_graph, mip_graph, mip_instance, nr_graph, nr_instance)
 
 
 ####
