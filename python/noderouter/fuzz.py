@@ -15,13 +15,14 @@ import api_data_store as ds
 from api_common import MAX_BUDGET, set_logger
 from orchestrator import execute_plan
 from orchestrator_types import Plan, Instance, SeedType
-from orchestrator_pairing_strategy import PairingStrategy
+from orchestrator_pairing_strategy import PairingStrategy, MAX_LEN_PAIRING_STRATEGY
 
 from optimizer_mip import optimize_with_terminals as mip_optimize
 from optimizer_nr import optimize_with_terminals as nr_optimize
 
 FLOAT_DECIMALS = 3
 WORST_SUBOPTIMAL_REPORTING_COUNT = 50
+
 _shutdown_requested = False
 
 
@@ -57,7 +58,7 @@ class _FuzzInstanceMetrics(dict):
         ratio = nr_instance.solution.cost / mip_instance.solution.cost
         speedup = mip_instance.solution.duration / nr_instance.solution.duration
         assert ratio >= 1.0, "NodeRouter should never have lower cost than MIP!"
-        assert speedup > 0, "NodeRouter should always be faster than MIP!"
+        assert speedup > 1.0, "NodeRouter should always be faster than MIP!"
 
         super().__init__({
             "seed": seed,
@@ -77,6 +78,23 @@ class _FuzzInstanceMetrics(dict):
             "speedup": speedup,
         })
 
+    def generate_log_string(self, i: int, samples: int) -> str:
+        """Generates the single-line log string for this instance."""
+        return (
+            f"[{i + 1:>4}/{samples}] "
+            f"{self['seed']:7} "
+            f"{self['strategy']:<{MAX_LEN_PAIRING_STRATEGY}} "
+            f"Budget: {self['budget']:<3} "
+            f"Pct: {self['percent']:2}% "
+            f"|T|: {self['terminals']:<3} "
+            f"|R|: {self['roots']:<2} "
+            f"|W|: {self['workers']:<3} "
+            f"|D|: {self['dangers']:<2} "
+            f"MIP {self['mip_cost']:<3} ({self['mip_duration']:6.3f}s) "
+            f"NR {self['nr_cost']:<3} ({self['nr_duration']:6.3f}s) "
+            f"ratio: {self['ratio']:5.3f} ({self['speedup']:7.1f}x)"
+        )
+
 
 def _signal_handler(signum, frame):
     global _shutdown_requested
@@ -85,11 +103,6 @@ def _signal_handler(signum, frame):
         sys.exit(1)
     _shutdown_requested = True
     print("\nShutdown requested — finishing current test and reporting results...", file=sys.stderr)
-
-
-def _install_shutdown_handler():
-    handler = partial(_signal_handler)
-    signal.signal(signal.SIGINT, handler)
 
 
 def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
@@ -103,83 +116,115 @@ def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     return hashlib.sha256(f"{budget}:{strategy.value}:{i}".encode("utf-8")).hexdigest()[:7]
 
 
-def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.DataFrame:
-    """
-    Run fuzz tests for a given budget across all pairing strategies.
-    NOTE: Percent is ignored upon _input_ for PairingStrategy.optimized and populated upon output.
-    """
-    config = ds.get_config("config")
+def _install_shutdown_handler():
+    handler = partial(_signal_handler)
+    signal.signal(signal.SIGINT, handler)
 
-    all_cases_df = pl.DataFrame()
 
-    assert budget <= MAX_BUDGET
-    percent = round(budget / MAX_BUDGET * 100)
+# MARK: Summary Reporting
+def _print_summary(df: pl.DataFrame) -> None:
+    with pl.Config(
+        set_float_precision=FLOAT_DECIMALS,
+        set_fmt_str_lengths=100,
+        tbl_hide_column_data_types=True,
+        tbl_hide_dataframe_shape=True,
+        set_tbl_cols=-1,
+        tbl_rows=-1,
+        tbl_width_chars=-1,
+    ):
+        print(df)
 
-    for strategy in PairingStrategy:
-        if _shutdown_requested:
-            break
 
-        if strategy == PairingStrategy.custom:
-            continue
+def _print_total(df: pl.DataFrame) -> None:
+    with pl.Config(
+        set_float_precision=FLOAT_DECIMALS,
+        set_fmt_str_lengths=100,
+        set_tbl_hide_column_names=True,
+        tbl_hide_column_data_types=True,
+        tbl_hide_dataframe_shape=True,
+        set_tbl_cols=-1,
+        tbl_rows=-1,
+        tbl_width_chars=-1,
+    ):
+        print(df)
 
-        desc = f"strategy={strategy.value}, budget={budget:3}, danger={'yes' if include_danger else 'no'}"
-        print(f"\nStarting: {desc}, samples={samples}")
 
-        case_rows: list[_FuzzInstanceMetrics] = []
+def _generate_all_cases_summaries(all_cases_df: pl.DataFrame) -> None:
+    if all_cases_df.is_empty():
+        logger.warning("No results to summarize.")
+        return
 
-        for i in range(samples):
-            if _shutdown_requested:
-                break
+    start_time = time.perf_counter()
 
-            seed = _make_seed(budget, strategy, i)
-            mip_plan = Plan(mip_optimize, config, budget, percent, seed, include_danger, strategy, True)
-            nr_plan = Plan(nr_optimize, config, budget, percent, seed, include_danger, strategy, False)
+    # --- Optimized (workerman) summary ---
+    optimized_df = all_cases_df.filter(pl.col("strategy") == PairingStrategy.optimized.value)
+    if not optimized_df.is_empty():
+        optimized_df_summary = _generate_summary(optimized_df).drop(["include_danger"])
+        optimized_df_total = _generate_summary_total(optimized_df_summary)
 
-            mip_instance = execute_plan(mip_plan)
-            nr_instance = execute_plan(nr_plan)
+        print("\n### OPTIMIZED (WORKERMAN) SUMMARY ###")
+        _print_summary(optimized_df_summary)
+        _print_total(optimized_df_total)
 
-            row = _FuzzInstanceMetrics(
-                seed,
-                budget,
-                percent,
-                include_danger,
-                strategy,
-                nr_instance,
-                mip_instance,
-            )
-            case_rows.append(row)
+    # --- Strategy summary (all non-optimized) ---
+    strategy_df = all_cases_df.filter(pl.col("strategy") != PairingStrategy.optimized.value)
 
-            assert mip_instance.solution and nr_instance.solution
+    if not strategy_df.is_empty():
+        strategy_df_summary = _generate_summary(strategy_df).drop(["include_danger"])
+        strategy_df_aggregate_summary = _generate_strategy_aggregate_summary(strategy_df_summary)
+        strategy_df_budget_summary = _generate_budget_aggregate_summary(strategy_df_summary)
 
-            row_str = (
-                f"[{i + 1:>4}/{samples}] seed={seed:5}, {desc}, "
-                f"percent={percent:3}% "
-                f"|T|={len(nr_instance.terminals.terminals)} "
-                f"w:{row['workers']} d:{row['dangers']} "
-                f"MIP {row['mip_cost']} ({row['mip_duration']:6.3f}s) → "
-                f"NR {row['nr_cost']} ({row['nr_duration']:6.3f}s) "
-                f"ratio={row['ratio']:5.3f} {row['speedup']:7.1f}x"
-            )
-            if (gap := row["nr_cost"] - row["mip_cost"]) > 0:
-                logger.warning(f"SUBOPTIMAL → {row_str} (gap: +{gap})")
-            else:
-                # Output at same level as SUCCESS but without color
-                logger.log(25, f"   OPTIMAL → {row_str}")
+        strategy_df_total = _generate_summary_total(strategy_df_summary)
+        out_path = ds.path() / "strategy_summary.csv"
+        strategy_df_summary.with_columns(pl.selectors.float().round(3)).write_csv(out_path)
 
-        case_df = pl.DataFrame(case_rows)
-        all_cases_df = all_cases_df.vstack(case_df)
+        print("\n### STRATEGY SUMMARY ###")
+        _print_summary(strategy_df_summary)
+        print("\n--- BY STRATEGY ---")
+        _print_summary(strategy_df_aggregate_summary)
+        print("\n--- BY BUDGET ---")
+        _print_summary(strategy_df_budget_summary)
+        _print_total(strategy_df_total)
 
-        case_summary = case_df.group_by(["budget", "percent", "strategy", "include_danger"]).agg([
-            pl.len().alias("instances"),
-            (pl.col("nr_cost") == pl.col("mip_cost")).sum().alias("optimal"),
-            (pl.col("nr_cost") != pl.col("mip_cost")).sum().alias("suboptimal"),
-            pl.mean("ratio").alias("avg_ratio"),
-            pl.max("ratio").alias("worst_ratio"),
-            pl.mean("speedup").alias("avg_speedup"),
-        ])
-        _print_summary(case_summary)
+    # --- Suboptimal breakdown diagnostics ---
+    suboptimal_df = all_cases_df.filter(pl.col("nr_cost") > pl.col("mip_cost"))
 
-    return all_cases_df
+    subset = ["strategy", "seed", "roots", "workers", "dangers"]
+    suboptimal_df = suboptimal_df.sort(["ratio"], descending=True).unique(subset=subset, keep="first")
+
+    if not suboptimal_df.is_empty():
+        suboptimal_breakdown_df = _generate_suboptimal_breakdown(suboptimal_df)
+        print("\n### SUBOPTIMAL BREAKDOWN ###")
+        _print_summary(suboptimal_breakdown_df)
+
+        # --- Suboptimal by danger ---
+        suboptimal_by_danger_df = _generate_suboptimal_by_danger(suboptimal_breakdown_df)
+        suboptimal_by_danger_total = _generate_suboptimal_by_danger_total(suboptimal_by_danger_df)
+        print("\n### SUBOPTIMAL BY DANGER ###")
+        _print_summary(suboptimal_by_danger_df)
+        _print_total(suboptimal_by_danger_total)
+
+        # --- Worst suboptimal instances ---
+        worst_suboptimal_df = _generate_worst_suboptimal_summary(suboptimal_df)
+        out_path = ds.path() / "worst_suboptimal_instances.json"
+        worst_suboptimal_df.with_columns(pl.selectors.float().round(3)).write_json(out_path)
+
+        print(f"\n### WORST SUBOPTIMAL INSTANCES (top {WORST_SUBOPTIMAL_REPORTING_COUNT}) ###")
+        _print_summary(worst_suboptimal_df)
+
+    print("#" * 160)
+    print(f"\nSummary Completed in {time.perf_counter() - start_time:.3f}s")
+
+
+def _generate_single_case_summary(df: pl.DataFrame) -> pl.DataFrame:
+    return df.group_by(["budget", "percent", "strategy", "include_danger"]).agg([
+        pl.len().alias("instances"),
+        (pl.col("nr_cost") == pl.col("mip_cost")).sum().alias("optimal"),
+        (pl.col("nr_cost") != pl.col("mip_cost")).sum().alias("suboptimal"),
+        pl.mean("ratio").alias("avg_ratio"),
+        pl.max("ratio").alias("worst_ratio"),
+        pl.mean("speedup").alias("avg_speedup"),
+    ])
 
 
 def _generate_summary(df: pl.DataFrame) -> pl.DataFrame:
@@ -261,6 +306,33 @@ def _generate_strategy_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFra
         ])
         .sort("strategy")
     )
+
+
+def _generate_budget_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame:
+    longest = max(len(str(v)) for v in summary_df["strategy"].to_list())
+    col_widths = [len(c) for c in summary_df.columns]
+    col_widths[0] = max(longest, col_widths[0])
+
+    tmp_df = (
+        summary_df.group_by(["budget"])
+        .agg([
+            pl.lit("-" + " " * (col_widths[0] - len("-"))).alias("strategy"),
+            pl.col("instances").sum(),
+            pl.col("optimal").sum(),
+            pl.col("suboptimal").sum(),
+            pl.col("optimal_percent").mean(),
+            pl.mean("avg_terminals").alias("avg_terminals"),
+            pl.mean("avg_roots").alias("avg_roots"),
+            pl.mean("avg_workers").alias("avg_workers"),
+            pl.mean("avg_dangers").alias("avg_dangers"),
+            pl.col("avg_ratio").mean(),
+            pl.col("worst_ratio").max(),
+            pl.col("avg_speedup").mean(),
+        ])
+        .sort("budget")
+    )
+
+    return tmp_df.select("strategy", "budget", pl.all().exclude(["strategy", "budget"]))
 
 
 def _generate_suboptimal_breakdown(df: pl.DataFrame) -> pl.DataFrame:
@@ -345,93 +417,66 @@ def _generate_worst_suboptimal_summary(suboptimal_df: pl.DataFrame) -> pl.DataFr
     )
 
 
-def _print_summary(df: pl.DataFrame) -> None:
-    with pl.Config(
-        set_float_precision=FLOAT_DECIMALS,
-        set_fmt_str_lengths=100,
-        tbl_hide_column_data_types=True,
-        tbl_hide_dataframe_shape=True,
-        set_tbl_cols=-1,
-        tbl_rows=-1,
-        tbl_width_chars=-1,
-    ):
-        print(df)
+# MARK: Main Fuzzer
+def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.DataFrame:
+    """
+    Run fuzz tests for a given budget across all pairing strategies.
+    NOTE: Percent is ignored upon _input_ for PairingStrategy.optimized and populated upon output.
+    """
+    config = ds.get_config("config")
 
+    all_cases_df = pl.DataFrame()
 
-def _print_total(df: pl.DataFrame) -> None:
-    with pl.Config(
-        set_float_precision=FLOAT_DECIMALS,
-        set_fmt_str_lengths=100,
-        set_tbl_hide_column_names=True,
-        tbl_hide_column_data_types=True,
-        tbl_hide_dataframe_shape=True,
-        set_tbl_cols=-1,
-        tbl_rows=-1,
-        tbl_width_chars=-1,
-    ):
-        print(df)
+    assert budget <= MAX_BUDGET
+    percent = round(budget / MAX_BUDGET * 100)
 
+    for strategy in PairingStrategy:
+        if _shutdown_requested:
+            break
 
-def _generate_summaries(all_cases_df: pl.DataFrame) -> None:
-    if all_cases_df.is_empty():
-        logger.warning("No results to summarize.")
-        return
+        if strategy == PairingStrategy.custom:
+            continue
 
-    start_time = time.perf_counter()
+        desc = f"strategy={strategy.value}, budget={budget:3}, danger={'yes' if include_danger else 'no'}"
+        logger.info(f"\nStarting: {desc}, samples={samples}")
 
-    # --- Optimized (workerman) summary ---
-    optimized_df = all_cases_df.filter(pl.col("strategy") == PairingStrategy.optimized.value)
-    if not optimized_df.is_empty():
-        optimized_df_summary = _generate_summary(optimized_df).drop(["include_danger"])
-        optimized_df_total = _generate_summary_total(optimized_df_summary)
+        case_rows: list[_FuzzInstanceMetrics] = []
 
-        print("\n### OPTIMIZED (WORKERMAN) SUMMARY ###")
-        _print_summary(optimized_df_summary)
-        _print_total(optimized_df_total)
+        for i in range(samples):
+            if _shutdown_requested:
+                break
 
-    # --- Strategy summary (all non-optimized) ---
-    strategy_df = all_cases_df.filter(pl.col("strategy") != PairingStrategy.optimized.value)
+            seed = _make_seed(budget, strategy, i)
+            mip_plan = Plan(mip_optimize, config, budget, percent, seed, include_danger, strategy, True)
+            nr_plan = Plan(nr_optimize, config, budget, percent, seed, include_danger, strategy, False)
 
-    if not strategy_df.is_empty():
-        strategy_df_summary = _generate_summary(strategy_df).drop(["include_danger"])
-        strategy_df_aggregate_summary = _generate_strategy_aggregate_summary(strategy_df_summary)
-        strategy_df_total = _generate_summary_total(strategy_df_summary)
-        out_path = ds.path() / "strategy_summary.csv"
-        strategy_df_summary.with_columns(pl.selectors.float().round(3)).write_csv(out_path)
+            mip_instance = execute_plan(mip_plan)
+            nr_instance = execute_plan(nr_plan)
 
-        print("\n### STRATEGY SUMMARY ###")
-        _print_summary(strategy_df_summary)
-        _print_summary(strategy_df_aggregate_summary)
-        _print_total(strategy_df_total)
+            row = _FuzzInstanceMetrics(
+                seed,
+                budget,
+                percent,
+                include_danger,
+                strategy,
+                nr_instance,
+                mip_instance,
+            )
+            case_rows.append(row)
 
-    # --- Suboptimal breakdown diagnostics ---
-    suboptimal_df = all_cases_df.filter(pl.col("nr_cost") > pl.col("mip_cost"))
+            log_str = row.generate_log_string(i, samples)
+            if (gap := row["nr_cost"] - row["mip_cost"]) > 0:
+                logger.opt(colors=True).warning(f"⚠️  <n>{log_str} (gap: +{gap})</>")
+            else:
+                logger.success(f"✅ {log_str}")
 
-    subset = ["strategy", "seed", "roots", "workers", "dangers"]
-    suboptimal_df = suboptimal_df.sort(["ratio"], descending=True).unique(subset=subset, keep="first")
+        case_df = pl.DataFrame(case_rows)
+        all_cases_df = all_cases_df.vstack(case_df)
 
-    if not suboptimal_df.is_empty():
-        suboptimal_breakdown_df = _generate_suboptimal_breakdown(suboptimal_df)
-        print("\n### SUBOPTIMAL BREAKDOWN ###")
-        _print_summary(suboptimal_breakdown_df)
+        case_summary = _generate_single_case_summary(case_df)
+        _print_summary(case_summary)
 
-        # --- Suboptimal by danger ---
-        suboptimal_by_danger_df = _generate_suboptimal_by_danger(suboptimal_breakdown_df)
-        suboptimal_by_danger_total = _generate_suboptimal_by_danger_total(suboptimal_by_danger_df)
-        print("\n### SUBOPTIMAL BY DANGER ###")
-        _print_summary(suboptimal_by_danger_df)
-        _print_total(suboptimal_by_danger_total)
-
-        # --- Worst suboptimal instances ---
-        worst_suboptimal_df = _generate_worst_suboptimal_summary(suboptimal_df)
-        out_path = ds.path() / "worst_suboptimal_instances.json"
-        worst_suboptimal_df.with_columns(pl.selectors.float().round(3)).write_json(out_path)
-
-        print(f"\n### WORST SUBOPTIMAL INSTANCES (top {WORST_SUBOPTIMAL_REPORTING_COUNT}) ###")
-        _print_summary(worst_suboptimal_df)
-
-    print("#" * 160)
-    print(f"\nSummary Completed in {time.perf_counter() - start_time:.3f}s")
+    return all_cases_df
 
 
 def fuzzer_main(samples: int, budgets: list[int]) -> None:
@@ -446,10 +491,10 @@ def fuzzer_main(samples: int, budgets: list[int]) -> None:
                     raise KeyboardInterrupt
                 metrics = _run_single_config(samples, budget, include_danger)
                 all_metrics = all_metrics.vstack(metrics)
-        _generate_summaries(all_metrics)
+        _generate_all_cases_summaries(all_metrics)
     except KeyboardInterrupt:
         print("\nShutdown complete — generating summary from accumulated data...")
-        _generate_summaries(all_metrics)
+        _generate_all_cases_summaries(all_metrics)
         sys.exit(0)
 
     logger.success("Fuzz test suite finished")

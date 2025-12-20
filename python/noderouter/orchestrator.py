@@ -33,7 +33,7 @@ def execute_plan(plan: Plan) -> Instance:
     assert instance.solution
     if duration is not None and duration < instance.solution.duration:
         log_msg = log_msg + " ♻️"
-    logger.success(log_msg)
+    logger.opt(colors=True).success(f"<n><c>{log_msg}</></>")
 
     return instance
 

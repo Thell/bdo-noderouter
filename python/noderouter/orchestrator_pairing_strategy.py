@@ -1,4 +1,5 @@
 # orchestrator_pairing_strategy.py
+from __future__ import annotations
 
 from enum import StrEnum
 
@@ -6,6 +7,9 @@ from api_exploration_data import get_exploration_data
 
 # number of nearest/cheapest roots to consider for pairing
 PAIRING_TOP_N = 3
+
+# NOTE: MAX_LEN_PAIRING_STRATEGY is assigned after the class definition
+MAX_LEN_PAIRING_STRATEGY = 0
 
 
 class PairingStrategy(StrEnum):
@@ -166,3 +170,9 @@ class PairingStrategy(StrEnum):
 
             case _:
                 raise ValueError(f"Unknown pairing type: {self}")
+
+    def max_name_length(self) -> int:
+        return max(len(s.name) for s in PairingStrategy)
+
+
+MAX_LEN_PAIRING_STRATEGY: int = PairingStrategy("optimized").max_name_length() + 1
