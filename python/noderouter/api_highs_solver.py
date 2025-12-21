@@ -304,14 +304,42 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
     solution_graph.remove_nodes_from(isolates)
 
     # Unused node removal...
-    # First accumulate all nodes from each terminal to root path
+    # NOTE: Accumulate all nodes from root to terminal paths within solution_graph
+    #       using a least inclusive methodology meaning super terminals must be connected
+    #       after all other terminals and prefer connecting to an already used root.
     used_nodes = set()
+    used_roots = set()
+
+    # Normal terminal paths...
     for r_index, terminal_set in terminal_sets.items():
         r_key = node_key_by_index[r_index]
+        if r_key == SUPER_ROOT:
+            continue
         for t_index in terminal_set:
-            if r_key == SUPER_ROOT:
-                # Super Terminals must connect to a base town
-                for potential_root in root_indices_in_graph:
+            if t_index in root_indices_in_graph:
+                continue
+            if not rx.has_path(solution_graph, r_index, t_index):
+                t_key = node_key_by_index[t_index]
+                raise ValueError(f"Terminal {t_key} not connected to root {r_key}!")
+            path = rx.dijkstra_shortest_paths(solution_graph, r_index, t_index)
+            used_nodes.update(path[t_index])
+            used_roots.add(r_index)
+
+    # Super terminal paths
+    for r_index, terminal_set in terminal_sets.items():
+        r_key = node_key_by_index[r_index]
+        if r_key != SUPER_ROOT:
+            continue
+        for t_index in terminal_set:
+            for potential_root in used_roots:
+                if not rx.has_path(solution_graph, potential_root, t_index):
+                    continue
+                path = rx.dijkstra_shortest_paths(solution_graph, potential_root, t_index)
+                used_nodes.update(path[t_index])
+                used_nodes.add(potential_root)
+                break
+            else:
+                for potential_root in root_indices_in_graph - used_roots:
                     if potential_root != SUPER_ROOT:
                         if not rx.has_path(solution_graph, potential_root, t_index):
                             continue
@@ -320,21 +348,18 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
                         used_nodes.add(potential_root)
                         break
                 else:
-                    raise ValueError("Something is wrong with the mip model!")
-            else:
-                # Terminals must connect to assigned root
-                if not rx.has_path(solution_graph, r_index, t_index):
-                    raise ValueError("Something is wrong with the mip model!")
-                path = rx.dijkstra_shortest_paths(solution_graph, r_index, t_index)
-                used_nodes.update(path[t_index])
+                    t_key = node_key_by_index[t_index]
+                    raise ValueError(f"Super Terminal {t_key} not connected to any base town!")
 
     unused_nodes = list(set(solution_graph.node_indices()) - used_nodes)
-    logger.debug(
-        f"  removing {len(unused_nodes)} unused nodes! ({[node_key_by_index[i] for i in unused_nodes]})"
-    )
-    # Sanity check
-    unused_cost = sum([solution_graph[i]["need_exploration_point"] for i in unused_nodes])
+    unused_nodes_with_cost = [i for i in unused_nodes if solution_graph[i]["need_exploration_point"] > 0]
+    unused_cost = 0
+    for node in unused_nodes_with_cost:
+        cost = solution_graph[node]["need_exploration_point"]
+        unused_cost += cost
+        logger.warning(f"  removing node {node_key_by_index[node]} with cost {cost}")
     if unused_cost > 0:
-        logger.error(f"  unused nodes cost: {unused_cost}")
-        raise ValueError("Something is wrong with the mip model!")
+        logger.warning(f"  total unused cost: {unused_cost}")
+        logger.warning("Check (tighten) solver configuration! mip_feasibility_tolerance should be <= 1e-5")
+
     solution_graph.remove_nodes_from(unused_nodes)
