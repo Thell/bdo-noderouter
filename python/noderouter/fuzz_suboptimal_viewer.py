@@ -103,7 +103,7 @@ class _RootColor:
         roots = sorted(list(terminal_sets))
         self.colors = {r: c for r, c in zip(roots, cc.b_glasbey_category10[: len(roots)])}
 
-        # NOTE: Suboptimal roots are those in a different cc cluster in the nr_graph then the mip_graph.
+        # NOTE: Suboptimal roots are those in a different cc cluster in the nr_graph than in the mip_graph.
         def get_root_groups(G: PyDiGraph) -> dict[int, frozenset[int]]:
             ccs = rx.strongly_connected_components(G)
             cc_roots = {i: {idx for idx in cc if idx in terminal_sets} for i, cc in enumerate(ccs)}
@@ -166,8 +166,9 @@ def _add_node_markers_from_graph(fg: FeatureGroup, G: PyDiGraph):
             location=coords.as_geographic(node_idx),
             icon=BeautifyIcon(
                 border_color=node_color,
-                icon_size=[16, 16],
-                icon_anchor=[8, 8],
+                border_width=2,
+                icon_size=[14, 14],
+                icon_anchor=[7, 7],
                 inner_icon_style="margin-top:-2px;",
                 number=cost,
                 text_color="black",
@@ -434,13 +435,9 @@ def _process_custom_plan(terminal_pairs: dict[int, int]):
     mip_plan = _make_plan(plan_args, mip_optimize, True, True)
     nr_plan = _make_plan(plan_args, nr_optimize, False, True)
 
-    try:
-        mip_instance = execute_plan(mip_plan)
-        nr_instance = execute_plan(nr_plan)
-        assert mip_instance.solution and nr_instance.solution
-    except Exception as e:
-        logger.error(f"Solving custom plan failed: {e}")
-        raise e
+    mip_instance = execute_plan(mip_plan)
+    nr_instance = execute_plan(nr_plan)
+    assert mip_instance.solution and nr_instance.solution
 
     _visualize_instances(mip_instance, nr_instance)
 
@@ -471,8 +468,13 @@ def _suboptimal_viewer_ui(page: ft.Page):
             return
 
         try:
+            custom_input.disabled = True
+            custom_input.update()
             _process_custom_plan(data)
-        except Exception:
+            custom_input.disabled = False
+            custom_input.update()
+        except Exception as e:
+            logger.error(f"Error processing custom plan: {e}")
             processing_alert.open = True
         finally:
             page.update()
