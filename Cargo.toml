@@ -4,7 +4,7 @@ description = "Primal Dual Approximations for Node Weighted Steiner Forest"
 repository = "https://github.com/Thell/bdo-noderouter"
 license = "UNLICENSE"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "noderouter"
@@ -29,6 +29,7 @@ pyo3 = { version = "0.27.2", optional = true }
 js-sys = { version = "0.3.83", optional = true }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
 wasm-bindgen = { version = "0.2.106", optional = true }
+fast_paths = "1.0.0"
 
 [features]
 default = []

@@ -17,6 +17,7 @@ use smallvec::SmallVec;
 
 use crate::generator_bridge::BridgeGenerator;
 use crate::generator_weighted_combo::WeightedRangeComboGenerator;
+use crate::gssp::DialsRouter;
 use crate::idtree::IDTree;
 
 const SUPER_ROOT: usize = 99_999;
@@ -34,7 +35,7 @@ pub struct ExplorationNodeData {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DynamicState {
     combo_gen_direction: bool,
     has_super_terminal: bool,
@@ -77,6 +78,9 @@ pub struct NodeRouter {
 
     // The main workhorse of the PD Approximation
     ref_graph: StableUnGraph<usize, usize>,
+
+    // Greedy Shortest Shared Paths Approximation
+    gssp_router: DialsRouter,
 
     // The main workhorse of the Bridge Heuristic
     idtree: IDTree,
@@ -181,6 +185,39 @@ impl NodeRouter {
             }
         }
 
+        // Initialize GSSP
+        let gssp_router = DialsRouter::new(exploration_data.clone());
+        // // To keep our 1:1 mappings re-use the edges from ref_graph.
+        // // Since they are non-weighted and undirected we split them to bi-directional.
+        // let mut gssp_input_graph = InputGraph::new();
+        // for edge_idx in ref_graph.edge_indices() {
+        //     let (u, v) = ref_graph.edge_endpoints(edge_idx).unwrap();
+        //     let u_cost = max(index_to_weight[u.index()], 1);
+        //     let v_cost = max(index_to_weight[v.index()], 1);
+
+        //     // fast_paths does not allow zero weight edges.
+        //     // Scaling by a big-M >= max(w(i)) * ∑w(i) allows a nominal weight of 1 to be
+        //     // the reduced 'zero weight' edge cost ensuring the results are correct.
+        //     // (I've just rounded up to 10_000)
+        //     gssp_input_graph.add_edge(u.index(), v.index(), v_cost * 10_000);
+        //     gssp_input_graph.add_edge(v.index(), u.index(), u_cost * 10_000);
+        // }
+
+        // // When super terminals are present the SUPER_ROOT must be in the input graph
+        // // with nominal zero_cost inbound only edges from all base towns.
+        // // SAFETY: The super root must be the last node in the input graph so the indices do
+        // //         not conflict with the waypoint indices in ref_graph.
+        // let sr_index = ref_graph.node_count() + 1;
+        // for &base_town in &base_towns {
+        //     gssp_input_graph.add_edge(base_town, sr_index, 1);
+        // }
+
+        // // Run GSSP prepare once to get the re-usable node_ordering.
+        // gssp_input_graph.freeze();
+        // let params = Params::new(0.125, 0, 0, 0); // default: 0.1, 500, 100, 500
+        // let fast_graph = fast_paths::prepare_with_params(&gssp_input_graph, &params);
+        // let gssp_node_ordering = fast_graph.get_node_ordering();
+
         // Initialize IDTree
         let mut initialization_adj_dict =
             IntMap::with_capacity_and_hasher(ref_graph.node_count(), BuildNoHashHasher::default());
@@ -205,6 +242,7 @@ impl NodeRouter {
             index_to_weight,                                // static
             waypoint_to_index,                              // static
             ref_graph: ref_graph.clone(),                   // static
+            gssp_router,
             idtree: IDTree::new(&initialization_adj_dict),
             idtree_active_indices: FixedBitSet::with_capacity(node_count),
             bridge_generator: BridgeGenerator::new(
@@ -278,7 +316,8 @@ impl NodeRouter {
         self.bridge_affected_terminals = state.bridge_affected_terminals.clone();
     }
 
-    fn init_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) {
+    fn init_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+        let mut terminal_idx_pairs = Vec::with_capacity(terminal_pairs.len());
         for (t, r) in terminal_pairs {
             let t_idx = *self.waypoint_to_index.get(&t).unwrap();
             let r_idx = if r == SUPER_ROOT {
@@ -287,9 +326,11 @@ impl NodeRouter {
             } else {
                 *self.waypoint_to_index.get(&r).unwrap()
             };
+            terminal_idx_pairs.push((t_idx, r_idx));
             self.terminal_to_root.insert(t_idx, r_idx);
             self.terminal_root_pairs.insert((t_idx, r_idx));
         }
+        terminal_idx_pairs
     }
 
     pub fn idtree_weight(&self) -> (FixedBitSet, usize) {
@@ -392,10 +433,33 @@ impl NodeRouter {
         terminal_pairs: Vec<(usize, usize)>,
     ) -> (Vec<usize>, usize) {
         self.clear_dynamic_state();
+        let terminal_idx_pairs = self.init_terminal_pairs(terminal_pairs.clone());
+        self.generate_untouchables();
+
+        // Testing the addition of the greedy shared shortest paths
+        let (gssp_visited, gssp_ordered_removables) = self
+            .gssp_router
+            .greedy_shortest_shared_paths(&terminal_idx_pairs);
+        self.populate_idtree(&gssp_visited);
+
+        assert!(self.terminal_pairs_connected());
+        let post_gssp_state = self.get_dynamic_state();
+
+        self.bridge_heuristics(&mut gssp_ordered_removables.clone());
+        let (fwd_gssp_indices, fwd_gssp_weight) = self.idtree_weight();
+
+        self.restore_dynamic_state(post_gssp_state);
+        self.combo_gen_direction = true;
+
+        self.bridge_heuristics(&mut gssp_ordered_removables.clone());
+        let (rev_gssp_indices, rev_gssp_weight) = self.idtree_weight();
+
+        // restore to default for pd approximation
+        self.clear_dynamic_state();
         self.init_terminal_pairs(terminal_pairs);
         self.generate_untouchables();
 
-        // Two pass setup
+        // Old Two pass setup
         let ordered_removables = self.approximate();
         let post_approximation_state = self.get_dynamic_state();
 
@@ -408,22 +472,28 @@ impl NodeRouter {
         self.bridge_heuristics(&mut ordered_removables.clone());
         let (rev_indices, rev_weight) = self.idtree_weight();
 
+        // Select the winner from all four approximations
+        // The fwd winner.
+        let (fwd_indices, fwd_weight) = if fwd_gssp_weight < fwd_weight {
+            (fwd_gssp_indices, fwd_gssp_weight)
+        } else {
+            (fwd_indices, fwd_weight)
+        };
+        // The rev winner
+        let (rev_indices, rev_weight) = if rev_gssp_weight < rev_weight {
+            (rev_gssp_indices, rev_gssp_weight)
+        } else {
+            (rev_indices, rev_weight)
+        };
+        // The overall winner
         let (winner, weight) = if fwd_weight < rev_weight {
             (fwd_indices, fwd_weight)
         } else {
             (rev_indices, rev_weight)
         };
         let winner = winner.ones().map(|i| self.index_to_waypoint[i]).collect();
-        (winner, weight)
 
-        // Testing: Single pass setup
-        // let ordered_removables = self.approximate();
-        // self.bridge_heuristics(&mut ordered_removables.clone());
-        // let (fwd_indices, _fwd_weight) = self.idtree_weight();
-        // fwd_indices
-        //     .ones()
-        //     .map(|i| self.index_to_waypoint[i])
-        //     .collect()
+        (winner, weight)
     }
 
     /// Set of all terminals, fixed roots and leaf terminal parents
@@ -441,7 +511,84 @@ impl NodeRouter {
         }
     }
 
-    // MARK: PD Approximation
+    // MARK: Approximation
+
+    // /// Greedy Shared Shortest Paths (GSSP) approximation algorithm
+    // /// Drains active pairs while collecting the shortest path among them each iteration.
+    // /// Each shortest path is bought in full upon each iteration such that future iterations
+    // /// are encouraged to re-use the paid for nodes in their shortest path thus building
+    // /// a greedy Steiner Forest approximation from shared shortest paths.
+    // ///
+    // /// Returns: ordered_removables for future bridge heuristics
+    // fn greedy_shared_shortest_paths(&mut self) -> Vec<usize> {
+    //     // TODO: If the tests show accuracy improvement then store the input graph
+    //     // and node_ordering in self to avoid re-computation...
+    //     let mut active_pairs = self.terminal_root_pairs.clone();
+    //     let mut input_graph = self.gssp_input_graph.clone();
+    //     let params = ParamsWithOrder::new(0); // default 100
+    //     let mut fast_graph =
+    //         prepare_with_order_with_params(&input_graph, &self.gssp_node_ordering, &params)
+    //             .expect("node ordering should prepare graph");
+    //     let mut calc = fast_paths::create_calculator(&fast_graph);
+
+    //     let mut super_root_index = None;
+    //     if self.has_super_terminal {
+    //         let sr_index = self.ref_graph.node_count() + 1;
+    //         super_root_index = Some(sr_index);
+
+    //         // Alter the active pairs SUPER_ROOT to the super root index
+    //         for (s, t) in &active_pairs.clone() {
+    //             if *t == SUPER_ROOT {
+    //                 active_pairs.remove(&(*s, *t));
+    //                 active_pairs.insert((*s, sr_index));
+    //             }
+    //         }
+    //     }
+
+    //     let mut visited = IntSet::default();
+    //     let mut ordered_removables: Vec<usize> = Vec::with_capacity(self.ref_graph.node_count());
+
+    //     while let Some((pair, shortest_path)) = active_pairs
+    //         .iter()
+    //         .filter_map(|&(s, t)| calc.calc_path(&fast_graph, s, t).map(|path| ((s, t), path)))
+    //         .min_by_key(|&(_, ref path)| path.get_weight())
+    //     {
+    //         active_pairs.remove(&pair);
+
+    //         let path_nodes = shortest_path.get_nodes();
+    //         ordered_removables.extend(path_nodes);
+    //         visited.extend(path_nodes);
+
+    //         input_graph.thaw();
+    //         for window in path_nodes.windows(2) {
+    //             // SAFETY: We must not have a bidir edge at super root!
+    //             // Since they are already set at nominal zero_cost we can skip the adjustment.
+    //             if Some(window[1]) != super_root_index {
+    //                 input_graph.add_edge_bidir(window[0], window[1], 1);
+    //             }
+    //         }
+    //         input_graph.freeze();
+
+    //         fast_graph =
+    //             prepare_with_order_with_params(&input_graph, &self.gssp_node_ordering, &params)
+    //                 .expect("node ordering should prepare graph");
+    //         calc = fast_paths::create_calculator(&fast_graph);
+    //     }
+
+    //     if self.has_super_terminal {
+    //         // SAFETY: DO NOT LEAK SUPER ROOT!
+    //         visited.remove(&super_root_index.unwrap());
+    //         ordered_removables.retain(|&idx| {
+    //             idx != super_root_index.unwrap() && !self.untouchables.contains(&idx)
+    //         });
+    //     } else {
+    //         ordered_removables.retain(|&idx| !self.untouchables.contains(&idx));
+    //     }
+
+    //     assert!(!visited.is_empty());
+    //     self.populate_idtree(&visited);
+    //     ordered_removables
+    // }
 
     /// Solves the routing problem and returns a list of active nodes in solution   
     fn approximate(&mut self) -> Vec<usize> {
@@ -461,13 +608,13 @@ impl NodeRouter {
         ordered_removables = ordered_removables.iter().rev().cloned().collect();
 
         // remove_removables is setup to primarily handle 'bridged' components in the Bridge
-        // Heuristic. To simplify the code the bridge related variables are set here to
-        // cover all removables, terminals and base towns in the graph.
+        // Heuristic. To simplify the code for the approximation removal testings the bridge
+        // related variables are set here to cover all removables, terminals and base towns
+        // in the graph.
         self.update_bridge_affected_nodes(self.idtree_active_indices.clone());
 
         let (freed, _freed_edges) = self.remove_removables(&ordered_removables);
 
-        // self.idtree_active_indices.retain(|&v| !freed.contains(&v));
         freed
             .iter()
             .for_each(|&v| self.idtree_active_indices.remove(v));

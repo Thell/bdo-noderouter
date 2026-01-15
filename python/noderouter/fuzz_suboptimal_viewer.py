@@ -471,12 +471,12 @@ def _suboptimal_viewer_ui(page: ft.Page):
             custom_input.disabled = True
             custom_input.update()
             _process_custom_plan(data)
-            custom_input.disabled = False
-            custom_input.update()
         except Exception as e:
             logger.error(f"Error processing custom plan: {e}")
             processing_alert.open = True
         finally:
+            custom_input.disabled = False
+            custom_input.update()
             page.update()
 
     def submit_selected(e):

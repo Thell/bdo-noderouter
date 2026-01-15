@@ -191,7 +191,8 @@ def _generate_single_case_summary(df: pl.DataFrame) -> pl.DataFrame:
 
 def _generate_summary(df: pl.DataFrame) -> pl.DataFrame:
     return (
-        df.group_by(["strategy", "budget", "include_danger"])
+        df
+        .group_by(["strategy", "budget", "include_danger"])
         .agg([
             pl.len().alias("instances"),
             (pl.col("nr_cost") == pl.col("mip_cost")).sum().alias("optimal"),
@@ -251,7 +252,8 @@ def _generate_summary_total(df: pl.DataFrame) -> pl.DataFrame:
 
 def _generate_strategy_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame:
     return (
-        summary_df.group_by("strategy")
+        summary_df
+        .group_by("strategy")
         .agg([
             pl.lit("-").alias("budget"),
             pl.col("instances").sum(),
@@ -276,7 +278,8 @@ def _generate_budget_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame
     col_widths[0] = max(longest, col_widths[0])
 
     tmp_df = (
-        summary_df.group_by(["budget"])
+        summary_df
+        .group_by(["budget"])
         .agg([
             pl.lit("-" + " " * (col_widths[0] - len("-"))).alias("strategy"),
             pl.col("instances").sum(),
@@ -299,14 +302,16 @@ def _generate_budget_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame
 
 def _generate_suboptimal_breakdown(df: pl.DataFrame) -> pl.DataFrame:
     return (
-        df.group_by(["strategy", "include_danger"])
+        df
+        .group_by(["strategy", "include_danger"])
         .agg([
             pl.len().alias("instances"),
             pl.mean("ratio").alias("avg_ratio"),
             pl.max("ratio").alias("worst_ratio"),
             pl.mean("speedup").alias("avg_speedup"),
             pl.min("budget").alias("first_budget"),
-            pl.col("ratio")
+            pl
+            .col("ratio")
             .filter(pl.col("budget") == pl.min("budget"))
             .mean()
             .alias("ratio_at_first_budget"),
@@ -319,7 +324,8 @@ def _generate_suboptimal_breakdown(df: pl.DataFrame) -> pl.DataFrame:
 
 def _generate_suboptimal_by_danger(suboptimal_df: pl.DataFrame) -> pl.DataFrame:
     return (
-        suboptimal_df.group_by("include_danger")
+        suboptimal_df
+        .group_by("include_danger")
         .agg([
             pl.col("instances").sum(),
             pl.col("avg_ratio").mean(),
@@ -357,7 +363,8 @@ def _generate_suboptimal_by_danger_total(suboptimal_by_danger_df: pl.DataFrame) 
 
 def _generate_worst_suboptimal_summary(suboptimal_df: pl.DataFrame) -> pl.DataFrame:
     return (
-        suboptimal_df.with_columns(
+        suboptimal_df
+        .with_columns(
             (pl.col("nr_cost") - pl.col("mip_cost")).alias("gap"),
         )
         .sort("ratio", descending=True)
@@ -480,10 +487,12 @@ def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.Da
 
 
 def fuzzer_main(samples: int, budgets: list[int]) -> None:
-    set_logger(ds.get_config("config"))
+    # set_logger(ds.get_config("config"))
+    set_logger({"logger": {"level": "ERROR", "format": "<level>{message}</level>"}})
     all_metrics: pl.DataFrame = pl.DataFrame()
     _install_shutdown_handler()
 
+    start_time = time.time()
     try:
         for budget in budgets:
             for include_danger in (False, True):
@@ -498,7 +507,8 @@ def fuzzer_main(samples: int, budgets: list[int]) -> None:
         sys.exit(0)
 
     logger.success("Fuzz test suite finished")
+    print(f"Total runtime: {time.time() - start_time:.2f}s")
 
 
 if __name__ == "__main__":
-    fuzzer_main(samples=20, budgets=list(range(5, 201, 5)))
+    fuzzer_main(samples=20, budgets=list(range(5, 46, 5)))
