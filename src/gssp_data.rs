@@ -8,22 +8,12 @@ use std::{
 
 use fast_paths::{FastGraph, InputGraph, Params, PathCalculator};
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
-use petgraph::algo::{astar, tarjan_scc};
+use petgraph::algo::tarjan_scc;
 use petgraph::{Direction, graph::NodeIndex, prelude::StableDiGraph};
 use rapidhash::{RapidHashMap, RapidHashSet};
 use smallvec::SmallVec;
 
-use crate::node_router::ExplorationNodeData;
-
-#[derive(serde::Deserialize)]
-pub struct ExplorationNodeDataInternal {
-    pub need_exploration_point: u32,
-    pub is_base_town: bool,
-    pub link_list: Vec<usize>,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
+use crate::node_router::{ExplorationNodeData, SUPER_ROOT};
 
 #[derive(Debug, Clone)]
 #[allow(unused)]
@@ -37,31 +27,27 @@ pub struct NodeData {
 }
 
 pub struct ExplorationData {
-    all_pairs: Vec<(usize, usize)>,
-    base_town_indices: IntSet<usize>,
     pub num_nodes: usize,
-    pub max_weight: u32,
+    pub super_root_index: usize,
+
+    // These are required to instantiate Primal Dual Batch Generator
+    base_town_indices: IntSet<usize>,
     pub ref_graph: StableDiGraph<usize, usize>,
-    pub index_to_waypoint: Vec<usize>,
-    pub index_to_weight: Vec<u32>,
-    pub waypoint_to_index: IntMap<usize, usize>,
-    pub waypoint_to_weight: IntMap<usize, u32>,
-    pub index_to_in_neighbors: Vec<SmallVec<[usize; 4]>>,
-    pub index_to_in_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>>,
     pub index_to_out_neighbors: Vec<SmallVec<[usize; 4]>>,
-    pub index_to_out_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>>,
-    pub index_to_in_neighbors_pos: Vec<IntMap<usize, usize>>,
-    pub input_graph: InputGraph,
+
+    // NOTE: fast_graph is required for calc which has to be rebuilt because it doesn't
+    // implement Clone or Debug
     pub fast_graph: FastGraph,
     pub calc: PathCalculator, // doesn't implement Clone or Debug so we have to make our own.
+
+    pub index_to_weight: Vec<u32>,
     pub leaf_index_to_parent_index: IntMap<usize, usize>,
-    pub reduced_ref_graph: StableDiGraph<usize, usize>,
     pub reduced_index_to_in_neighbors: Vec<SmallVec<[usize; 4]>>,
-    pub reduced_index_to_in_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>>,
-    pub reduced_index_to_out_neighbors: Vec<SmallVec<[usize; 4]>>,
     pub reduced_index_to_out_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>>,
     pub reduced_index_to_in_neighbors_pos: Vec<IntMap<usize, usize>>,
-    pub reduced_input_graph: InputGraph,
+
+    // NOTE: reduced_fast_graph is required for reduced_calc which has to be rebuilt
+    // because it doesn't implement Clone or Debug
     pub reduced_fast_graph: FastGraph,
     pub reduced_calc: PathCalculator, // doesn't implement Clone or Debug so we have to make our own.
 }
@@ -69,45 +55,20 @@ pub struct ExplorationData {
 impl fmt::Debug for ExplorationData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExplorationData")
-            .field("all_pairs", &self.all_pairs)
-            .field("base_town_indices", &self.base_town_indices)
             .field("num_nodes", &self.num_nodes)
-            .field("max_weight", &self.max_weight)
+            .field("base_town_indices", &self.base_town_indices)
             .field("ref_graph", &self.ref_graph)
-            .field("index_to_waypoint", &self.index_to_waypoint)
-            .field("index_to_weight", &self.index_to_weight)
-            .field("waypoint_to_index", &self.waypoint_to_index)
-            .field("waypoint_to_weight", &self.waypoint_to_weight)
-            .field("index_to_in_neighbors", &self.index_to_in_neighbors)
-            .field(
-                "index_to_in_neighbors_weighted",
-                &self.index_to_in_neighbors_weighted,
-            )
             .field("index_to_out_neighbors", &self.index_to_out_neighbors)
-            .field(
-                "index_to_out_neighbors_weighted",
-                &self.index_to_out_neighbors_weighted,
-            )
-            .field("index_to_in_neighbors_pos", &self.index_to_in_neighbors_pos)
-            .field("input_graph", &self.input_graph)
             .field("fast_graph", &self.fast_graph)
             .field("calc", &"PathCalculator(...)")
+            .field("index_to_weight", &self.index_to_weight)
             .field(
                 "leaf_index_to_parent_index",
                 &self.leaf_index_to_parent_index,
             )
-            .field("reduced_ref_graph", &self.reduced_ref_graph)
             .field(
                 "reduced_index_to_in_neighbors",
                 &self.reduced_index_to_in_neighbors,
-            )
-            .field(
-                "reduced_index_to_in_neighbors_weighted",
-                &self.reduced_index_to_in_neighbors_weighted,
-            )
-            .field(
-                "reduced_index_to_out_neighbors",
-                &self.reduced_index_to_out_neighbors,
             )
             .field(
                 "reduced_index_to_out_neighbors_weighted",
@@ -117,7 +78,6 @@ impl fmt::Debug for ExplorationData {
                 "reduced_index_to_in_neighbors_pos",
                 &self.reduced_index_to_in_neighbors_pos,
             )
-            .field("reduced_input_graph", &self.reduced_input_graph)
             .field("reduced_fast_graph", &self.reduced_fast_graph)
             .field("reduced_calc", &"PathCalculator(...)")
             .finish()
@@ -130,35 +90,20 @@ impl Clone for ExplorationData {
         let cloned_fast_graph = self.fast_graph.clone();
         let reduced_cloned_fast_graph = self.reduced_fast_graph.clone();
         Self {
-            all_pairs: self.all_pairs.clone(),
-            base_town_indices: self.base_town_indices.clone(),
             num_nodes: self.num_nodes,
-            max_weight: self.max_weight,
+            super_root_index: self.super_root_index,
+            base_town_indices: self.base_town_indices.clone(),
             ref_graph: self.ref_graph.clone(),
-            index_to_waypoint: self.index_to_waypoint.clone(),
-            index_to_weight: self.index_to_weight.clone(),
-            waypoint_to_index: self.waypoint_to_index.clone(),
-            waypoint_to_weight: self.waypoint_to_weight.clone(),
-            index_to_in_neighbors: self.index_to_in_neighbors.clone(),
-            index_to_in_neighbors_weighted: self.index_to_in_neighbors_weighted.clone(),
             index_to_out_neighbors: self.index_to_out_neighbors.clone(),
-            index_to_out_neighbors_weighted: self.index_to_out_neighbors_weighted.clone(),
-            index_to_in_neighbors_pos: self.index_to_in_neighbors_pos.clone(),
-            input_graph: self.input_graph.clone(),
             fast_graph: cloned_fast_graph.clone(),
             calc: fast_paths::create_calculator(&cloned_fast_graph),
+            index_to_weight: self.index_to_weight.clone(),
             leaf_index_to_parent_index: self.leaf_index_to_parent_index.clone(),
-            reduced_ref_graph: self.reduced_ref_graph.clone(),
             reduced_index_to_in_neighbors: self.reduced_index_to_in_neighbors.clone(),
-            reduced_index_to_in_neighbors_weighted: self
-                .reduced_index_to_in_neighbors_weighted
-                .clone(),
-            reduced_index_to_out_neighbors: self.reduced_index_to_out_neighbors.clone(),
             reduced_index_to_out_neighbors_weighted: self
                 .reduced_index_to_out_neighbors_weighted
                 .clone(),
             reduced_index_to_in_neighbors_pos: self.reduced_index_to_in_neighbors_pos.clone(),
-            reduced_input_graph: self.reduced_input_graph.clone(),
             reduced_fast_graph: reduced_cloned_fast_graph.clone(),
             reduced_calc: fast_paths::create_calculator(&cloned_fast_graph),
         }
@@ -288,8 +233,15 @@ impl ExplorationData {
             max_weight = max_weight.max(weight);
         }
 
-        // SAFETY: Dial's algorithm is built with the assumption of max weight of 3
-        debug_assert!(max_weight <= 3);
+        // ---- Base Towns ----
+        // Primal Dual Basetowns - Exclude super root
+        let super_root_index = waypoint_to_index[&SUPER_ROOT];
+        let base_town_indices: IntSet<usize> = IntSet::from_iter(
+            base_town_nodes
+                .iter()
+                .map(|base_town_node| waypoint_to_index[&base_town_node.waypoint_key])
+                .filter(|&idx| idx != super_root_index),
+        );
 
         // Insert edges (tail -> head => head weight)
         // NOTE: All exploration links are bidirectional and populated into both in_neighbors and
@@ -305,8 +257,13 @@ impl ExplorationData {
             }
         }
 
+        // ---- Graph Validation ----
         // SAFETY: The reference graph is built with the assumption that all nodes are reachable
         //         from both the in and out neighbors except the super root.
+        // SAFETY: Dial's algorithm is built with the assumption of max weight of 3
+        debug_assert!(ref_graph.node_count() == num_nodes);
+        debug_assert!(ref_graph.edge_count() * (max_weight as usize) < u32::MAX as usize);
+
         let mut cc = tarjan_scc(&ref_graph);
         cc.sort_by_key(|c| c.len());
         debug_assert!(cc.len() == 2);
@@ -317,123 +274,58 @@ impl ExplorationData {
             num_nodes - 1
         );
         debug_assert!(cc[0].len() == 1);
-        debug_assert!(cc[0][0].index() == waypoint_to_index[&99999]); // super root
+        debug_assert!(cc[0][0].index() == super_root_index);
+
+        assert!(
+            max_weight <= 3,
+            "max_weight error! Got {} and expected 3.",
+            max_weight
+        );
 
         // SAFETY: reference_graph should not be modified after this point!
         let ref_graph = ref_graph;
-        debug_assert!(ref_graph.node_count() == num_nodes);
-        debug_assert!(ref_graph.edge_count() * (max_weight as usize) < u32::MAX as usize);
 
         // ---- Build Neighbor Mappings ----
-        let mut index_to_in_neighbors: Vec<SmallVec<[usize; 4]>> = Vec::with_capacity(num_nodes);
-        let mut index_to_out_neighbors: Vec<SmallVec<[usize; 4]>> = Vec::with_capacity(num_nodes);
-        let mut index_to_in_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>> =
-            Vec::with_capacity(num_nodes);
-        let mut index_to_out_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>> =
-            Vec::with_capacity(num_nodes);
-
         // SAFETY: There must be a 1:1 mapping between node index and ref_graph node index
         //         to ensure vec pos matches node index.
         //         petgraph's node_indices() is an enumeration of all node indices
         //         (self.raw_nodes().iter().enumerate())
+        let mut index_to_out_neighbors: Vec<SmallVec<[usize; 4]>> = Vec::with_capacity(num_nodes);
+        let mut index_to_out_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>> =
+            Vec::with_capacity(num_nodes);
+
         for node_idx in ref_graph.node_indices() {
-            let mut in_neighbors: SmallVec<[usize; 4]> = ref_graph
-                .neighbors_directed(node_idx, Direction::Incoming)
-                .map(|n| n.index())
-                .collect();
             let mut out_neighbors: SmallVec<[usize; 4]> = ref_graph
                 .neighbors_directed(node_idx, Direction::Outgoing)
                 .map(|n| n.index())
                 .collect();
 
-            // Sorted in ascending order by node weight
-            in_neighbors.sort_by_key(|&i| index_to_weight[i]);
+            // Sorts in ascending order
             out_neighbors.sort_by_key(|&i| index_to_weight[i]);
 
             // [(neighbor_index, neighbor_weight), ...]
-            let current_node_weight = index_to_weight[node_idx.index()];
-            let in_neighbors_weighted: SmallVec<[(usize, u32); 4]> = in_neighbors
-                .iter()
-                .map(|&i| (i, current_node_weight))
-                .collect();
             let out_neighbors_weighted: SmallVec<[(usize, u32); 4]> = out_neighbors
                 .iter()
                 .map(|&i| (i, index_to_weight[i]))
                 .collect();
 
-            index_to_in_neighbors.push(in_neighbors);
             index_to_out_neighbors.push(out_neighbors);
-            index_to_in_neighbors_weighted.push(in_neighbors_weighted);
             index_to_out_neighbors_weighted.push(out_neighbors_weighted);
-        }
-
-        // NOTE: When doing bidir Dial's for paths the forward and reverse paths are built separately.
-        // - forward is built using the out_neighbors / out_neighbors_weighted.
-        // - reverse is built using the in_neighbors / in_neighbors_weighted.
-        //
-        // When zero-weight augmentation is done, all inbound edge weights to v must be set to 0 to
-        // encourage path sharing.
-        // - From v's perspective set the inbound edge to v to weight 0 for each in_neighbor of v.
-        //   Since you are at node v the weight of any incoming edge is the same as the weight of v
-        //   itself in the index_to_weight collection.
-        //   Therefore we need to update the outbound edges on all neighbors in the in_neighbors
-        //   of v collection.
-        // - From the neighbor's perspective set the outbound edge to v to weight 0.
-        //
-        // The index_to_in_neighbors_out_neighbor_pos_map is used to find the position of v in the
-        // out_neighbors of v's neighbors.
-        // That position is the entry position to index in out_neighbors_weighted to update.
-        //
-        // ie:
-        //   for v in path:
-        //     pos_map = index_to_in_neighbors_out_neighbor_pos_map[v]
-        //     for n in index_to_in_neighbors[v]:
-        //       v_pos = pos_map[&n]
-        //       out_neighbors_weighted[n][v_pos] = 0
-        //
-        let mut index_to_in_neighbors_out_neighbor_pos_map: Vec<IntMap<usize, usize>> =
-            Vec::with_capacity(num_nodes);
-
-        for head in ref_graph.node_indices() {
-            let mut pos_map = IntMap::<usize, usize>::default();
-            for &tail in &index_to_in_neighbors[head.index()] {
-                if let Some(pos) = index_to_out_neighbors[tail]
-                    .iter()
-                    .position(|&idx| idx == head.index())
-                {
-                    pos_map.insert(tail, pos);
-                } else {
-                    panic!("No pos found in head: {} for tail: {}", head.index(), tail);
-                }
-            }
-            index_to_in_neighbors_out_neighbor_pos_map.push(pos_map);
-        }
-
-        // Populate all_pairs for random pair generation
-        // reverse pair order allowed to stress test routers
-        // no self loops and no super-root as source
-        let super_root_idx = waypoint_to_index[&99999];
-        let mut all_pairs = Vec::with_capacity((num_nodes - 1).pow(2));
-        for i in 0..nodes.len() {
-            if i == super_root_idx {
-                continue;
-            }
-            for j in 0..nodes.len() {
-                if i != j {
-                    all_pairs.push((i, j));
-                }
-            }
         }
 
         // ---- Fast Graph ----
         // NOTE: This is only used for ref_graph shortest path distances.
         // NOTE: fast_paths does not allow zero weight edges.
+        //
         // Scaling by a weight factor >= max(w(i)) * ∑w(i) allows a nominal weight of 1 to be
         // the reduced 'zero weight' edge cost ensuring the results are correct.
-        // let weight_factor = ref_graph.edge_weights().sum::<usize>() * max_weight as usize;
+        //
+        //   let weight_factor = ref_graph.edge_weights().sum::<usize>() * max_weight as usize;
+        //   debug_assert!(weight_factor > 0);
+        //   debug_assert!(weight_factor * (num_nodes - 1) <= u32::MAX as usize);
+        //
+        // Yet in order to easily extract the true path weight we use 10_000 weight factor.
         let weight_factor = 10_000;
-        debug_assert!(weight_factor > 0);
-        debug_assert!(weight_factor * (num_nodes - 1) <= u32::MAX as usize);
 
         let mut input_graph = InputGraph::new();
         for arc_idx in ref_graph.edge_indices() {
@@ -490,11 +382,11 @@ impl ExplorationData {
         );
         debug_assert!(cc[0].len() == 1, "cc[0].len(): {}", cc[0].len());
         debug_assert!(
-            cc[0][0].index() == waypoint_to_index[&99999],
+            cc[0][0].index() == super_root_index,
             "super root not isolated"
         );
 
-        // SAFETY: reference_graph should not be modified after this point!
+        // SAFETY: reduced ref graph should not be modified after this point!
         let reduced_ref_graph = reduced_ref_graph;
 
         // ---- Build Reduced Neighbor Mappings ----
@@ -506,8 +398,6 @@ impl ExplorationData {
         let mut reduced_index_to_in_neighbors: Vec<SmallVec<[usize; 4]>> =
             Vec::with_capacity(num_nodes);
         let mut reduced_index_to_out_neighbors: Vec<SmallVec<[usize; 4]>> =
-            Vec::with_capacity(num_nodes);
-        let mut reduced_index_to_in_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>> =
             Vec::with_capacity(num_nodes);
         let mut reduced_index_to_out_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>> =
             Vec::with_capacity(num_nodes);
@@ -536,11 +426,6 @@ impl ExplorationData {
             out_neighbors.sort_by_key(|&i| index_to_weight[i]);
 
             // [(neighbor_index, neighbor_weight), ...]
-            let current_node_weight = index_to_weight[node_idx.index()];
-            let in_neighbors_weighted: SmallVec<[(usize, u32); 4]> = in_neighbors
-                .iter()
-                .map(|&i| (i, current_node_weight))
-                .collect();
             let out_neighbors_weighted: SmallVec<[(usize, u32); 4]> = out_neighbors
                 .iter()
                 .map(|&i| (i, index_to_weight[i]))
@@ -548,7 +433,6 @@ impl ExplorationData {
 
             reduced_index_to_in_neighbors.push(in_neighbors);
             reduced_index_to_out_neighbors.push(out_neighbors);
-            reduced_index_to_in_neighbors_weighted.push(in_neighbors_weighted);
             reduced_index_to_out_neighbors_weighted.push(out_neighbors_weighted);
         }
 
@@ -556,16 +440,33 @@ impl ExplorationData {
         // - forward is built using the out_neighbors / out_neighbors_weighted.
         // - reverse is built using the in_neighbors / in_neighbors_weighted.
         //
-        // Refer to the comments in the ref_graph section for more details.
+        // When zero-weight augmentation is done, all inbound edge weights to v must be set to 0 to
+        // encourage path sharing.
+        // - From v's perspective set the inbound edge to v to weight 0 for each in_neighbor of v.
+        //   Since you are at node v the weight of any incoming edge is the same as the weight of v
+        //   itself in the index_to_weight collection.
+        //   Therefore we need to update the outbound edges on all neighbors in the in_neighbors
+        //   of v collection.
+        // - From the neighbor's perspective set the outbound edge to v to weight 0.
+        //
+        // The index_to_in_neighbors_out_neighbor_pos_map is used to find the position of v in the
+        // out_neighbors of v's neighbors.
+        // That position is the entry position to index in out_neighbors_weighted to update.
+        //
+        // ie:
+        //   for v in path:
+        //     pos_map = index_to_in_neighbors_out_neighbor_pos_map[v]
+        //     for n in index_to_in_neighbors[v]:
+        //       v_pos = pos_map[&n]
+        //       out_neighbors_weighted[n][v_pos] = 0
+        //
         let mut reduced_index_to_in_neighbors_out_neighbor_pos_map: Vec<IntMap<usize, usize>> =
             Vec::with_capacity(num_nodes);
 
         for head in ref_graph.node_indices() {
             let is_removed_leaf = leaf_index_to_parent_index.contains_key(&head.index());
-            let pos_map: IntMap<usize, usize> = if is_removed_leaf {
-                IntMap::default()
-            } else {
-                let mut pos_map = IntMap::<usize, usize>::default();
+            let mut pos_map = IntMap::<usize, usize>::default();
+            if !is_removed_leaf {
                 for &tail in &reduced_index_to_in_neighbors[head.index()] {
                     if let Some(pos) = reduced_index_to_out_neighbors[tail]
                         .iter()
@@ -576,14 +477,9 @@ impl ExplorationData {
                         panic!("No pos found in head: {} for tail: {}", head.index(), tail);
                     }
                 }
-                pos_map
             };
             reduced_index_to_in_neighbors_out_neighbor_pos_map.push(pos_map);
         }
-
-        // NOTE: Unlike the main ref_graph building section we skip the population of the
-        // all_pairs for random pair generation since that is used by testing/benching to
-        // simulate the external inputs and the ref_graph is used for that.
 
         // ---- Fast Graph ----
         // NOTE: This is only used for reduced_ref_graph shortest path distances.
@@ -606,139 +502,29 @@ impl ExplorationData {
         let reduced_fast_graph = fast_paths::prepare_with_params(&reduced_input_graph, &params);
         let reduced_calc = fast_paths::create_calculator(&reduced_fast_graph);
 
-        // ---- Base Towns ----
-        // Primal Dual Basetowns - Exclude super root
-        let base_town_indices: IntSet<usize> = IntSet::from_iter(
-            base_town_nodes
-                .iter()
-                .map(|base_town_node| waypoint_to_index[&base_town_node.waypoint_key])
-                .filter(|&idx| idx != super_root_idx),
-        );
-
         // NOTE: Each of the following is safely shared between the ref_graph and the reduced_ref_graph
         // as long as the usage is for its intended mapping and not for munging of the graph membership.
-        // - index_to_waypoint,
         // - index_to_weight,
-        // - waypoint_to_index,
-        // - waypoint_to_weight,
 
-        assert!(index_to_in_neighbors.len() == num_nodes);
         assert!(index_to_out_neighbors.len() == num_nodes);
-        assert!(index_to_in_neighbors_weighted.len() == num_nodes);
         assert!(index_to_out_neighbors_weighted.len() == num_nodes);
 
-        // ---- Return ----
         Self {
-            all_pairs,
             base_town_indices,
-            max_weight,
+            super_root_index,
             num_nodes,
             ref_graph,
-            index_to_waypoint,
-            index_to_weight,
-            waypoint_to_index,
-            waypoint_to_weight,
-            index_to_in_neighbors,
             index_to_out_neighbors,
-            index_to_in_neighbors_weighted,
-            index_to_out_neighbors_weighted,
-            index_to_in_neighbors_pos: index_to_in_neighbors_out_neighbor_pos_map,
-            input_graph,
             fast_graph,
             calc,
+            index_to_weight,
             leaf_index_to_parent_index,
-            reduced_ref_graph,
             reduced_index_to_in_neighbors,
-            reduced_index_to_out_neighbors,
-            reduced_index_to_in_neighbors_weighted,
             reduced_index_to_out_neighbors_weighted,
             reduced_index_to_in_neighbors_pos: reduced_index_to_in_neighbors_out_neighbor_pos_map,
-            reduced_input_graph,
             reduced_fast_graph,
             reduced_calc,
         }
-    }
-
-    /// Returns a subgraph of the reference graph with only the nodes in `nodes`.
-    ///
-    /// NOTE: Edge indices are invalidated as they would be following the removal
-    ///       of each edge with an endpoint in a removed node.
-    pub fn subgraph_stable(
-        &self,
-        nodes: &[usize],
-        use_reduced: Option<bool>,
-    ) -> StableDiGraph<usize, usize> {
-        let nodes = IntSet::from_iter(nodes.iter().copied());
-        let mut subgraph = if use_reduced.unwrap_or(false) {
-            self.reduced_ref_graph.clone()
-        } else {
-            self.ref_graph.clone()
-        };
-        subgraph.retain_nodes(|_g, n| nodes.contains(&n.index()));
-        subgraph
-    }
-
-    /// Returns whether all `pairs` have paths.
-    ///
-    /// NOTE: All valid paths within reduced_ref_graph are used are valid in ref_graph.
-    pub fn all_have_paths(&self, nodes: &[usize], pairs: &[(usize, usize)]) -> bool {
-        // NOTE: It is assumed that nodes are intermediate nodes and pairs are endpoints.
-        let mut nodes = nodes.to_owned();
-        for &(s, t) in pairs {
-            nodes.push(s);
-            nodes.push(t);
-        }
-
-        let subgraph = self.subgraph_stable(&nodes, None);
-
-        let mut final_result = true;
-        for (s, t) in pairs {
-            let start_idx = NodeIndex::new(*s);
-            let goal_idx = NodeIndex::new(*t);
-            let result = astar(
-                &subgraph,
-                start_idx,
-                |finish| finish == goal_idx,
-                |e| *e.weight(),
-                |_| 0, // zero heuristic → pure Dijkstra
-            );
-            if result.is_none() {
-                println!(
-                    "missing path from {} to {}",
-                    self.index_to_waypoint[*s], self.index_to_waypoint[*t]
-                );
-                final_result = false;
-            }
-        }
-        final_result
-    }
-
-    /// Dijkstra path finder for a single waypoint pair
-    ///
-    /// # Returns
-    /// Option<(cost, path)>
-    pub fn dijkstra_path(
-        &self,
-        start: usize,
-        goal: usize,
-        use_reduced: Option<bool>,
-    ) -> Option<(usize, Vec<usize>)> {
-        let start_idx = petgraph::graph::NodeIndex::new(start);
-        let goal_idx = petgraph::graph::NodeIndex::new(goal);
-
-        let graph = if use_reduced.unwrap_or(false) {
-            &self.reduced_ref_graph
-        } else {
-            &self.ref_graph
-        };
-        astar(
-            graph,
-            start_idx,
-            |finish| finish == goal_idx,
-            |e| *e.weight(),
-            |_| 0, // zero heuristic → pure Dijkstra
-        )
-        .map(|(cost, nodes)| (cost, nodes.into_iter().map(|n| n.index()).collect()))
     }
 
     /// Transforms original ref_graph index pairs to reduced_ref_graph index pairs
@@ -850,37 +636,6 @@ impl ExplorationData {
 
         cutoffs_heap
     }
-
-    /// NOTE: This is safe to use on both ref_graph and reduced_ref_graph.
-    pub fn index_to_waypoint_many(&self, path: &[usize]) -> Vec<usize> {
-        path.iter()
-            .map(|&idx| self.index_to_waypoint[idx])
-            .collect()
-    }
-
-    /// NOTE: This is safe to use on both ref_graph and reduced_ref_graph.
-    pub fn index_to_weight_many(&self, indices: &[usize]) -> Vec<u32> {
-        indices
-            .iter()
-            .map(|&idx| self.index_to_weight[idx])
-            .collect()
-    }
-
-    /// NOTE: This is safe to use on both ref_graph and reduced_ref_graph.
-    pub fn waypoint_to_weight_many(&self, waypoints: &[usize]) -> Vec<u32> {
-        waypoints
-            .iter()
-            .map(|wp| self.waypoint_to_weight[wp])
-            .collect()
-    }
-
-    pub fn sort_by_ref_graph_distance(
-        &mut self,
-        wp_pairs: &mut [(usize, usize)],
-        use_reduced: Option<bool>,
-    ) {
-        wp_pairs.sort_by_key(|(s, t)| self.query_fp_distance(*s, *t, use_reduced));
-    }
 }
 
 // MARK: - PDBatchGenerator
@@ -898,6 +653,9 @@ impl ExplorationData {
 pub struct PDBatchGenerator {
     exploration_data: ExplorationData,
 
+    num_nodes: usize,
+    ref_graph: StableDiGraph<usize, usize>,
+    super_root_index: usize,
     settled_nodes: IntSet<usize>, // nodes
     paid_weight: Vec<u32>,        // weights
     connected_pairs: RapidHashSet<(usize, usize)>,
@@ -906,24 +664,24 @@ pub struct PDBatchGenerator {
 
 impl PDBatchGenerator {
     pub fn new(exploration_data: &ExplorationData) -> Self {
-        let exploration_data = exploration_data.clone();
-        let connected_pairs = RapidHashSet::default();
-        let terminal_to_root = Vec::new();
-        let pd_x = IntSet::default();
-        let pd_y = vec![0; exploration_data.ref_graph.node_count()];
+        let ed = exploration_data.clone();
 
+        let num_nodes = ed.num_nodes;
         Self {
-            exploration_data,
-            settled_nodes: pd_x,
-            paid_weight: pd_y,
-            connected_pairs,
-            terminal_to_root,
+            num_nodes: num_nodes.clone(),
+            ref_graph: ed.ref_graph.clone(),
+            super_root_index: ed.super_root_index,
+            exploration_data: ed,
+            settled_nodes: IntSet::default(),
+            paid_weight: vec![0; num_nodes],
+            connected_pairs: RapidHashSet::default(),
+            terminal_to_root: Vec::new(),
         }
     }
 
     /// Induce subgraph from reference graph using node indices.
     fn ref_subgraph_stable(&self, indices: &IntSet<usize>) -> StableDiGraph<(), usize> {
-        self.exploration_data.ref_graph.filter_map(
+        self.ref_graph.filter_map(
             |node_idx, _| {
                 if indices.contains(&node_idx.index()) {
                     Some(())
@@ -937,10 +695,8 @@ impl PDBatchGenerator {
 
     /// Finds and returns nodes not in settlement with neighbors in settlement.
     fn find_frontier_nodes(&self, settlement: &IntSet<usize>) -> IntSet<usize> {
-        let mut frontier = IntSet::with_capacity_and_hasher(
-            self.exploration_data.ref_graph.node_count(),
-            BuildNoHashHasher::default(),
-        );
+        let mut frontier =
+            IntSet::with_capacity_and_hasher(self.num_nodes, BuildNoHashHasher::default());
         frontier.extend(
             settlement
                 .iter()
@@ -966,7 +722,7 @@ impl PDBatchGenerator {
     ///         the base_town_indices to check if a super terminal is in the current set
     ///         with a base town, meaning it connects to the super_root.
     fn update_violations(&mut self, violated: &mut IntSet<usize>) -> bool {
-        let super_root_index = self.exploration_data.waypoint_to_index[&99999];
+        let super_root_index = self.super_root_index;
 
         let x = &self.settled_nodes;
         let subgraph = self.ref_subgraph_stable(x);
@@ -1021,8 +777,8 @@ impl PDBatchGenerator {
         &mut self,
         pairs: &[(usize, usize)],
     ) -> Vec<SmallVec<[(usize, usize); 4]>> {
-        let num_nodes = self.exploration_data.num_nodes;
-        let super_root_index = self.exploration_data.waypoint_to_index[&99999];
+        let num_nodes = self.num_nodes;
+        let super_root_index = self.super_root_index;
         let index_to_weight = self.exploration_data.index_to_weight.clone();
 
         // Initialize terminal_to_root mappings for violated pairs
@@ -1089,29 +845,6 @@ impl PDBatchGenerator {
         batches
     }
 
-    /// Generates batches of original pairs.
-    ///
-    /// Requires that:
-    /// - super_root is not a source node in any pair.
-    ///
-    /// When pairs.len() ≤ batching_threshold, returns a single batch of all indices.
-    pub fn generate_pair_batches(
-        &mut self,
-        pairs: &[(usize, usize)],
-        batching_threshold: usize,
-    ) -> Vec<SmallVec<[(usize, usize); 4]>> {
-        if pairs.len() <= batching_threshold {
-            vec![
-                pairs
-                    .iter()
-                    .cloned()
-                    .collect::<SmallVec<[(usize, usize); 4]>>(),
-            ]
-        } else {
-            self.primal_dual_batch_generator(pairs)
-        }
-    }
-
     /// Generates batches of original pair indices (0..pairs.len()).
     ///
     /// Requires that:
@@ -1137,28 +870,6 @@ impl PDBatchGenerator {
             .into_iter()
             .map(|batch| batch.iter().map(|key| pair_key_to_index[key]).collect())
             .collect()
-    }
-
-    /// Generates batches of original pair indices (0..pairs.len()).
-    ///
-    /// The batched pairs are those that went tight in the same iteration
-    /// of the Node Weighted Primal-Dual approximation.
-    ///
-    /// Requires that:
-    /// - `pair_index_to_pair_key` maps index → pair.
-    ///
-    /// When pairs.len() ≤ batching_threshold, returns a single batch of all indices.
-    pub fn generate_pair_batches_with_indices<'a>(
-        &self,
-        pairs: &'a [(usize, usize)],
-        batch_size: usize,
-    ) -> impl Iterator<Item = Vec<((usize, usize), usize)>> + 'a {
-        (0..pairs.len()).step_by(batch_size).map(move |start| {
-            let end = (start + batch_size).min(pairs.len());
-            (start..end)
-                .map(|i| (pairs[i], i)) // pair + its stable index in `pairs`
-                .collect()
-        })
     }
 }
 

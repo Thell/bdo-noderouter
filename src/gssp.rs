@@ -2,9 +2,9 @@
 
 /// Implementation of Bi-directional Dial's algorithm.
 ///
-/// Runs the 'greedy shortest shared path' algorithm on the reference graph
-/// to build an approximation to the Steiner forest problem and returns all
-/// intermediate nodes on all paths in 'as added' path order.
+/// Runs the 'greedy shortest shared path' algorithm on the reduced reference graph
+/// to build an approximation to the Steiner forest problem and returns all used and
+/// intermediate nodes on all paths in an 'as added' path order.
 ///
 /// Base reference graph details:
 /// * Node weighted planar graph node weights in range 0..=3
@@ -32,12 +32,23 @@ use crate::dstree::DSTree;
 use crate::gssp_data::{ExplorationData, PDBatchGenerator, canonicalize_pairs};
 use crate::node_router::ExplorationNodeData;
 
+// SAFETY: MAX_WEIGHT is the current maximum from the exploration data and fits nicely with the
+//         Dial's algorithm because it makes the bucket counts a power of 2. This allows us to
+//         use bit operations to index into the buckets instead of modulo.
+//         As such we set it as a Magic Value rather than set it dynamically from the graph data.
+const MAX_WEIGHT: usize = 3;
+
 #[derive(Clone, Debug)]
 pub struct DialsRouter {
-    pub exploration_data: ExplorationData,
+    // exploration data
+    exploration_data: ExplorationData,
 
     // reference graph
+    num_nodes: usize,
+    super_root_index: usize,
     index_to_weight: Vec<u32>,
+
+    // reduced reference graph
     reduced_index_to_in_neighbors: Vec<SmallVec<[usize; 4]>>,
     reduced_index_to_out_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>>,
     reduced_index_to_in_neighbors_pos: Vec<IntMap<usize, usize>>,
@@ -48,18 +59,24 @@ pub struct DialsRouter {
     // Dial's BiDir
     forward_data: Vec<(u32, u32)>, // (distance, predecessor)
     reverse_data: Vec<(u32, u32)>,
-    forward_buckets: [Vec<usize>; 4],
-    reverse_buckets: [Vec<usize>; 4],
+    forward_buckets: [Vec<usize>; MAX_WEIGHT + 1],
+    reverse_buckets: [Vec<usize>; MAX_WEIGHT + 1],
     dials_touched_indices: FixedBitSet,
 }
 
 impl DialsRouter {
     pub fn new(nodes_map: BTreeMap<usize, ExplorationNodeData>) -> Self {
         let ed = ExplorationData::new(nodes_map);
+
+        // SAFETY: Using the ref_graph num nodes instead of reduced graph allows us to
+        //         keep a 1:1 mapping between node indices and positions in the data.
+        //         Since all exploration data has a 1:1 mapping, this is safe.
+        let num_nodes = ed.num_nodes;
+
+        // reference graph
+        let super_root_index = ed.super_root_index;
         let index_to_weight = ed.index_to_weight.clone();
 
-        // We need to keep both full and reduced maps since the single pair query is
-        // done on the full graph and the batch query is done on the reduced graph.
         let reduced_index_to_in_neighbors = ed.reduced_index_to_in_neighbors.clone();
         let reduced_index_to_out_neighbors_weighted =
             ed.reduced_index_to_out_neighbors_weighted.clone();
@@ -68,13 +85,13 @@ impl DialsRouter {
         let batch_generator = PDBatchGenerator::new(&ed);
 
         // Initialize with empty adj to populate only the nodes of the DSTree.
-        let empty_adj: Vec<SmallVec<[usize; 4]>> = vec![SmallVec::with_capacity(4); ed.num_nodes];
+        let empty_adj: Vec<SmallVec<[usize; 4]>> = vec![SmallVec::with_capacity(4); num_nodes];
         let dstree = DSTree::new(&empty_adj, true);
-
-        let num_nodes = ed.num_nodes;
 
         DialsRouter {
             exploration_data: ed,
+            num_nodes,
+            super_root_index,
             index_to_weight,
             reduced_index_to_in_neighbors,
             reduced_index_to_out_neighbors_weighted,
@@ -89,7 +106,7 @@ impl DialsRouter {
         }
     }
 
-    fn rebuild_path_bidir_from(
+    fn build_path_from(
         &self,
         start_node: usize,
         goal_node: usize,
@@ -129,7 +146,7 @@ impl DialsRouter {
             .collect()
     }
 
-    pub fn dials_path(
+    fn dials_path(
         &mut self,
         inbound_neighbors: &[SmallVec<[usize; 4]>],
         weights: &[u32],
@@ -138,8 +155,6 @@ impl DialsRouter {
         goal_node: usize,
         cutoff_distance: u32,
     ) -> Option<(u32, usize)> {
-        const MAX_WEIGHT: usize = 3;
-
         let n = outbound_neighbors_weighted.len();
         if start_node >= n || goal_node >= n {
             return None;
@@ -277,12 +292,22 @@ impl DialsRouter {
         best_meet_node.map(|m| (best_distance, m))
     }
 
+    /// Runs the 'greedy shortest shared path' algorithm on the reduced reference graph
+    /// to build an approximation to the Steiner forest problem and returns all used and
+    /// intermediate nodes on all paths in an 'as added' path order.
+    ///
+    /// Returns (set of used nodes, vec of ordered intermediate nodes)
     pub fn greedy_shortest_shared_paths(
         &mut self,
         pairs: &[(usize, usize)],
     ) -> (IntSet<usize>, Vec<usize>) {
-        let super_root_index = self.exploration_data.waypoint_to_index[&99999];
-        let mut ordered_removables = Vec::with_capacity(self.exploration_data.num_nodes);
+        // SAFETY: Filling the bitset with ones forces the first call to dials_path
+        // to clear all data entries
+        self.dials_touched_indices.insert_range(..);
+        self.dstree.reset_all_edges();
+
+        let super_root_index = self.super_root_index;
+        let mut ordered_removables = Vec::with_capacity(self.num_nodes);
 
         // Replace all instances of SUPER_ROOT with super_root_index
         let pairs = pairs
@@ -328,7 +353,6 @@ impl DialsRouter {
         let mut cutoffs_heap = self
             .exploration_data
             .generate_cutoff_heap(&working_pairs, Some(true));
-        self.dstree.reset_all_edges();
         let mut used_pairs = FixedBitSet::with_capacity(working_pairs.len());
 
         // Path rebuilding for the best pair of each round of augmentation.
@@ -421,14 +445,10 @@ impl DialsRouter {
                 used_pairs.insert(best_index);
 
                 let (s, t) = pair_index_to_pair_key[&best_index];
-                let path = self.rebuild_path_bidir_from(
-                    s,
-                    t,
-                    best_meet,
-                    &best_forward_data,
-                    &best_reverse_data,
-                );
+                let path =
+                    self.build_path_from(s, t, best_meet, &best_forward_data, &best_reverse_data);
 
+                // TODO: Fallback to capture all fuzzer incidents (see TODO in augmentation loop).
                 ordered_removables.extend(&path);
 
                 // Zero-weight augmentation to encourage shared paths.
@@ -440,6 +460,11 @@ impl DialsRouter {
                     for &n in inbound_neighbors[v].iter() {
                         outbound_neighbors_weighted[n][pos_map[&n]].1 = 0;
                     }
+
+                    // TODO: Identify edge-case in fuzzer where u is neighbor of super root.
+                    // This is a bug in the fuzzer. Once fixed ordered_removables should be
+                    // removed from this inner loop and visited should be populated using the
+                    // dstree.
                     if v != super_root_index {
                         self.dstree.insert_edge(u, v);
                     }
