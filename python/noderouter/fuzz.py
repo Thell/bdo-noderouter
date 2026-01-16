@@ -425,7 +425,9 @@ def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     return hashlib.sha256(f"{budget}:{strategy}:{i}".encode("utf-8")).hexdigest()[:7]
 
 
-def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.DataFrame:
+def _run_single_config(
+    strategies: list[PairingStrategy], samples: int, budget: int, include_danger: bool
+) -> pl.DataFrame:
     """
     Run fuzz tests for a given budget across all pairing strategies.
     NOTE: Percent is ignored upon _input_ for PairingStrategy.optimized and populated upon output.
@@ -437,7 +439,7 @@ def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.Da
     assert budget <= MAX_BUDGET
     percent = round(budget / MAX_BUDGET * 100)
 
-    for strategy in PairingStrategy:
+    for strategy in strategies:
         if _shutdown_requested:
             break
 
@@ -486,7 +488,7 @@ def _run_single_config(samples: int, budget: int, include_danger: bool) -> pl.Da
     return all_cases_df
 
 
-def fuzzer_main(samples: int, budgets: list[int]) -> None:
+def fuzzer_main(strategies: list[PairingStrategy], samples: int, budgets: list[int]) -> None:
     # set_logger(ds.get_config("config"))
     set_logger({"logger": {"level": "ERROR", "format": "<level>{message}</level>"}})
     all_metrics: pl.DataFrame = pl.DataFrame()
@@ -498,7 +500,7 @@ def fuzzer_main(samples: int, budgets: list[int]) -> None:
             for include_danger in (False, True):
                 if _shutdown_requested:
                     raise KeyboardInterrupt
-                metrics = _run_single_config(samples, budget, include_danger)
+                metrics = _run_single_config(strategies, samples, budget, include_danger)
                 all_metrics = all_metrics.vstack(metrics)
         _generate_all_cases_summaries(all_metrics)
     except KeyboardInterrupt:
@@ -511,4 +513,29 @@ def fuzzer_main(samples: int, budgets: list[int]) -> None:
 
 
 if __name__ == "__main__":
-    fuzzer_main(samples=20, budgets=list(range(5, 46, 5)))
+    # NOTE: For full fuzzing we would want to include all possible strategies
+    strategies = [s for s in PairingStrategy]
+
+    # NOTE: For testing purposes we can use a subset of strategies
+    # strategies = [PairingStrategy.optimized, PairingStrategy.random_town]
+
+    # NOTE: For full fuzzing we should use a subset of budgets since the MIP
+    # solver takes a long time and is executed for each strategy within each budget
+    # times the number of samples.
+    budgets = range(5, 46, 5)
+
+    # NOTE: For testing purposes or limited subsets the range can be increased
+    # to include all possible budgets.
+    # NOTE: MIP optimal solutions are available for (5, 555, 5).
+    # budgets = range(5, 555, 5)
+
+    # NOTE: For normal fuzzing or testing purposes the sample count can be adjusted
+    # as desired. The default is 20 to allow for a diverse random selection of pairs.
+    samples = 20
+
+    # # Settings for running the optimized strategy purely to populate the MIP cache
+    # strategies = [PairingStrategy.optimized]
+    # budgets = range(5, 555, 5)
+    # samples = 1
+
+    fuzzer_main(strategies, samples, budgets)
