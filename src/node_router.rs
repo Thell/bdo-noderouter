@@ -383,7 +383,7 @@ impl NodeRouter {
                 self.max_frontier_rings = parsed;
                 // Store the last combo cutoff value
                 let current_cutoff: usize = self.ring_combo_cutoff.last().copied().unwrap_or(0);
-                self.ring_combo_cutoff = vec![0; parsed as usize];
+                self.ring_combo_cutoff = vec![0; parsed];
 
                 // Set all cutoffs to the current 'last' cutoff
                 self.ring_combo_cutoff

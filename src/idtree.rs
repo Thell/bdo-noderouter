@@ -564,10 +564,10 @@ impl IDTree {
 
                 // 10 Link(ReRoot(𝑢),𝑣,𝑟𝑜𝑜𝑡𝑣);
                 self.reroot(u);
-                if let Some(new_root) = self.link_non_tree_edge(u, v, root_v) {
-                    if new_root != root_v {
-                        self.reroot(new_root);
-                    }
+                if let Some(new_root) = self.link_non_tree_edge(u, v, root_v)
+                    && new_root != root_v
+                {
+                    self.reroot(new_root);
                 }
             }
 
@@ -586,10 +586,10 @@ impl IDTree {
 
         // 15 Link(ReRoot(𝑢),𝑣,𝑟𝑜𝑜𝑡𝑣);
         self.reroot_tree_edge(u, v);
-        if let Some(new_root) = self.link_tree_edge(root_u, v, root_v) {
-            if new_root != root_v {
-                self.reroot(new_root);
-            }
+        if let Some(new_root) = self.link_tree_edge(root_u, v, root_v)
+            && new_root != root_v
+        {
+            self.reroot(new_root);
         }
         1
     }
@@ -709,10 +709,10 @@ impl IDTree {
                     p = nodes[p as usize].parent;
                 }
 
-                if let Some(new_root) = new_root {
-                    if new_root != root_v {
-                        self.reroot(new_root);
-                    }
+                if let Some(new_root) = new_root
+                    && new_root != root_v
+                {
+                    self.reroot(new_root);
                 }
                 return true;
             }

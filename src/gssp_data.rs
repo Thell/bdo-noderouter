@@ -668,7 +668,7 @@ impl PDBatchGenerator {
 
         let num_nodes = ed.num_nodes;
         Self {
-            num_nodes: num_nodes.clone(),
+            num_nodes,
             ref_graph: ed.ref_graph.clone(),
             super_root_index: ed.super_root_index,
             exploration_data: ed,
