@@ -522,12 +522,12 @@ if __name__ == "__main__":
     # NOTE: For full fuzzing we should use a subset of budgets since the MIP
     # solver takes a long time and is executed for each strategy within each budget
     # times the number of samples.
-    # budgets = range(5, 46, 5)
+    budgets = range(5, 51, 5)
 
     # NOTE: For testing purposes or limited subsets the range can be increased
     # to include all possible budgets.
     # NOTE: MIP optimal solutions are available for (5, 555, 5).
-    budgets = range(5, 555, 5)
+    # budgets = range(5, 555, 5)
 
     # NOTE: For normal fuzzing or testing purposes the sample count can be adjusted
     # as desired. The default is 20 to allow for a diverse random selection of pairs.
