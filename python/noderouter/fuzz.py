@@ -488,9 +488,9 @@ def _run_single_config(
     return all_cases_df
 
 
-def fuzzer_main(strategies: list[PairingStrategy], samples: int, budgets: list[int]) -> None:
-    # set_logger(ds.get_config("config"))
-    set_logger({"logger": {"level": "ERROR", "format": "<level>{message}</level>"}})
+def fuzzer_main(strategies: list[PairingStrategy], samples: int, budgets: list[int] | range) -> None:
+    set_logger(ds.get_config("config"))
+    # set_logger({"logger": {"level": "ERROR", "format": "<level>{message}</level>"}})
     all_metrics: pl.DataFrame = pl.DataFrame()
     _install_shutdown_handler()
 
@@ -522,19 +522,19 @@ if __name__ == "__main__":
     # NOTE: For full fuzzing we should use a subset of budgets since the MIP
     # solver takes a long time and is executed for each strategy within each budget
     # times the number of samples.
-    budgets = range(5, 46, 5)
+    # budgets = range(5, 46, 5)
 
     # NOTE: For testing purposes or limited subsets the range can be increased
     # to include all possible budgets.
     # NOTE: MIP optimal solutions are available for (5, 555, 5).
-    # budgets = range(5, 555, 5)
+    budgets = range(5, 555, 5)
 
     # NOTE: For normal fuzzing or testing purposes the sample count can be adjusted
     # as desired. The default is 20 to allow for a diverse random selection of pairs.
     samples = 20
 
     # # Settings for running the optimized strategy purely to populate the MIP cache
-    # strategies = [PairingStrategy.optimized]
+    # strategies = [PairingStrategy.cheapest_town]
     # budgets = range(5, 555, 5)
     # samples = 1
 
