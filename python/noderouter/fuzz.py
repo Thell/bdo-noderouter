@@ -534,7 +534,7 @@ if __name__ == "__main__":
     samples = 20
 
     # # Settings for running the optimized strategy purely to populate the MIP cache
-    # strategies = [PairingStrategy.cheapest_town]
+    # strategies = [PairingStrategy.optimized]
     # budgets = range(5, 555, 5)
     # samples = 1
 
