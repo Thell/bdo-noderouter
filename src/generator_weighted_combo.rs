@@ -25,18 +25,9 @@ impl WeightedRangeComboGenerator {
         bridge_cost: usize,
         bridge_nodes: usize,
         max_node_weight: usize,
-        combo_gen_direction: bool,
     ) -> Self {
-        let mut items = items.to_vec();
-        items.sort_by(|a, b| {
-            if combo_gen_direction {
-                b.1.cmp(&a.1) // Descending
-            } else {
-                a.1.cmp(&b.1) // Ascending
-            }
-        });
         WeightedRangeComboGenerator {
-            items,
+            items: items.to_vec(),
             bridge_cost,
             bridge_nodes,
             max_node_weight,

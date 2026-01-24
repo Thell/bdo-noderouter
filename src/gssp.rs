@@ -29,7 +29,7 @@ use nohash_hasher::{IntMap, IntSet};
 use smallvec::SmallVec;
 
 use crate::dstree::DSTree;
-use crate::gssp_data::{ExplorationData, PDBatchGenerator, canonicalize_pairs};
+use crate::gssp_data::{ExplorationData, PDBatchGenerator};
 use crate::node_router::ExplorationNodeData;
 
 // SAFETY: MAX_WEIGHT is the current maximum from the exploration data and fits nicely with the
@@ -104,6 +104,52 @@ impl DialsRouter {
             reverse_buckets: std::array::from_fn(|_| Vec::with_capacity(32)),
             dials_touched_indices: FixedBitSet::with_capacity(num_nodes),
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.forward_data = vec![(u32::MAX, u32::MAX); self.num_nodes];
+        self.reverse_data = vec![(u32::MAX, u32::MAX); self.num_nodes];
+        self.dials_touched_indices.clear();
+        self.dstree.reset_all_edges();
+        self.forward_buckets = std::array::from_fn(|_| Vec::with_capacity(32));
+        self.reverse_buckets = std::array::from_fn(|_| Vec::with_capacity(32));
+    }
+
+    /// This is a helper function that builds a path from the meet node to the goal node
+    /// using the forward and reverse data.
+    ///
+    /// It is only used by the Input Ordered Paths algorithm.
+    #[allow(unused)]
+    pub fn build_path(&self, start_node: usize, goal_node: usize, meet_node: usize) -> Vec<usize> {
+        let mut start_to_meet_path = Vec::new();
+        let mut current_node = meet_node;
+
+        while current_node != start_node {
+            start_to_meet_path.push(current_node);
+            let predecessor = self.forward_data[current_node].1;
+            if predecessor == u32::MAX {
+                return Vec::new();
+            }
+            current_node = predecessor as usize;
+        }
+        start_to_meet_path.push(start_node);
+        start_to_meet_path.reverse();
+
+        let mut meet_to_goal_path = Vec::new();
+        current_node = meet_node;
+        while current_node != goal_node {
+            let predecessor = self.reverse_data[current_node].1;
+            if predecessor == u32::MAX {
+                return Vec::new();
+            }
+            current_node = predecessor as usize;
+            meet_to_goal_path.push(current_node);
+        }
+
+        start_to_meet_path
+            .into_iter()
+            .chain(meet_to_goal_path)
+            .collect()
     }
 
     fn build_path_from(
@@ -323,7 +369,8 @@ impl DialsRouter {
             .collect::<Vec<_>>();
 
         // NOTE: Sorting pairs first by target then by source gives better approximations.
-        let mut pairs = canonicalize_pairs(&pairs);
+        // let mut pairs = canonicalize_pairs(&pairs);
+        let mut pairs = pairs.to_vec();
         pairs.sort_by_key(|&(s, t)| (t, s));
 
         // Pair reduction...
@@ -483,6 +530,97 @@ impl DialsRouter {
 
         let mut seen = IntSet::default();
         for &(s, t) in &working_pairs {
+            seen.insert(s);
+            seen.insert(t);
+        }
+        ordered_removables.retain(|&i| seen.insert(i));
+
+        (visited, ordered_removables)
+    }
+
+    /// This input ordered paths algorithm is a very simple and straightforward
+    /// path buying algorithm that only has suitability when an intelligence is
+    /// ordering the input pairs.
+    ///
+    /// It is unused except when building/testing for Workerman where the human inputs
+    /// are manually ordered.
+    #[allow(unused)]
+    pub fn input_ordered_paths(&mut self, pairs: &[(usize, usize)]) -> (IntSet<usize>, Vec<usize>) {
+        let super_root_index = self.exploration_data.super_root_index;
+        let mut ordered_removables = Vec::with_capacity(self.exploration_data.num_nodes);
+
+        // Replace all instances of SUPER_ROOT with super_root_index
+        let pairs = pairs
+            .iter()
+            .map(|&(s, t)| {
+                assert!(s != 99999, "super root must not be a source node!");
+                if t == 99999 {
+                    (s, super_root_index)
+                } else {
+                    (s, t)
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Pair reduction...
+        // NOTE: We need to maintain the original pairs for the deduplication step before returning.
+        let (working_pairs, removables) = self
+            .exploration_data
+            .transform_pairs_to_reduced_pairs(&pairs);
+        ordered_removables.extend(removables);
+
+        let inbound_neighbors = self.reduced_index_to_in_neighbors.clone();
+        let out_nbr_pos_maps = self.reduced_index_to_in_neighbors_pos.clone();
+
+        // zero-weight augmentation occurs in these two data structures
+        let mut outbound_neighbors_weighted = self.reduced_index_to_out_neighbors_weighted.clone();
+        let mut weights = self.index_to_weight.clone();
+
+        // All terminals of all pairs are paid for in advance with zero-weight augmentation
+        working_pairs.iter().for_each(|pair| {
+            for v in [pair.0, pair.1] {
+                weights[v] = 0;
+                let pos_map = &out_nbr_pos_maps[v];
+                for &n in inbound_neighbors[v].iter() {
+                    outbound_neighbors_weighted[n][pos_map[&n]].1 = 0;
+                }
+            }
+        });
+
+        for &(s, t) in working_pairs.iter() {
+            if let Some((_, meet)) = self.dials_path(
+                &inbound_neighbors,
+                &weights,
+                &outbound_neighbors_weighted,
+                s,
+                t,
+                u32::MAX,
+            ) {
+                let path = self.build_path(s, t, meet);
+                ordered_removables.extend(path.iter());
+
+                // Buy the nodes in the path...
+                for v in path {
+                    weights[v] = 0;
+
+                    let pos_map = &out_nbr_pos_maps[v];
+                    for &n in inbound_neighbors[v].iter() {
+                        outbound_neighbors_weighted[n][pos_map[&n]].1 = 0;
+                    }
+                }
+            }
+        }
+
+        let mut visited = IntSet::from_iter(ordered_removables.iter().copied());
+        for (s, t) in pairs {
+            visited.insert(s);
+            visited.insert(t);
+        }
+        // SAFETY: DO NOT LEAK SUPER ROOT!
+        visited.remove(&super_root_index);
+
+        let mut seen = IntSet::default();
+        for (s, t) in working_pairs {
             seen.insert(s);
             seen.insert(t);
         }

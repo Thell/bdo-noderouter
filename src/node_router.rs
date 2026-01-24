@@ -66,6 +66,7 @@ pub struct NodeRouter {
     ring_combo_cutoff: Vec<usize>,
     // Used for controlling the sort order of removal set generator.
     combo_gen_direction: bool, // 'true' for descending
+    use_betweenness: bool,
     // Used for controlling special case handlers for super terminals
     has_super_terminal: bool,
 
@@ -78,6 +79,7 @@ pub struct NodeRouter {
 
     // The main workhorse of the PD Approximation
     ref_graph: StableUnGraph<usize, usize>,
+    ref_supergraph: StableUnGraph<usize, usize>,
 
     // Greedy Shortest Shared Paths Approximation
     gssp_router: DialsRouter,
@@ -184,6 +186,12 @@ impl NodeRouter {
                 }
             }
         }
+        let mut ref_supergraph = StableUnGraph::from(ref_graph.clone());
+        // Insert the super root node and connect _from_ all base towns to the super root.
+        let super_root_node = ref_supergraph.add_node(0);
+        for base_town in &base_towns {
+            ref_supergraph.add_edge(NodeIndex::new(*base_town), super_root_node, 0);
+        }
 
         // Initialize GSSP
         let gssp_router = DialsRouter::new(exploration_data.clone());
@@ -232,9 +240,10 @@ impl NodeRouter {
         Self {
             max_node_weight,                              // static
             max_removal_attempts: 350, // option (9_000 for full bridge testing, 1_800 for single pass)
-            max_frontier_rings,        // option default 3
-            ring_combo_cutoff: ring_combo_cutoff.clone(), // option default 3, 2, 2
+            max_frontier_rings,        // option default 4
+            ring_combo_cutoff: ring_combo_cutoff.clone(), // option default 3, 2, 2, 2
             combo_gen_direction: false,
+            use_betweenness: false,
             has_super_terminal: false,
             base_towns,                                     // static
             index_to_neighbors: index_to_neighbors.clone(), // static
@@ -242,6 +251,7 @@ impl NodeRouter {
             index_to_weight,                                // static
             waypoint_to_index,                              // static
             ref_graph: ref_graph.clone(),                   // static
+            ref_supergraph: ref_supergraph,                 // static
             gssp_router,
             idtree: IDTree::new(&initialization_adj_dict),
             idtree_active_indices: FixedBitSet::with_capacity(node_count),
@@ -353,6 +363,20 @@ impl NodeRouter {
         )
     }
 
+    /// Induce subgraph from self.ref_graph using node indices
+    fn ref_subsupergraph_stable(&self, indices: &IntSet<usize>) -> StableUnGraph<(), usize> {
+        self.ref_supergraph.filter_map(
+            |node_idx, _| {
+                if indices.contains(&node_idx.index()) {
+                    Some(())
+                } else {
+                    None
+                }
+            },
+            |_, edge_idx| Some(*edge_idx),
+        )
+    }
+
     /// Set node router options by string, value
     /// Options:
     /// "max_removal_attempts" => usize
@@ -432,88 +456,248 @@ impl NodeRouter {
         &mut self,
         terminal_pairs: Vec<(usize, usize)>,
     ) -> (Vec<usize>, usize) {
+        // const EXPORT_TO_CSV: bool = false;
+
+        // // Input Ordered Paths Approximation
+        // self.clear_dynamic_state();
+        // let terminal_idx_pairs = self.init_terminal_pairs(terminal_pairs.clone());
+        // self.generate_untouchables();
+        // self.gssp_router.reset();
+
+        // let (iop_visited, iop_ordered_removables) =
+        //     self.gssp_router.input_ordered_paths(&terminal_idx_pairs);
+        // self.populate_idtree(&iop_visited);
+
+        // assert!(self.terminal_pairs_connected());
+        // let post_iop_state = self.get_dynamic_state();
+
+        // let (_pre_iop_fwd_indices, pre_iop_fwd_weight) = self.idtree_weight();
+        // self.bridge_heuristics(&mut iop_ordered_removables.clone());
+        // let (iop_fwd_indices, iop_fwd_weight) = self.idtree_weight();
+
+        // self.restore_dynamic_state(post_iop_state);
+        // self.combo_gen_direction = true;
+
+        // let (_pre_iop_rev_indices, pre_iop_rev_weight) = self.idtree_weight();
+        // self.bridge_heuristics(&mut iop_ordered_removables.clone());
+        // let (iop_rev_indices, iop_rev_weight) = self.idtree_weight();
+
+        // // The input ordered winner
+        // let (iop_indices, iop_weight) = if iop_fwd_weight < iop_rev_weight {
+        //     (iop_fwd_indices, iop_fwd_weight)
+        // } else {
+        //     (iop_rev_indices, iop_rev_weight)
+        // };
+
+        // // --------------------------------------------------------------------
+        // // Greedy Shortest Shared Paths Approximation
+        // // --------------------------------------------------------------------
+        // self.clear_dynamic_state();
+        // let terminal_idx_pairs = self.init_terminal_pairs(terminal_pairs.clone());
+        // self.generate_untouchables();
+        // self.gssp_router.reset();
+
+        // let (gssp_visited, gssp_ordered_removables) = self
+        //     .gssp_router
+        //     .greedy_shortest_shared_paths(&terminal_idx_pairs);
+        // self.populate_idtree(&gssp_visited);
+
+        // let post_gssp_state = self.get_dynamic_state();
+        // self.use_betweenness = false;
+
+        // // let (_pre_gssp_fwd_indices, pre_gssp_fwd_weight) = self.idtree_weight();
+        // self.bridge_heuristics(&mut gssp_ordered_removables.clone());
+        // let (gssp_fwd_indices, gssp_fwd_weight) = self.idtree_weight();
+
+        // self.restore_dynamic_state(post_gssp_state);
+
+        // // let (_pre_gssp_rev_indices, pre_gssp_rev_weight) = self.idtree_weight();
+        // self.bridge_heuristics(&mut gssp_ordered_removables.clone());
+        // let (gssp_rev_indices, gssp_rev_weight) = self.idtree_weight();
+
+        // // The gssp winner
+        // let (gssp_indices, gssp_weight) = if gssp_fwd_weight < gssp_rev_weight {
+        //     (gssp_fwd_indices, gssp_fwd_weight)
+        // } else {
+        //     (gssp_rev_indices, gssp_rev_weight)
+        // };
+
+        // --------------------------------------------------------------------
+        // Greedy Shortest Shared Paths Approximation - with betweenness
+        // --------------------------------------------------------------------
         self.clear_dynamic_state();
         let terminal_idx_pairs = self.init_terminal_pairs(terminal_pairs.clone());
         self.generate_untouchables();
+        self.gssp_router.reset();
 
-        // Greedy Shortest Shared Paths Approximation
-        let (gssp_visited, gssp_ordered_removables) = self
+        let (gssp_visited_between, gssp_ordered_removables_between) = self
             .gssp_router
             .greedy_shortest_shared_paths(&terminal_idx_pairs);
-        self.populate_idtree(&gssp_visited);
+        self.populate_idtree(&gssp_visited_between);
 
-        assert!(self.terminal_pairs_connected());
-        let post_gssp_state = self.get_dynamic_state();
+        // let post_gssp_state_between = self.get_dynamic_state();
+        self.use_betweenness = true;
 
-        self.bridge_heuristics(&mut gssp_ordered_removables.clone());
-        let (gssp_fwd_indices, gssp_fwd_weight) = self.idtree_weight();
+        // let (_pre_gssp_fwd_indices_between, pre_gssp_fwd_weight_between) = self.idtree_weight();
+        self.bridge_heuristics(&mut gssp_ordered_removables_between.clone());
+        let (gssp_fwd_indices_between, gssp_fwd_weight_between) = self.idtree_weight();
 
-        self.restore_dynamic_state(post_gssp_state);
-        self.combo_gen_direction = true;
+        // self.restore_dynamic_state(post_gssp_state_between);
+        // self.combo_gen_direction = true;
 
-        self.bridge_heuristics(&mut gssp_ordered_removables.clone());
-        let (gssp_rev_indices, gssp_rev_weight) = self.idtree_weight();
+        // // let (_pre_gssp_rev_indices_between, pre_gssp_rev_weight_between) = self.idtree_weight();
+        // self.bridge_heuristics(&mut gssp_ordered_removables_between.clone());
+        // let (gssp_rev_indices_between, gssp_rev_weight_between) = self.idtree_weight();
+        // self.use_betweenness = false;
 
-        // Primal Dual Approximation
+        // // The gssp winner - with betweenness
+        // let (gssp_indices_between, gssp_weight_between) =
+        //     if gssp_fwd_weight_between < gssp_rev_weight_between {
+        //         (gssp_fwd_indices_between, gssp_fwd_weight_between)
+        //     } else {
+        //         (gssp_rev_indices_between, gssp_rev_weight_between)
+        //     };
+
+        // // The overall gssp winner
+        // let (gssp_indices, gssp_weight) = if gssp_weight < gssp_weight_between {
+        //     (gssp_indices, gssp_weight)
+        // } else {
+        //     (gssp_indices_between, gssp_weight_between)
+        // };
+
+        // // --------------------------------------------------------------------
+        // // Primal Dual Approximation
+        // // --------------------------------------------------------------------
+        // self.clear_dynamic_state();
+        // self.init_terminal_pairs(terminal_pairs.clone());
+        // self.generate_untouchables();
+
+        // let ordered_removables = self.approximate();
+        // let post_pd_state = self.get_dynamic_state();
+
+        // self.use_betweenness = false;
+
+        // // let (_pre_pd_fwd_indices, pre_pd_fwd_weight) = self.idtree_weight();
+        // self.bridge_heuristics(&mut ordered_removables.clone());
+        // let (pd_fwd_indices, pd_fwd_weight) = self.idtree_weight();
+
+        // self.restore_dynamic_state(post_pd_state);
+
+        // // let (_pre_pd_rev_indices, pre_pd_rev_weight) = self.idtree_weight();
+        // self.bridge_heuristics(&mut ordered_removables.clone());
+        // let (pd_rev_indices, pd_rev_weight) = self.idtree_weight();
+
+        // // The primal dual winner
+        // let (pd_indices, pd_weight) = if pd_fwd_weight < pd_rev_weight {
+        //     (pd_fwd_indices, pd_fwd_weight)
+        // } else {
+        //     (pd_rev_indices, pd_rev_weight)
+        // };
+
+        // --------------------------------------------------------------------
+        // Primal Dual Approximation with betweenness
+        // --------------------------------------------------------------------
         self.clear_dynamic_state();
         self.init_terminal_pairs(terminal_pairs);
         self.generate_untouchables();
-
-        let ordered_removables = self.approximate();
-        let post_approximation_state = self.get_dynamic_state();
-
-        self.bridge_heuristics(&mut ordered_removables.clone());
-        let (pd_fwd_indices, pd_fwd_weight) = self.idtree_weight();
-
-        self.restore_dynamic_state(post_approximation_state);
         self.combo_gen_direction = true;
 
+        let ordered_removables = self.approximate();
+        // let post_pd_state_between = self.get_dynamic_state();
+
+        self.use_betweenness = true;
+
+        // let (_pre_pd_fwd_indices_between, pre_pd_fwd_weight_between) = self.idtree_weight();
         self.bridge_heuristics(&mut ordered_removables.clone());
-        let (pd_rev_indices, pd_rev_weight) = self.idtree_weight();
+        let (pd_fwd_indices_between, pd_fwd_weight_between) = self.idtree_weight();
 
-        // Select the winner from all four approximations
-        // The fwd winner.
-        let (fwd_indices, fwd_weight) = if gssp_fwd_weight < pd_fwd_weight {
-            (gssp_fwd_indices, gssp_fwd_weight)
-        } else {
-            (pd_fwd_indices, pd_fwd_weight)
-        };
-        // The rev winner
-        let (rev_indices, rev_weight) = if gssp_rev_weight < pd_rev_weight {
-            (gssp_rev_indices, gssp_rev_weight)
-        } else {
-            (pd_rev_indices, pd_rev_weight)
-        };
-        // The overall winner
-        let (winner, weight) = if fwd_weight < rev_weight {
-            (fwd_indices, fwd_weight)
-        } else {
-            (rev_indices, rev_weight)
-        };
-        let winner = winner.ones().map(|i| self.index_to_waypoint[i]).collect();
+        // self.restore_dynamic_state(post_pd_state_between);
 
-        // // Analysis Output
-        // if weight == gssp_fwd_weight
-        //     && weight == gssp_rev_weight
-        //     && weight == pd_fwd_weight
-        //     && weight == pd_rev_weight
-        // {
-        //     println!("ALL TIE");
-        // } else if weight == gssp_fwd_weight && weight == pd_fwd_weight {
-        //     println!("FWD TIE");
-        // } else if weight == gssp_rev_weight && weight == pd_rev_weight {
-        //     println!("REV TIE");
-        // } else if weight == gssp_fwd_weight {
-        //     println!("GSSP FWD: {gssp_fwd_weight}");
-        // } else if weight == gssp_rev_weight {
-        //     println!("GSSP REV: {gssp_rev_weight}");
-        // } else if weight == pd_fwd_weight {
-        //     println!("PD FWD: {pd_fwd_weight}");
-        // } else if weight == pd_rev_weight {
-        //     println!("PD REV: {pd_rev_weight}");
+        // // let (_pre_pd_rev_indices_between, pre_pd_rev_weight_between) = self.idtree_weight();
+        // self.bridge_heuristics(&mut ordered_removables.clone());
+        // let (pd_rev_indices_between, pd_rev_weight_between) = self.idtree_weight();
+        // self.use_betweenness = false;
+
+        // // The primal dual winner - with betweenness
+        // let (pd_indices_between, pd_weight_between) =
+        //     if pd_fwd_weight_between < pd_rev_weight_between {
+        //         (pd_fwd_indices_between, pd_fwd_weight_between)
+        //     } else {
+        //         (pd_rev_indices_between, pd_rev_weight_between)
+        //     };
+
+        // // The overall Primal Dual winner
+        // let (pd_indices, pd_weight) = if pd_weight < pd_weight_between {
+        //     (pd_indices, pd_weight)
         // } else {
-        //     unreachable!("No solution found");
+        //     (pd_indices_between, pd_weight_between)
+        // };
+
+        // --------------------------------------------------------------------
+        // CSV Export
+        // --------------------------------------------------------------------
+        // if EXPORT_TO_CSV {
+        //     // Write out the results as a csv appending to the file named results.csv
+        //     let file = std::fs::OpenOptions::new()
+        //         .create(true)
+        //         .append(true)
+        //         .open("results_extended_bridge.csv")
+        //         .unwrap();
+        //     let is_empty = file.metadata().unwrap().len() == 0;
+        //     let mut writer = csv::Writer::from_writer(file);
+
+        //     if is_empty {
+        //         writer
+        //             .write_record(&[
+        //                 // "pre_iop_fwd",
+        //                 // "iop_fwd",
+        //                 // "pre_iop_rev",
+        //                 // "iop_rev",
+        //                 "pre_gssp_fwd",
+        //                 "gssp_fwd",
+        //                 "pre_gssp_rev",
+        //                 "gssp_rev",
+        //                 "pre_pd_fwd",
+        //                 "pd_fwd",
+        //                 "pre_pd_rev",
+        //                 "pd_rev",
+        //             ])
+        //             .unwrap();
+        //     }
+
+        //     writer
+        //         .serialize([
+        //             // pre_iop_fwd_weight,
+        //             // iop_fwd_weight,
+        //             // pre_iop_rev_weight,
+        //             // iop_rev_weight,
+        //             pre_gssp_fwd_weight,
+        //             gssp_fwd_weight,
+        //             pre_gssp_rev_weight,
+        //             gssp_rev_weight,
+        //             pre_pd_fwd_weight,
+        //             pd_fwd_weight,
+        //             pre_pd_rev_weight,
+        //             pd_rev_weight,
+        //         ])
+        //         .unwrap();
         // }
+
+        // // Select the winner from all of the approximations
+        // let (winner, weight) = if gssp_weight < pd_weight {
+        //     (gssp_indices, gssp_weight)
+        // } else {
+        //     (pd_indices, pd_weight)
+        // };
+
+        // Select the winner from all of the approximations
+        let (winner, weight) = if gssp_fwd_weight_between < pd_fwd_weight_between {
+            (gssp_fwd_indices_between, gssp_fwd_weight_between)
+        } else {
+            (pd_fwd_indices_between, pd_fwd_weight_between)
+        };
+
+        let winner = winner.ones().map(|i| self.index_to_waypoint[i]).collect();
 
         (winner, weight)
     }
@@ -845,10 +1029,20 @@ impl NodeRouter {
         while improved {
             improved = false;
 
+            // // Debugging
+            // let test_idx = self.waypoint_to_index[&632];
+
             let bridge_generator = std::mem::take(&mut self.bridge_generator);
             {
                 let mut bridge_gen = bridge_generator.generate_bridges(incumbent_indices.clone());
                 while let CoroutineState::Yielded(bridge) = bridge_gen.as_mut().resume(()) {
+                    // // Debugging... bridge as waypoints
+                    // if bridge.contains(&test_idx) {
+                    //     let wp_bridge: Vec<usize> =
+                    //         bridge.iter().map(|&n| self.index_to_waypoint[n]).collect();
+                    //     println!("processing bridge: {wp_bridge:?}");
+                    // }
+
                     let reisolate_bridge_nodes: Vec<usize> = bridge
                         .iter()
                         .filter(|&&v| !incumbent_indices.contains(v))
@@ -863,7 +1057,16 @@ impl NodeRouter {
                         continue;
                     };
 
-                    let cycle_degree_threshold = bridge_rooted_cycles.len() + 1;
+                    // // Debugging...
+                    // if bridge.contains(&test_idx) {
+                    //     for cycle in &bridge_rooted_cycles {
+                    //         let wp_cycle: Vec<usize> =
+                    //             cycle.iter().map(|&n| self.index_to_waypoint[n]).collect();
+                    //         println!("  cycle: {wp_cycle:?}");
+                    //     }
+                    // }
+
+                    // let cycle_degree_threshold = bridge_rooted_cycles.len() + 1;
                     self.bridge_all_cycle_nodes.clear();
                     self.bridge_all_cycle_nodes
                         .extend(bridge_rooted_cycles.iter().flat_map(|c| c.iter().copied()));
@@ -874,13 +1077,20 @@ impl NodeRouter {
                         continue;
                     }
 
-                    let Some(removal_candidates) =
-                        self.removal_candidates(&bridge, cycle_degree_threshold)
-                    else {
+                    let Some(removal_candidates) = self.removal_candidates(&bridge, 6) else {
                         self.idtree.isolate_nodes(reisolate_bridge_nodes);
                         self.idtree_active_indices = incumbent_indices.clone();
                         continue;
                     };
+
+                    // // Debugging...
+                    // if bridge.contains(&test_idx) {
+                    //     let wp_candidates: Vec<usize> = removal_candidates
+                    //         .iter()
+                    //         .map(|&(a, _)| self.index_to_waypoint[a])
+                    //         .collect();
+                    //     println!("  removal_candidates: {:?}", wp_candidates);
+                    // }
 
                     let (is_improved, _removal_attempts, freed) =
                         self.improve_component(&bridge, &removal_candidates, ordered_removables);
@@ -1010,15 +1220,69 @@ impl NodeRouter {
             - bridge_weight;
         let incumbent_component_count = self.idtree.num_connected_components();
 
+        // Order removal candidates for the WeightRangeComboGenerator
+        let mut removal_candidates = removal_candidates.to_owned();
+        let combo_gen_direction = self.combo_gen_direction;
+        if combo_gen_direction {
+            removal_candidates.sort_by(|a, b| b.1.cmp(&a.1)); // Descending
+        } else {
+            removal_candidates.sort_by(|a, b| a.1.cmp(&b.1)); // Ascending
+        }
+
+        if self.use_betweenness {
+            let index_to_betweenness =
+                self.compute_betweenness(&bridged_component, &removal_candidates);
+            self.sort_removal_candidates_by_betweenness(
+                &index_to_betweenness,
+                &mut removal_candidates,
+            );
+
+            // Idea check: if the weight of the 0 betweenness nodes is greater than the bridge
+            //             weight, then we should try to remove them in-bulk prior to instantiating
+            //             the combo generator.
+            // let no_betweenness_weight = index_to_betweenness
+            //     .iter()
+            //     .filter(|&(_, b)| *b == 0)
+            //     .map(|(&v, _)| self.index_to_weight[v])
+            //     .sum::<usize>();
+            // if no_betweenness_weight > bridge_weight {
+            // println!(
+            //     "*** no_betweenness_weight: {no_betweenness_weight} bridge_weight: {bridge_weight}"
+            // );
+            // } else {
+            //     // If it isn't possible for 0-betweenness nodes to be improve the component, then
+            //     // let's short-circuit here and return.
+            //     return (false, 0, vec![]);
+            // }
+        }
+
         let removal_set_generator = WeightedRangeComboGenerator::new(
-            removal_candidates,
+            &removal_candidates,
             bridge_weight,
             bridge.len(),
             self.max_node_weight,
-            self.combo_gen_direction,
         );
 
+        // // Debugging:
+        // let test_idx = self.waypoint_to_index[&632];
+
         for removal_set in removal_set_generator.generate() {
+            // TODO: use a better heuristic here
+            //       I think we can determine which nodes are not removable by checking if the
+            //       removal set contains a node used by a shortest path within the component.
+            //       * Perhaps this should be a part of the combo generator? No! We do not yet have
+            //         the bridge affected data generated at that point... so this must come in
+            //         improve_component (perhaps within the combo generator itself).
+
+            // // Debugging:
+            // if bridge.contains(&test_idx) {
+            //     let wp_recmoval_set: Vec<usize> = removal_set
+            //         .iter()
+            //         .map(|&n| self.index_to_waypoint[n])
+            //         .collect();
+            //     println!("  wp_removal_set: {wp_recmoval_set:?}");
+            // }
+
             removal_attempts += 1;
             if removal_attempts > max_removal_attempts {
                 break;
@@ -1076,10 +1340,127 @@ impl NodeRouter {
                 continue;
             }
 
+            // // Debugging
+            // if self.use_betweenness {
+            //     println!(
+            //         "improved from {} to {}",
+            //         incumbent_component_weight, new_weight
+            //     );
+            // }
+
             freed.extend(removal_set);
             return (true, removal_attempts, freed);
         }
 
         (false, removal_attempts, vec![])
+    }
+
+    /// Computes and returns the betweenness of each node in the removal set
+    fn compute_betweenness(
+        &self,
+        bridged_component: &FixedBitSet,
+        removal_candidates: &Vec<(usize, usize)>,
+    ) -> IntMap<usize, usize> {
+        // - self.bridged_component is the FIXEDBITSET of target connected component
+        let component_set = IntSet::from_iter(bridged_component.ones());
+
+        let component_graph = if self.has_super_terminal {
+            self.ref_subsupergraph_stable(&component_set) // includes super-root
+        } else {
+            self.ref_subgraph_stable(&component_set)
+        };
+
+        let terminal_pairs = &self.bridge_affected_terminals;
+
+        let mut index_to_betweenness = IntMap::from_iter(
+            removal_candidates
+                .iter()
+                .map(|&(v, _)| (v, 0))
+                .collect::<Vec<_>>(),
+        );
+
+        // SAFETY: All affected terminal, root pairs are connected within the component.
+        for &(terminal, root) in terminal_pairs {
+            let path = if root == SUPER_ROOT {
+                // The root should be the nearest basetown in the component,
+                // which we can't know without the path...
+                let mut best_w = i32::MAX;
+                let mut best_path = vec![];
+                for basetown in &self.bridge_affected_base_towns {
+                    if let Some((w, tmp)) =
+                        self.shortest_path(&component_graph, terminal, *basetown)
+                    {
+                        if w < best_w {
+                            best_w = w;
+                            best_path = tmp.iter().map(|&v| v.index()).collect();
+                        }
+                    }
+                }
+                best_path
+            } else {
+                self.shortest_path(&component_graph, terminal, root)
+                    .unwrap()
+                    .1
+                    .iter()
+                    .map(|&v| v.index())
+                    .collect()
+            };
+
+            // // Debugging
+            // let terminal_waypoint = self.index_to_waypoint[terminal];
+            // let root_waypoint = self.index_to_waypoint.get(root).unwrap_or(&99999);
+            // let path_as_waypoints = path
+            //     .iter()
+            //     .map(|&v| self.index_to_waypoint.get(v).unwrap_or(&99999))
+            //     .collect::<Vec<_>>();
+            // println!(
+            //     "terminal: {terminal_waypoint}, root: {root_waypoint}, path: {path_as_waypoints:?}"
+            // );
+            // println!("terminal: {terminal}, root: {root}, path: {path:?}");
+
+            for &v in &path {
+                if index_to_betweenness.contains_key(&v) {
+                    let new_count = index_to_betweenness[&v] + 1;
+                    index_to_betweenness.insert(v, new_count);
+                }
+            }
+        }
+
+        index_to_betweenness
+    }
+
+    /// Sorts the removal candidates by betweenness in ascending order, then by weight
+    /// using self.combo_gen_direction.
+    fn sort_removal_candidates_by_betweenness(
+        &mut self,
+        index_to_betweenness: &IntMap<usize, usize>,
+        removal_candidates: &mut Vec<(usize, usize)>,
+    ) {
+        // The removal candidates must always have the primary order of betweenness be in
+        // ascending order but the secondary order of weight is determined by
+        // self.combo_gen_direction true -> descending, false -> ascending **for the weight only**
+        let direction = self.combo_gen_direction;
+        removal_candidates.sort_by_key(|&(v, _)| {
+            (
+                index_to_betweenness[&v],
+                if direction {
+                    -(self.index_to_weight[v] as i32)
+                } else {
+                    self.index_to_weight[v] as i32
+                },
+            )
+        });
+    }
+
+    fn shortest_path(
+        &self,
+        component_graph: &StableUnGraph<(), usize>,
+        terminal: usize,
+        root: usize,
+    ) -> Option<(i32, Vec<NodeIndex>)> {
+        // Simple search on directed graph
+        let t = NodeIndex::new(terminal);
+        let r = NodeIndex::new(root);
+        petgraph::algo::astar(&component_graph, t, |v| v == r, |_| 1, |_| 0)
     }
 }

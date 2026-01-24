@@ -873,6 +873,7 @@ impl PDBatchGenerator {
     }
 }
 
+#[allow(unused)]
 pub fn canonicalize_pairs(pairs: &[(usize, usize)]) -> Vec<(usize, usize)> {
     pairs
         .iter()
