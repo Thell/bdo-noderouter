@@ -29,7 +29,9 @@ pyo3 = { version = "0.27.2", optional = true }
 js-sys = { version = "0.3.85", optional = true }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
 wasm-bindgen = { version = "0.2.108", optional = true }
-fast_paths = "1.0.0"
+# fast_paths = "1.0.0"
+fast_paths = { git = "https://github.com/Thell/fast_paths" }
+csv = "1.4.0"
 
 [features]
 default = []

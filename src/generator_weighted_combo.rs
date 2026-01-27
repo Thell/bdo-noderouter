@@ -68,7 +68,7 @@ impl BacktrackState {
 }
 
 impl Iterator for WeightedComboIterator {
-    type Item = Vec<usize>;
+    type Item = (Vec<usize>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -100,7 +100,8 @@ impl Iterator for WeightedComboIterator {
             if current_weight >= self.state.target_weight {
                 // Yield the result and don't continue to explore this path
                 // because we're looking for exact or greater matches.
-                return Some(current_combination.iter().map(|item| item.0).collect());
+                let combo = current_combination.iter().map(|item| item.0).collect();
+                return Some((combo, current_weight));
             }
 
             // Pruning: if remaining items can't meet the target, we stop this path.

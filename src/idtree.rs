@@ -1,9 +1,12 @@
+use std::collections::VecDeque;
+
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
 use fixedbitset::FixedBitSet;
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 
+use rapidhash::RapidHashSet;
 use smallvec::SmallVec;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,11 +48,16 @@ impl Node {
 pub struct IDTree {
     n: usize,
     nodes: Vec<Node>,
-    used: Vec<bool>,            // scratch area (used by python setup)
-    stack: Vec<usize>,          // scratch area
-    node_scratch0: FixedBitSet, // scratch area
-    node_scratch1: FixedBitSet, // scratch area
-    node_scratch2: FixedBitSet, // scratch area
+    distance_generations: Vec<u32>,    // (used for betweenness)
+    distances: Vec<i32>,               // (used for betweenness)
+    current_distance_generation: u32,  // (used for betweenness)
+    deque_scratch: VecDeque<usize>,    // scratch area (used by shortest path)
+    node_vec_scratch: Vec<usize>,      // |nodes| len scratch area
+    vec_bool_scratch: Vec<bool>,       // scratch area
+    vec_scratch_stack: Vec<usize>,     // scratch area
+    node_bitset_scratch0: FixedBitSet, // |nodes| len scratch area
+    node_bitset_scratch1: FixedBitSet, // |nodes| len scratch area
+    node_bitset_scratch2: FixedBitSet, // |nodes| len scratch area
 }
 
 #[cfg(feature = "python")]
@@ -188,8 +196,8 @@ impl IDTree {
 
         let mut cycles = Vec::with_capacity(self.n / 2);
 
-        let stack = &mut self.stack;
-        let in_component = &mut self.node_scratch0;
+        let stack = &mut self.vec_scratch_stack;
+        let in_component = &mut self.node_bitset_scratch0;
 
         stack.clear();
         in_component.clear();
@@ -220,8 +228,8 @@ impl IDTree {
                 path_u.push(u);
                 path_v.push(v);
 
-                let visited_u = &mut self.node_scratch1;
-                let visited_v = &mut self.node_scratch2;
+                let visited_u = &mut self.node_bitset_scratch1;
+                let visited_v = &mut self.node_bitset_scratch2;
                 visited_u.clear();
                 visited_v.clear();
                 visited_u.set(u, true);
@@ -291,8 +299,8 @@ impl IDTree {
     }
 
     pub fn _node_connected_component(&mut self, v: usize) -> FixedBitSet {
-        let stack = &mut self.stack;
-        let visited = &mut self.node_scratch0;
+        let stack = &mut self.vec_scratch_stack;
+        let visited = &mut self.node_bitset_scratch0;
 
         stack.clear();
         visited.clear();
@@ -386,6 +394,540 @@ impl IDTree {
             .filter(|&neighbor| !self.is_isolated(neighbor))
             .collect()
     }
+
+    /// Returns the shortest path from `start` to `target` in the undirected graph,
+    /// using only adjacency information (not the spanning-tree parent pointers).
+    ///
+    /// The path is returned as a vector of node indices from `start` to `target`,
+    /// inclusive. If no path exists, returns `None`.
+    pub fn shortest_path(&mut self, start: usize, target: usize) -> Option<Vec<usize>> {
+        if start >= self.n || target >= self.n {
+            return None;
+        }
+        if start == target {
+            return Some(vec![start]);
+        }
+
+        let queue = &mut self.deque_scratch;
+        queue.clear();
+
+        let parents = &mut self.node_vec_scratch;
+        let visited = &mut self.distance_generations;
+        self.current_distance_generation += 1;
+
+        queue.push_back(start);
+        visited[start] = self.current_distance_generation;
+        parents[start] = usize::MAX;
+
+        let mut found = false;
+        while let Some(u) = queue.pop_front() {
+            if u == target {
+                found = true;
+                break;
+            }
+
+            for &v in &self.nodes[u].adj {
+                if visited[v] != self.current_distance_generation {
+                    visited[v] = self.current_distance_generation;
+                    parents[v] = u;
+                    queue.push_back(v);
+                }
+            }
+        }
+
+        if !found {
+            return None;
+        }
+
+        let mut path = Vec::with_capacity(32);
+        let mut current = target;
+        while current != usize::MAX {
+            path.push(current);
+            current = parents[current];
+        }
+        path.reverse();
+        Some(path)
+    }
+
+    /// Computes betweenness for candidate nodes via idtree adjacency graph.
+    ///
+    /// SAFETY: This is an undirected, unweighted betweenness result.
+    pub fn compute_subset_betweenness(
+        &mut self,
+        removal_candidates: &[(usize, usize)],
+        affected_terminals: &RapidHashSet<(usize, usize)>,
+        affected_base_towns: &IntSet<usize>,
+    ) -> IntMap<usize, usize> {
+        if removal_candidates.is_empty() || affected_terminals.is_empty() {
+            return removal_candidates.iter().map(|&(v, _)| (v, 0)).collect();
+        }
+
+        // Group terminals by root
+        let mut root_to_terminals: IntMap<usize, SmallVec<[usize; 16]>> = IntMap::default();
+        for &(terminal, pair_root) in affected_terminals {
+            root_to_terminals
+                .entry(pair_root)
+                .or_default()
+                .push(terminal);
+        }
+
+        let num_terminals = affected_terminals.len();
+        let num_roots = root_to_terminals.len();
+        let num_candidates = removal_candidates.len();
+
+        // Decision: grouped is cheaper if #roots + #candidates < #terminals
+        // TODO: Validate this threshold on a larger variety of test instances.
+        let use_grouped = (num_roots + num_candidates) < num_terminals;
+        if use_grouped {
+            if num_terminals < num_candidates {
+                self.compute_subset_betweenness_grouped_terminal_centric(
+                    removal_candidates,
+                    root_to_terminals,
+                    affected_base_towns,
+                )
+            } else {
+                self.compute_subset_betweenness_grouped_candidate_centric(
+                    removal_candidates,
+                    root_to_terminals,
+                    affected_base_towns,
+                )
+            }
+        } else {
+            self.compute_subset_betweenness_pairwise(
+                removal_candidates,
+                root_to_terminals,
+                affected_base_towns,
+            )
+        }
+    }
+
+    /// Betweenness via idtree adjacency graph using BFS per pair.
+    fn compute_subset_betweenness_pairwise(
+        &mut self,
+        removal_candidates: &[(usize, usize)],
+        root_to_terminals: IntMap<usize, SmallVec<[usize; 16]>>,
+        affected_base_towns: &IntSet<usize>,
+    ) -> IntMap<usize, usize> {
+        use crate::node_router::SUPER_ROOT;
+
+        let mut index_to_betweenness: IntMap<usize, usize> =
+            removal_candidates.iter().map(|&(v, _)| (v, 0)).collect();
+
+        for (pair_root, terminals_for_root) in root_to_terminals {
+            if pair_root == SUPER_ROOT {
+                // Accumulate all paths to each base town for the super terminal
+                for terminal in terminals_for_root {
+                    for &base_town in affected_base_towns {
+                        if let Some(path) = self.shortest_path(terminal, base_town) {
+                            for &node in &path {
+                                if let Some(count) = index_to_betweenness.get_mut(&node) {
+                                    *count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                for terminal in terminals_for_root {
+                    if let Some(path) = self.shortest_path(pair_root, terminal) {
+                        for &node in &path {
+                            if let Some(count) = index_to_betweenness.get_mut(&node) {
+                                *count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        index_to_betweenness
+    }
+
+    /// Betweenness via idtree adjacency graph using triangle equality via BFS per root
+    /// and per removal candidate.
+    fn compute_subset_betweenness_grouped_candidate_centric(
+        &mut self,
+        removal_candidates: &[(usize, usize)],
+        mut root_to_terminals: IntMap<usize, SmallVec<[usize; 16]>>,
+        _affected_base_towns: &IntSet<usize>,
+    ) -> IntMap<usize, usize> {
+        use crate::node_router::SUPER_ROOT;
+
+        let mut betweenness_counts = vec![0usize; self.n];
+
+        let mut candidate_filter = vec![false; self.n];
+        for &(candidate_index, _) in removal_candidates {
+            candidate_filter[candidate_index] = true;
+        }
+
+        let _super_root_terminals = root_to_terminals.remove(&SUPER_ROOT);
+
+        // Phase 1: Cache distances from each root.
+        let mut dist_from_root_cache: IntMap<usize, Vec<i32>> = IntMap::default();
+        for &pair_root in root_to_terminals.keys() {
+            self.compute_distances_from_internal(pair_root);
+            dist_from_root_cache.insert(pair_root, self.distances.clone());
+        }
+
+        // Phase 2: Triangle Equality Check.
+        for &(candidate, _) in removal_candidates {
+            self.compute_distances_from_internal(candidate);
+            let mut current_candidate_betweenness = 0;
+
+            for (&pair_root, terminals) in &root_to_terminals {
+                let distances_from_root = &dist_from_root_cache[&pair_root];
+                let distance_root_to_candidate = distances_from_root[candidate];
+
+                // If the root cannot reach the candidate, it cannot be on a path to terminals.
+                if distance_root_to_candidate < 0 {
+                    continue;
+                }
+
+                for &terminal in terminals {
+                    let distance_root_to_terminal = distances_from_root[terminal];
+                    let distance_candidate_to_terminal = self.distances[terminal];
+
+                    // Check if candidate is on the shortest path between root and terminal.
+                    if distance_root_to_terminal >= 0
+                        && self.distance_generations[terminal] == self.current_distance_generation
+                        && distance_root_to_terminal
+                            == distance_root_to_candidate + distance_candidate_to_terminal
+                    {
+                        current_candidate_betweenness += 1;
+                    }
+                }
+            }
+            betweenness_counts[candidate] = current_candidate_betweenness;
+        }
+
+        // // Phase 3: SUPER_ROOT handling
+        // if let Some(terminals) = super_root_terminals {
+        //     for terminal in terminals {
+        //         let mut best_path: Option<Vec<usize>> = None;
+        //         let mut shortest_length = usize::MAX;
+
+        //         for &base_town in affected_base_towns {
+        //             if let Some(path) = self.shortest_path(terminal, base_town) {
+        //                 if path.len() < shortest_length {
+        //                     shortest_length = path.len();
+        //                     best_path = Some(path);
+        //                 }
+        //             }
+        //         }
+
+        //         if let Some(path) = best_path {
+        //             for node_index in path {
+        //                 if candidate_filter[node_index] {
+        //                     betweenness_counts[node_index] += 1;
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+
+        // // Phase 3: Multi-Root SUPER_ROOT handling
+        // if let Some(terminals) = super_root_terminals {
+        //     for terminal in terminals {
+        //         let mut shortest_length = usize::MAX;
+        //         // Using a small scratchpad to store roots that are tied for the shortest distance.
+        //         let mut best_roots = SmallVec::<[usize; 8]>::new();
+
+        //         for &base_town in affected_base_towns {
+        //             if let Some(path) = self.shortest_path(terminal, base_town) {
+        //                 if path.len() < shortest_length {
+        //                     shortest_length = path.len();
+        //                     best_roots.clear();
+        //                     best_roots.push(base_town);
+        //                 } else if path.len() == shortest_length {
+        //                     best_roots.push(base_town);
+        //                 }
+        //             }
+        //         }
+
+        //         // Increment betweenness for ALL paths that tie for the shortest distance.
+        //         for &base_town in &best_roots {
+        //             if let Some(path) = self.shortest_path(terminal, base_town) {
+        //                 for node_index in path {
+        //                     if candidate_filter[node_index] {
+        //                         betweenness_counts[node_index] += 1;
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+
+        removal_candidates
+            .iter()
+            .map(|&(v, _)| (v, betweenness_counts[v]))
+            .collect()
+    }
+
+    fn compute_subset_betweenness_grouped_terminal_centric(
+        &mut self,
+        removal_candidates: &[(usize, usize)],
+        mut root_to_terminals: IntMap<usize, SmallVec<[usize; 16]>>,
+        _affected_base_towns: &IntSet<usize>,
+    ) -> IntMap<usize, usize> {
+        use crate::node_router::SUPER_ROOT;
+
+        let mut betweenness_counts = vec![0usize; self.n];
+
+        let mut candidate_filter = vec![false; self.n];
+        for &(candidate_index, _) in removal_candidates {
+            candidate_filter[candidate_index] = true;
+        }
+
+        let _super_root_terminals = root_to_terminals.remove(&SUPER_ROOT);
+
+        // Phase 1: Cache distances from each root.
+        let mut dist_from_root_cache: IntMap<usize, Vec<i32>> = IntMap::default();
+        for &pair_root in root_to_terminals.keys() {
+            self.compute_distances_from_internal(pair_root);
+            dist_from_root_cache.insert(pair_root, self.distances.clone());
+        }
+
+        // Phase 2: Triangle Equality Check (Terminal-Centric Inversion).
+        // Instead of BFS per candidate, we BFS once per unique terminal.
+        for (&pair_root, terminals) in &root_to_terminals {
+            let distances_from_root = &dist_from_root_cache[&pair_root];
+
+            for &terminal in terminals {
+                let distance_root_to_terminal = distances_from_root[terminal];
+
+                if distance_root_to_terminal < 0 {
+                    continue;
+                }
+
+                self.compute_distances_from_internal(terminal);
+
+                for &(candidate, _) in removal_candidates {
+                    let distance_root_to_candidate = distances_from_root[candidate];
+                    let distance_candidate_to_terminal = self.distances[candidate];
+
+                    if distance_root_to_candidate >= 0
+                        && self.distance_generations[candidate] == self.current_distance_generation
+                        && distance_root_to_terminal
+                            == distance_root_to_candidate + distance_candidate_to_terminal
+                    {
+                        betweenness_counts[candidate] += 1;
+                    }
+                }
+            }
+        }
+
+        // // Phase 3: SUPER_ROOT handling (Kept identical to candidate-centric).
+        // if let Some(terminals) = super_root_terminals {
+        //     for terminal in terminals {
+        //         let mut best_path: Option<Vec<usize>> = None;
+        //         let mut shortest_length = usize::MAX;
+
+        //         for &base_town in affected_base_towns {
+        //             if let Some(path) = self.shortest_path(terminal, base_town) {
+        //                 if path.len() < shortest_length {
+        //                     shortest_length = path.len();
+        //                     best_path = Some(path);
+        //                 }
+        //             }
+        //         }
+
+        //         if let Some(path) = best_path {
+        //             for node_index in path {
+        //                 if candidate_filter[node_index] {
+        //                     betweenness_counts[node_index] += 1;
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+
+        // // Phase 3: Multi-Root SUPER_ROOT handling
+        // if let Some(terminals) = super_root_terminals {
+        //     for terminal in terminals {
+        //         let mut shortest_length = usize::MAX;
+        //         // Using a small scratchpad to store roots that are tied for the shortest distance.
+        //         let mut best_roots = SmallVec::<[usize; 8]>::new();
+
+        //         for &base_town in affected_base_towns {
+        //             if let Some(path) = self.shortest_path(terminal, base_town) {
+        //                 if path.len() < shortest_length {
+        //                     shortest_length = path.len();
+        //                     best_roots.clear();
+        //                     best_roots.push(base_town);
+        //                 } else if path.len() == shortest_length {
+        //                     best_roots.push(base_town);
+        //                 }
+        //             }
+        //         }
+
+        //         // Increment betweenness for ALL paths that tie for the shortest distance.
+        //         for &base_town in &best_roots {
+        //             if let Some(path) = self.shortest_path(terminal, base_town) {
+        //                 for node_index in path {
+        //                     if candidate_filter[node_index] {
+        //                         betweenness_counts[node_index] += 1;
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+
+        removal_candidates
+            .iter()
+            .map(|&(v, _)| (v, betweenness_counts[v]))
+            .collect()
+    }
+
+    /// Internal helper to populate distance and generation arrays for a source node.
+    fn compute_distances_from_internal(&mut self, source: usize) {
+        self.current_distance_generation += 1;
+        if self.current_distance_generation == 0 {
+            self.distance_generations.fill(0);
+            self.current_distance_generation = 1;
+        }
+
+        let queue = &mut self.deque_scratch;
+        queue.clear();
+
+        self.distances[source] = 0;
+        self.distance_generations[source] = self.current_distance_generation;
+        queue.push_back(source);
+
+        while let Some(u) = queue.pop_front() {
+            let distance_to_u = self.distances[u];
+            for &v in &self.nodes[u].adj {
+                if self.distance_generations[v] != self.current_distance_generation {
+                    self.distance_generations[v] = self.current_distance_generation;
+                    self.distances[v] = distance_to_u + 1;
+                    queue.push_back(v);
+                }
+            }
+        }
+    }
+
+    // 74s
+    // fn compute_subset_betweenness_grouped(
+    //     &mut self,
+    //     removal_candidates: &[(usize, usize)],
+    //     root_to_terminals: IntMap<usize, SmallVec<[usize; 16]>>,
+    //     affected_base_towns: &IntSet<usize>,
+    // ) -> IntMap<usize, usize> {
+    //     use crate::node_router::SUPER_ROOT;
+
+    //     let mut root_to_terminals = root_to_terminals;
+
+    //     let mut index_to_betweenness: IntMap<usize, usize> =
+    //         removal_candidates.iter().map(|&(v, _)| (v, 0)).collect();
+
+    //     let mut super_root_terminals: SmallVec<[usize; 16]> = SmallVec::new();
+    //     if root_to_terminals.contains_key(&SUPER_ROOT) {
+    //         super_root_terminals = root_to_terminals.remove(&SUPER_ROOT).unwrap();
+    //     }
+
+    //     let visited = &mut self.node_bitset_scratch0;
+    //     let queue = &mut self.deque_scratch;
+
+    //     // Phase 1: BFS from each unique normal root
+    //     let mut dist_from_root_cache: IntMap<usize, Vec<i32>> = IntMap::default();
+
+    //     for &pair_root in root_to_terminals.keys() {
+    //         let mut distance_from_root = vec![-1i32; self.n];
+    //         distance_from_root[pair_root] = 0;
+
+    //         queue.clear();
+    //         queue.push_back(pair_root);
+
+    //         visited.clear();
+    //         visited.insert(pair_root);
+
+    //         while let Some(current) = queue.pop_front() {
+    //             for &neighbor in &self.nodes[current].adj {
+    //                 if !visited.contains(neighbor) {
+    //                     visited.insert(neighbor);
+    //                     distance_from_root[neighbor] = distance_from_root[current] + 1;
+    //                     queue.push_back(neighbor);
+    //                 }
+    //             }
+    //         }
+    //         dist_from_root_cache.insert(pair_root, distance_from_root);
+    //     }
+
+    //     // Phase 2: BFS from each candidate
+    //     for &(candidate, _) in removal_candidates {
+    //         let mut distance_from_candidate = vec![-1i32; self.n];
+    //         distance_from_candidate[candidate] = 0;
+
+    //         queue.clear();
+    //         queue.push_back(candidate);
+
+    //         visited.clear();
+    //         visited.insert(candidate);
+
+    //         while let Some(current) = queue.pop_front() {
+    //             for &neighbor in &self.nodes[current].adj {
+    //                 if !visited.contains(neighbor) {
+    //                     visited.insert(neighbor);
+    //                     distance_from_candidate[neighbor] = distance_from_candidate[current] + 1;
+    //                     queue.push_back(neighbor);
+    //                 }
+    //             }
+    //         }
+
+    //         let mut betweenness_count = 0;
+
+    //         // Normal roots
+    //         for (&pair_root, terminals) in &root_to_terminals {
+    //             if let Some(distance_from_root) = dist_from_root_cache.get(&pair_root) {
+    //                 let distance_root_to_candidate = distance_from_root[candidate];
+    //                 if distance_root_to_candidate < 0 {
+    //                     continue;
+    //                 }
+
+    //                 for &terminal in terminals {
+    //                     let distance_root_to_terminal = distance_from_root[terminal];
+    //                     let distance_candidate_to_terminal = distance_from_candidate[terminal];
+
+    //                     if distance_root_to_terminal >= 0
+    //                         && distance_candidate_to_terminal >= 0
+    //                         && distance_root_to_terminal
+    //                             == distance_root_to_candidate + distance_candidate_to_terminal
+    //                     {
+    //                         betweenness_count += 1;
+    //                     }
+    //                 }
+    //             }
+    //         }
+
+    //         index_to_betweenness.insert(candidate, betweenness_count);
+    //     }
+
+    //     // SUPER_ROOT handling remains per-terminal (no grouping gain possible here)
+    //     for &terminal in &super_root_terminals {
+    //         let mut best_path: Option<Vec<usize>> = None;
+    //         let mut best_length = usize::MAX;
+
+    //         for &base_town in affected_base_towns {
+    //             if let Some(path) = self.shortest_path(terminal, base_town) {
+    //                 let length = path.len();
+    //                 if length < best_length {
+    //                     best_length = length;
+    //                     best_path = Some(path);
+    //                 }
+    //             }
+    //         }
+
+    //         if let Some(path) = best_path {
+    //             for &node in &path {
+    //                 if let Some(count) = index_to_betweenness.get_mut(&node) {
+    //                     *count += 1;
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     index_to_betweenness
+    // }
 }
 
 impl IDTree {
@@ -407,11 +949,16 @@ impl IDTree {
         Self {
             n,
             nodes,
-            used: vec![false; n],
-            stack: vec![],
-            node_scratch0: FixedBitSet::with_capacity(n),
-            node_scratch1: FixedBitSet::with_capacity(n),
-            node_scratch2: FixedBitSet::with_capacity(n),
+            distance_generations: vec![0; n],
+            distances: vec![0; n],
+            current_distance_generation: 0,
+            deque_scratch: VecDeque::with_capacity(n),
+            node_vec_scratch: vec![0; n],
+            vec_bool_scratch: vec![false; n],
+            vec_scratch_stack: vec![],
+            node_bitset_scratch0: FixedBitSet::with_capacity(n),
+            node_bitset_scratch1: FixedBitSet::with_capacity(n),
+            node_bitset_scratch2: FixedBitSet::with_capacity(n),
         }
     }
 
@@ -419,7 +966,7 @@ impl IDTree {
     #[cfg(feature = "python")]
     fn initialize(&mut self) {
         for &node_index in self.sort_nodes_by_degree().iter() {
-            if self.used[node_index] {
+            if self.vec_bool_scratch[node_index] {
                 continue;
             }
             self.bfs_setup_subtrees(node_index);
@@ -428,7 +975,7 @@ impl IDTree {
                 self.reroot(centroid_node);
             }
         }
-        self.used.fill(false);
+        self.vec_bool_scratch.fill(false);
     }
 
     #[cfg(feature = "python")]
@@ -447,24 +994,24 @@ impl IDTree {
         let mut queue: VecDeque<usize> = VecDeque::new();
         queue.push_back(root);
 
-        self.stack.clear();
-        self.stack.push(root);
-        self.used[root] = true;
+        self.vec_scratch_stack.clear();
+        self.vec_scratch_stack.push(root);
+        self.vec_bool_scratch[root] = true;
 
         while let Some(node_index) = queue.pop_front() {
             for j in 0..self.nodes[node_index].adj.len() {
                 let neighbor_index = self.nodes[node_index].adj[j];
-                if !self.used[neighbor_index] {
-                    self.used[neighbor_index] = true;
+                if !self.vec_bool_scratch[neighbor_index] {
+                    self.vec_bool_scratch[neighbor_index] = true;
                     self.nodes[neighbor_index].parent = node_index as i32;
-                    self.stack.push(neighbor_index);
+                    self.vec_scratch_stack.push(neighbor_index);
                     queue.push_back(neighbor_index);
                 }
             }
         }
 
         // Propagate subtree sizes up the tree, skipping the root
-        for &child_index in self.stack.iter().skip(1).rev() {
+        for &child_index in self.vec_scratch_stack.iter().skip(1).rev() {
             let parent_index = self.nodes[child_index].parent as usize;
             self.nodes[parent_index].subtree_size += self.nodes[child_index].subtree_size;
         }
@@ -472,10 +1019,10 @@ impl IDTree {
 
     #[cfg(feature = "python")]
     fn find_centroid_in_q(&self) -> Option<usize> {
-        let num_nodes = self.stack.len();
+        let num_nodes = self.vec_scratch_stack.len();
         let half_num_nodes = num_nodes / 2;
 
-        self.stack.iter().rev().find_map(|&node_index| {
+        self.vec_scratch_stack.iter().rev().find_map(|&node_index| {
             if self.nodes[node_index].subtree_size > half_num_nodes {
                 Some(node_index)
             } else {
@@ -631,8 +1178,8 @@ impl IDTree {
 
     fn find_replacement(&mut self, u: usize, root_v: usize) -> bool {
         let nodes = &mut self.nodes;
-        let stack = &mut self.stack;
-        let used = &mut self.node_scratch0;
+        let stack = &mut self.vec_scratch_stack;
+        let used = &mut self.node_bitset_scratch0;
 
         // 5 𝑄 ← an empty queue, 𝑄.𝑝𝑢𝑠ℎ(𝑢);
         stack.clear();

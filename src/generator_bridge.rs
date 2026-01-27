@@ -4,9 +4,10 @@ use std::{cell::RefCell, ops::Coroutine};
 
 use fixedbitset::FixedBitSet;
 use nohash_hasher::IntMap;
-use petgraph::stable_graph::StableUnGraph;
 use rapidhash::{HashSetExt, RapidHashSet};
 use smallvec::SmallVec;
+
+use crate::node_router::SharedExplorationData;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NodeState {
@@ -18,7 +19,7 @@ enum NodeState {
 /// Finds bridging spans of settlement border nodes within frontier and wild frontier.
 #[derive(Debug, Default, Clone)]
 pub struct BridgeGenerator {
-    ref_graph: StableUnGraph<usize, usize>,
+    num_nodes: usize,
     index_to_neighbors: Vec<SmallVec<[usize; 4]>>,
     stack: RefCell<Vec<usize>>,
     node_scratch0: RefCell<FixedBitSet>,
@@ -31,17 +32,16 @@ pub struct BridgeGenerator {
 
 impl BridgeGenerator {
     pub fn new(
-        ref_graph: StableUnGraph<usize, usize>,
-        index_to_neighbors: Vec<SmallVec<[usize; 4]>>,
+        exploration: &SharedExplorationData,
         max_frontier_rings: usize,
         ring_combo_cutoff: Vec<usize>,
     ) -> Self {
-        let node_count = ref_graph.node_count();
+        let node_count = exploration.ref_ungraph.node_count();
         let mut combo_cutoffs = vec![0];
         combo_cutoffs.extend(ring_combo_cutoff);
         Self {
-            ref_graph,
-            index_to_neighbors,
+            num_nodes: node_count,
+            index_to_neighbors: exploration.index_to_neighbors_ungraph.clone(),
             stack: RefCell::new(Vec::with_capacity(node_count)),
             node_scratch0: RefCell::new(FixedBitSet::with_capacity(node_count)),
             frontier_buffer: RefCell::new(FixedBitSet::with_capacity(node_count)),
@@ -122,14 +122,13 @@ impl BridgeGenerator {
     }
 
     pub fn generate_bridges<'a>(&'a self, settlement: FixedBitSet) -> BridgeCoroutine<'a> {
-        let num_nodes = self.ref_graph.node_count();
         let max_frontier_rings = self.max_frontier_rings;
         let ring_combo_cutoff = self.ring_combo_cutoff.clone();
 
-        let mut seen_candidate_pairs = RapidHashSet::with_capacity(num_nodes);
+        let mut seen_candidate_pairs = RapidHashSet::with_capacity(self.num_nodes);
 
         // Initialize tri-state membership
-        let mut node_state = vec![NodeState::WildFrontier; num_nodes];
+        let mut node_state = vec![NodeState::WildFrontier; self.num_nodes];
         for v in settlement.ones() {
             node_state[v] = NodeState::Settled;
         }

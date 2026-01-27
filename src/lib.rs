@@ -1,12 +1,14 @@
 #![feature(coroutines, coroutine_trait)]
 
 mod dstree;
+mod exploration_data;
+mod fast_paths;
 mod generator_bridge;
 mod generator_weighted_combo;
 mod gssp;
-mod gssp_data;
 mod idtree;
 pub mod node_router;
+mod primal_dual;
 
 // Core exports, available for all builds
 pub use crate::idtree::IDTree;

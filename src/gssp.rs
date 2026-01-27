@@ -22,15 +22,15 @@
 /// * DSTree constant connectivity query
 ///
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
 
 use fixedbitset::FixedBitSet;
 use nohash_hasher::{IntMap, IntSet};
 use smallvec::SmallVec;
 
 use crate::dstree::DSTree;
-use crate::gssp_data::{ExplorationData, PDBatchGenerator};
-use crate::node_router::ExplorationNodeData;
+use crate::fast_paths::FastPathsCalc;
+use crate::node_router::SharedExplorationData;
+use crate::primal_dual::PDBatchGenerator;
 
 // SAFETY: MAX_WEIGHT is the current maximum from the exploration data and fits nicely with the
 //         Dial's algorithm because it makes the bucket counts a power of 2. This allows us to
@@ -40,20 +40,10 @@ const MAX_WEIGHT: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct DialsRouter {
-    // exploration data
-    exploration_data: ExplorationData,
-
-    // reference graph
-    num_nodes: usize,
-    super_root_index: usize,
-    index_to_weight: Vec<u32>,
-
-    // reduced reference graph
-    reduced_index_to_in_neighbors: Vec<SmallVec<[usize; 4]>>,
-    reduced_index_to_out_neighbors_weighted: Vec<SmallVec<[(usize, u32); 4]>>,
-    reduced_index_to_in_neighbors_pos: Vec<IntMap<usize, usize>>,
+    exploration: SharedExplorationData,
 
     batch_generator: PDBatchGenerator,
+    fast_paths: FastPathsCalc,
     dstree: DSTree,
 
     // Dial's BiDir
@@ -65,38 +55,20 @@ pub struct DialsRouter {
 }
 
 impl DialsRouter {
-    pub fn new(nodes_map: BTreeMap<usize, ExplorationNodeData>) -> Self {
-        let ed = ExplorationData::new(nodes_map);
+    pub fn new(exploration: SharedExplorationData) -> Self {
+        let num_nodes = exploration.num_nodes;
 
-        // SAFETY: Using the ref_graph num nodes instead of reduced graph allows us to
-        //         keep a 1:1 mapping between node indices and positions in the data.
-        //         Since all exploration data has a 1:1 mapping, this is safe.
-        let num_nodes = ed.num_nodes;
-
-        // reference graph
-        let super_root_index = ed.super_root_index;
-        let index_to_weight = ed.index_to_weight.clone();
-
-        let reduced_index_to_in_neighbors = ed.reduced_index_to_in_neighbors.clone();
-        let reduced_index_to_out_neighbors_weighted =
-            ed.reduced_index_to_out_neighbors_weighted.clone();
-        let reduced_index_to_in_neighbors_pos = ed.reduced_index_to_in_neighbors_pos.clone();
-
-        let batch_generator = PDBatchGenerator::new(&ed);
+        let batch_generator = PDBatchGenerator::new(exploration.clone());
+        let fast_paths = FastPathsCalc::new(exploration.clone());
 
         // Initialize with empty adj to populate only the nodes of the DSTree.
         let empty_adj: Vec<SmallVec<[usize; 4]>> = vec![SmallVec::with_capacity(4); num_nodes];
         let dstree = DSTree::new(&empty_adj, true);
 
         DialsRouter {
-            exploration_data: ed,
-            num_nodes,
-            super_root_index,
-            index_to_weight,
-            reduced_index_to_in_neighbors,
-            reduced_index_to_out_neighbors_weighted,
-            reduced_index_to_in_neighbors_pos,
+            exploration,
             batch_generator,
+            fast_paths,
             dstree,
             forward_data: vec![(u32::MAX, u32::MAX); num_nodes],
             reverse_data: vec![(u32::MAX, u32::MAX); num_nodes],
@@ -107,8 +79,8 @@ impl DialsRouter {
     }
 
     pub fn reset(&mut self) {
-        self.forward_data = vec![(u32::MAX, u32::MAX); self.num_nodes];
-        self.reverse_data = vec![(u32::MAX, u32::MAX); self.num_nodes];
+        self.forward_data = vec![(u32::MAX, u32::MAX); self.exploration.num_nodes];
+        self.reverse_data = vec![(u32::MAX, u32::MAX); self.exploration.num_nodes];
         self.dials_touched_indices.clear();
         self.dstree.reset_all_edges();
         self.forward_buckets = std::array::from_fn(|_| Vec::with_capacity(32));
@@ -352,8 +324,8 @@ impl DialsRouter {
         self.dials_touched_indices.insert_range(..);
         self.dstree.reset_all_edges();
 
-        let super_root_index = self.super_root_index;
-        let mut ordered_removables = Vec::with_capacity(self.num_nodes);
+        let super_root_index = self.exploration.super_root_index;
+        let mut ordered_removables = Vec::with_capacity(self.exploration.num_nodes);
 
         // Replace all instances of SUPER_ROOT with super_root_index
         let pairs = pairs
@@ -375,16 +347,18 @@ impl DialsRouter {
 
         // Pair reduction...
         // NOTE: We need to maintain the original pairs for the deduplication step before returning.
-        let (working_pairs, removables) = self
-            .exploration_data
-            .transform_pairs_to_reduced_pairs(&pairs);
+        let (working_pairs, removables) = self.exploration.transform_pairs_to_reduced_pairs(&pairs);
         ordered_removables.extend(removables);
 
-        let inbound_neighbors = self.reduced_index_to_in_neighbors.clone();
-        let out_nbr_pos_maps = self.reduced_index_to_in_neighbors_pos.clone();
+        let inbound_neighbors = self.exploration.reduced_index_to_in_neighbors.clone();
+        let out_nbr_pos_maps = self.exploration.reduced_index_to_in_neighbors_pos.clone();
+
         // zero-weight augmentation occurs in these two data structures
-        let mut outbound_neighbors_weighted = self.reduced_index_to_out_neighbors_weighted.clone();
-        let mut weights = self.index_to_weight.clone();
+        let mut outbound_neighbors_weighted = self
+            .exploration
+            .reduced_index_to_out_neighbors_weighted
+            .clone();
+        let mut weights = self.exploration.index_to_weight.clone();
 
         // All terminals of all pairs are paid for in advance with zero-weight augmentation
         working_pairs.iter().for_each(|pair| {
@@ -398,7 +372,7 @@ impl DialsRouter {
         });
 
         let mut cutoffs_heap = self
-            .exploration_data
+            .fast_paths
             .generate_cutoff_heap(&working_pairs, Some(true));
         let mut used_pairs = FixedBitSet::with_capacity(working_pairs.len());
 
@@ -546,8 +520,8 @@ impl DialsRouter {
     /// are manually ordered.
     #[allow(unused)]
     pub fn input_ordered_paths(&mut self, pairs: &[(usize, usize)]) -> (IntSet<usize>, Vec<usize>) {
-        let super_root_index = self.exploration_data.super_root_index;
-        let mut ordered_removables = Vec::with_capacity(self.exploration_data.num_nodes);
+        let super_root_index = self.exploration.super_root_index;
+        let mut ordered_removables = Vec::with_capacity(self.exploration.num_nodes);
 
         // Replace all instances of SUPER_ROOT with super_root_index
         let pairs = pairs
@@ -564,17 +538,18 @@ impl DialsRouter {
 
         // Pair reduction...
         // NOTE: We need to maintain the original pairs for the deduplication step before returning.
-        let (working_pairs, removables) = self
-            .exploration_data
-            .transform_pairs_to_reduced_pairs(&pairs);
+        let (working_pairs, removables) = self.exploration.transform_pairs_to_reduced_pairs(&pairs);
         ordered_removables.extend(removables);
 
-        let inbound_neighbors = self.reduced_index_to_in_neighbors.clone();
-        let out_nbr_pos_maps = self.reduced_index_to_in_neighbors_pos.clone();
+        let inbound_neighbors = self.exploration.reduced_index_to_in_neighbors.clone();
+        let out_nbr_pos_maps = self.exploration.reduced_index_to_in_neighbors_pos.clone();
 
         // zero-weight augmentation occurs in these two data structures
-        let mut outbound_neighbors_weighted = self.reduced_index_to_out_neighbors_weighted.clone();
-        let mut weights = self.index_to_weight.clone();
+        let mut outbound_neighbors_weighted = self
+            .exploration
+            .reduced_index_to_out_neighbors_weighted
+            .clone();
+        let mut weights = self.exploration.index_to_weight.clone();
 
         // All terminals of all pairs are paid for in advance with zero-weight augmentation
         working_pairs.iter().for_each(|pair| {
