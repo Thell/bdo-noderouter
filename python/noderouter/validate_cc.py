@@ -493,7 +493,7 @@ def _run_single_config(
     return all_cases_df
 
 
-def fuzzer_main(strategies: list[PairingStrategy], samples: int, budgets: list[int] | range) -> None:
+def main(strategies: list[PairingStrategy], samples: int, budgets: list[int] | range) -> None:
     set_logger(ds.get_config("config"))
     # set_logger({"logger": {"level": "ERROR", "format": "<level>{message}</level>"}})
     all_metrics: pl.DataFrame = pl.DataFrame()
@@ -543,4 +543,4 @@ if __name__ == "__main__":
     budgets = range(5, 555, 5)
     # samples = 1
 
-    fuzzer_main(strategies, samples, budgets)
+    main(strategies, samples, budgets)
