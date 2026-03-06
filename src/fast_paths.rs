@@ -6,11 +6,12 @@ use crate::node_router::SharedExplorationData;
 
 /// Fast paths calculator
 ///
+/// This is only used for shortest path distances.
+///
 /// SAFETY: The fastpaths graph does not allow zero weight edges!
 ///         We scale all edges by a weight factor of 10_000 and give
 ///         zero weight edges are set to a nominal value of 1.
 ///
-///         This is only used for shortest path distances.
 #[derive(Clone, Debug)]
 pub struct FastPathsCalc {
     /// Fast graph

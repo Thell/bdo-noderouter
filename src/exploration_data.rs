@@ -122,10 +122,11 @@ fn exploration_nodes_to_graph_nodes(nodes_map: &ExplorationGraphData) -> Vec<Nod
 
 /// Exploration Data
 ///
+/// IDTree, DsTree, and NodeRouter depend on the undirected graph structure.
+///
 /// SAFETY: DiGraphs contain SUPER_ROOT node with inbound edges only.
 ///         This must not be leaked!
 ///
-///         **IDTree, DsTree, and NodeRouter depend on the undirected graph structure.**
 #[derive(Clone, Debug)]
 pub struct ExplorationData {
     pub num_nodes: usize,
