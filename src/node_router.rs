@@ -147,10 +147,8 @@ impl NodeRouter {
     pub fn new(exploration_data: &ExplorationGraphData) -> Self {
         let exploration = Rc::new(ExplorationData::new(exploration_data));
 
-        // Initialize GSSP
         let gssp_router = DialsRouter::new(exploration.clone());
 
-        // Initialize IDTree
         let mut initialization_adj_dict = IntMap::with_capacity_and_hasher(
             exploration.ref_ungraph.node_count(),
             BuildNoHashHasher::default(),
@@ -180,8 +178,6 @@ impl NodeRouter {
             idtree: IDTree::new(&initialization_adj_dict),
             idtree_active_indices: FixedBitSet::with_capacity(node_count),
             bridge_generator: BridgeGenerator::new(
-                // exploration.ref_ungraph.clone(),
-                // exploration.index_to_neighbors_ungraph.clone(),
                 &exploration,
                 max_frontier_rings,
                 ring_combo_cutoff,
@@ -210,7 +206,7 @@ impl NodeRouter {
     fn clear_dynamic_state(&mut self) {
         self.combo_gen_direction = false;
         self.has_super_terminal = false;
-        for node in self.idtree.active_nodes() {
+        for node in self.idtree.active_nodes_vec() {
             self.idtree.isolate_node(node);
         }
         self.idtree_active_indices.clear();
@@ -929,7 +925,7 @@ impl NodeRouter {
                 self.idtree.insert_edge(u.index(), v.index());
             });
 
-        self.idtree_active_indices = self.idtree.__active_nodes();
+        self.idtree_active_indices = self.idtree.active_nodes_bitset();
     }
 
     /// Updates self._bridge_* variables with relevant bridged component nodes.
@@ -965,6 +961,8 @@ impl NodeRouter {
             let mut need_check = false;
 
             // Simulate removal by isolating the idtree node
+            // NOTE: Ordered removables, during the improve_component stage, are filtered
+            //       to only include active nodes from the component being tested.
             for &v in &self.idtree.neighbors_smallvec(u) {
                 match self.idtree.delete_edge(u, v) {
                     // nothing removed
@@ -984,10 +982,10 @@ impl NodeRouter {
                 continue;
             }
 
-            // Non base town leaf nodes
+            // NOTE: Removal of non base town leaf nodes can not disconnect terminal pairs
+            //       since removables is already disjoint from untouchables.
             if active_neighbors.len() == 1 && !self.bridge_affected_base_towns.contains(&u) {
                 self.bridge_affected_indices.remove(u);
-                self.bridge_affected_base_towns.remove(&u);
                 freed.push(u);
                 freed_edges.extend_from_slice(&active_neighbors);
                 continue;
@@ -1080,7 +1078,7 @@ impl NodeRouter {
                         self.improve_component(&bridge, &removal_candidates, ordered_removables);
 
                     if is_improved {
-                        incumbent_indices = self.idtree.__active_nodes();
+                        incumbent_indices = self.idtree.active_nodes_bitset();
                         self.idtree_active_indices = incumbent_indices.clone();
                         improved = true;
 
@@ -1189,7 +1187,7 @@ impl NodeRouter {
         let mut removal_attempts = 0;
         let max_removal_attempts = self.max_removal_attempts;
 
-        let bridged_component = self.idtree._node_connected_component(bridge[0]);
+        let bridged_component = self.idtree.node_connected_component_bitset(bridge[0]);
         self.update_bridge_affected_nodes(bridged_component.clone());
 
         let bridge_weight: u32 = bridge.iter().map(|&v| self.weights[v]).sum();

@@ -116,7 +116,7 @@ impl IDTree {
 
     #[pyo3(name = "active_nodes")]
     pub fn py_active_nodes(&mut self) -> Vec<usize> {
-        self.active_nodes()
+        self.active_nodes_vec()
     }
 
     #[pyo3(name = "isolate_node")]
@@ -298,7 +298,7 @@ impl IDTree {
         visited.into_iter().collect()
     }
 
-    pub fn _node_connected_component(&mut self, v: usize) -> FixedBitSet {
+    pub fn node_connected_component_bitset(&mut self, v: usize) -> FixedBitSet {
         let stack = &mut self.vec_scratch_stack;
         let visited = &mut self.node_bitset_scratch0;
 
@@ -337,11 +337,11 @@ impl IDTree {
             .collect()
     }
 
-    pub fn active_nodes(&mut self) -> Vec<usize> {
+    pub fn active_nodes_vec(&mut self) -> Vec<usize> {
         (0..self.n).filter(|&i| !self.is_isolated(i)).collect()
     }
 
-    pub fn _active_nodes(&mut self) -> IntSet<usize> {
+    pub fn active_nodes_set(&mut self) -> IntSet<usize> {
         let mut active_nodes =
             IntSet::with_capacity_and_hasher(self.n, BuildNoHashHasher::default());
         for i in 0..self.n {
@@ -352,7 +352,7 @@ impl IDTree {
         active_nodes
     }
 
-    pub fn __active_nodes(&mut self) -> FixedBitSet {
+    pub fn active_nodes_bitset(&mut self) -> FixedBitSet {
         let mut active_nodes = FixedBitSet::with_capacity(self.n);
         for i in 0..self.n {
             if !self.is_isolated(i) {
@@ -396,7 +396,7 @@ impl IDTree {
     }
 
     /// Returns the shortest path from `start` to `target` in the undirected graph,
-    /// using only adjacency information (not the spanning-tree parent pointers).
+    /// using idtree adjacency graph.
     ///
     /// The path is returned as a vector of node indices from `start` to `target`,
     /// inclusive. If no path exists, returns `None`.
@@ -451,7 +451,7 @@ impl IDTree {
 
     /// Computes betweenness for candidate nodes via idtree adjacency graph.
     ///
-    /// SAFETY: This is an undirected, unweighted betweenness result.
+    /// NOTE: This is an undirected, unweighted betweenness result.
     pub fn compute_subset_betweenness(
         &mut self,
         removal_candidates: &[(usize, usize)],
