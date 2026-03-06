@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "noderouter"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -23,11 +23,14 @@ dependencies = [
     "loguru>=0.7.3",
     "matplotlib>=3.10.8",
     "maturin>=1.9.2",
+    "networkx>=3.6.1",
     "polars>=1.36.1",
     "pyarrow>=23.0.0",
+    "pyvis>=0.3.2",
     "rustworkx>=0.16.0",
     "seaborn>=0.13.2",
     "shapely>=2.1.2",
+    "ty>=0.0.20",
 ]
 
 [tool.maturin]

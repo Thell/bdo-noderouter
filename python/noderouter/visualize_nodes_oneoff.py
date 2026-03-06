@@ -7,8 +7,12 @@ on the BDO map.
 Edit the 'subgraph' entries at the bottom of the file.
 """
 
+import io
+
 import branca
 import folium
+import matplotlib.pyplot as plt
+import matplotlib.colors as plt_colors
 import webbrowser
 import os
 import tempfile
@@ -18,6 +22,9 @@ from folium.plugins import FeatureGroupSubGroup, GroupedLayerControl
 
 import api_data_store as ds
 from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
+
+import networkx as nx
+from tree_decomp import BDONiceTreeManager
 
 # from api_common import get_clean_exploration_data
 # from api_exploration_graph import get_exploration_graph
@@ -107,20 +114,26 @@ def add_edges_from_graph(
 
 
 def add_node_markers_from_graph(
-    fg: folium.FeatureGroup, graph: rx.PyGraph | rx.PyDiGraph, color: str | None = None
+    fg: folium.FeatureGroup, graph, tree_manager: BDONiceTreeManager, color: str | None = None
 ):
-    """Add markers for each node in the main graph."""
+    """Add node markers with original styling, overlaying influence pie charts where relevant."""
+    cmap = plt.get_cmap("tab20")
+    bottleneck_keys = tree_manager.get_bottleneck_nodes(as_waypoints=True)
+    bottleneck_keys = sorted(bottleneck_keys)
+    bottleneck_colors = {bottleneck_keys[i]: cmap(i) for i in range(len(bottleneck_keys))}
+
     for node in graph.nodes():
         node_color = color
         node_key = node["waypoint_key"]
         cost = node["need_exploration_point"]
+        node_is_bottleneck = node_key in bottleneck_keys
 
         lng = node["position"]["x"] / TILE_SCALE  # Scaled coordinates
         lat = node["position"]["z"] / TILE_SCALE  # Scaled coordinates
 
         popup_text = f"Node Key: {node_key}, Cost: {cost}"
-
         radius = 4 if node["is_base_town"] else 10 if color is not None else 1
+        radius = 8 if node_is_bottleneck else radius
 
         if node_key == 99999:
             popup_text += " (Super Root)"
@@ -129,18 +142,52 @@ def add_node_markers_from_graph(
         if node_color is None:
             if node["is_base_town"]:
                 node_color = BASE_TOWN_COLOR
+                fill_color = BASE_TOWN_COLOR
+                fill_opacity = 0.0
             else:
                 node_color = REGULAR_NODE_COLOR
+                fill_color = REGULAR_NODE_COLOR
+                fill_opacity = 0.0
+
+        if node_is_bottleneck:
+            node_color = "white"
+            fill_color = plt_colors.to_hex(bottleneck_colors[node_key])
+            fill_opacity = 1.0
 
         folium.CircleMarker(
             location=(lat, lng),
             radius=radius,
             color=node_color,
             fill=True,
-            fill_color=node_color,
+            fill_color=fill_color,
+            fill_opacity=fill_opacity,
             popup=popup_text,
             tooltip=popup_text,
         ).add_to(fg)
+
+        influence_data = tree_manager.calculate_bottleneck_weights(node_key, as_waypoints=True)
+        if influence_data:
+            fig = plt.figure(figsize=(0.5, 0.5))
+            fig.patch.set_alpha(0)
+            ax = fig.add_subplot(111)
+
+            sorted_keys = sorted(influence_data.keys())
+            sizes = [influence_data[k] for k in sorted_keys]
+            colors = [bottleneck_colors[k] for k in sorted_keys]
+            influence_popup_text = ", ".join(f"{k}: {v}" for k, v in influence_data.items())
+            popup_text += f"\nInfluence: {influence_popup_text}"
+
+            ax.pie(sizes, colors=colors)
+
+            buff = io.StringIO()
+            plt.savefig(buff, format="SVG", transparent=True)
+            buff.seek(0)
+            svg_data = buff.read().replace("\n", "")
+            plt.close(fig)
+
+            folium.Marker(location=(lat, lng), icon=folium.DivIcon(html=svg_data), tooltip=popup_text).add_to(
+                fg
+            )
 
 
 def add_terminal_sets_markers(
@@ -254,7 +301,18 @@ def visualize_solution_graph(
     assert isinstance(main_graph, rx.PyDiGraph)
     assert isinstance(subgraph, rx.PyDiGraph)
     # add_node_markers_from_graph(fg_all_nodes, main_graph)
-    add_node_markers_from_graph(fg_all_nodes, subgraph, color=SUBGRAPH_NODE_COLOR)
+
+    # For Tree Decomposition Bottlenecks
+    rx_full = exploration_data.graph.copy()
+    rx_undirected = rx_full.to_undirected(multigraph=False)
+    nx_G = nx.Graph()
+    for u, v in rx_undirected.edge_list():
+        nx_G.add_edge(u, v)
+    tree_manager = BDONiceTreeManager(nx_G, exploration_data)
+    tree_manager.generate_nice_tree()
+
+    add_node_markers_from_graph(fg_all_nodes, main_graph, tree_manager, color=None)
+    add_node_markers_from_graph(fg_all_nodes, subgraph, tree_manager, color=SUBGRAPH_NODE_COLOR)
 
     # Add all given edges from each graph to their own feature group
     # for independent control.
@@ -385,10 +443,10 @@ if __name__ == "__main__":
     # 325,602 635,604 629,604 675,601
     terminals = {}
     # old []
-    wasm = set([1, 2, 21, 43, 63, 64, 301, 302, 303, 304, 305, 306, 309, 347, 371, 372, 373, 374, 375, 601, 602, 603, 623, 629, 632, 633, 638, 651, 652, 657, 661, 666, 668, 673, 677, 704, 717, 721, 722, 723, 725, 1002, 1010, 1016, 1021, 1052, 1062, 1097, 1132, 1134, 1136, 1138, 1140, 1148, 1154, 1159, 1160, 1161, 1162, 1163, 1164, 1168, 1601, 1603, 1607, 1616, 1618, 1668])
+    # wasm = set([1, 1668, 301, 302, 371, 373, 375, 6, 601, 602, 604, 651, 652])
 
     # indicate the solution nodes (paths to highlight)
-    highlights = wasm
+    highlights = {}
 
     # fmt:on
 
