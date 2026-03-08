@@ -1,5 +1,3 @@
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
 use smallvec::SmallVec;
 
 use std::collections::{BTreeMap, HashMap};
@@ -54,7 +52,6 @@ pub struct DynamicState {
 
 /// Solves Node-Weighted Steiner Forest using primal-dual and bridge heuristics.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "python", pyclass(unsendable))]
 pub struct NodeRouter {
     /// All exploration node centric data.
     exploration: SharedExplorationData,
@@ -116,31 +113,6 @@ pub struct NodeRouter {
     bridge_all_cycle_nodes: Vec<usize>,
     hash_buf: Vec<u8>,
     scratch_nodes: Vec<usize>,
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl NodeRouter {
-    #[new]
-
-    pub fn py_new(exploration_json: &str) -> NodeRouter {
-        use std::str::FromStr;
-        let str_map: BTreeMap<String, ExplorationNodeData> =
-            serde_json::from_str(exploration_json).unwrap();
-        let exploration_data: ExplorationGraphData = str_map
-            .into_iter()
-            .map(|(k, v)| usize::from_str(&k).map(|k| (k, v)).unwrap())
-            .collect();
-        Self::new(&exploration_data)
-    }
-
-    #[pyo3(name = "solve_for_terminal_pairs")]
-    pub fn py_solve_for_terminal_pairs(
-        &mut self,
-        terminal_pairs: Vec<(usize, usize)>,
-    ) -> (Vec<usize>, usize) {
-        self.solve_for_terminal_pairs(terminal_pairs)
-    }
 }
 
 impl NodeRouter {
