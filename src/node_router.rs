@@ -6,6 +6,7 @@ use std::ops::CoroutineState;
 use std::rc::Rc;
 
 use fixedbitset::FixedBitSet;
+use idtree::IdTree;
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::algo::tarjan_scc;
 use petgraph::stable_graph::StableUnGraph;
@@ -17,7 +18,6 @@ use crate::exploration_data::ExplorationData;
 use crate::generator_bridge::BridgeGenerator;
 use crate::generator_weighted_combo::WeightedRangeComboGenerator;
 use crate::gssp::DialsRouter;
-use crate::idtree::IDTree;
 
 pub const SUPER_ROOT: usize = 99_999;
 
@@ -39,7 +39,7 @@ pub struct ExplorationNodeData {
 pub struct DynamicState {
     combo_gen_direction: bool,
     has_super_terminal: bool,
-    idtree: IDTree,
+    idtree: IdTree,
     idtree_active_indices: FixedBitSet,
     terminal_to_root: IntMap<usize, usize>,
     terminal_root_pairs: RapidHashSet<(usize, usize)>,
@@ -91,7 +91,7 @@ pub struct NodeRouter {
     gssp_router: DialsRouter,
 
     // The main workhorse of the Bridge Heuristic
-    idtree: IDTree,
+    idtree: IdTree,
     idtree_active_indices: FixedBitSet,
     bridge_generator: BridgeGenerator,
 
@@ -147,7 +147,7 @@ impl NodeRouter {
             cycle_degree_threshold: 5, // max intermediate usage degree on ref_graph is 6
 
             gssp_router,
-            idtree: IDTree::new(&initialization_adj_dict),
+            idtree: IdTree::new(&initialization_adj_dict),
             idtree_active_indices: FixedBitSet::with_capacity(node_count),
             bridge_generator: BridgeGenerator::new(
                 &exploration,
@@ -1255,6 +1255,7 @@ impl NodeRouter {
                 &removal_candidates,
                 &self.bridge_affected_terminals,
                 &self.bridge_affected_base_towns,
+                Some(SUPER_ROOT),
             );
             if self.combo_gen_direction {
                 removal_candidates.sort_by_key(|&(v, w)| (betweenness[&v], -(w as i32)));
