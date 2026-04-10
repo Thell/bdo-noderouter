@@ -11,19 +11,20 @@ Given:
 """
 
 from __future__ import annotations
-from copy import deepcopy
+
 import time
+from copy import deepcopy
 
 import rustworkx as rx
 from loguru import logger
 
 import api_data_store as ds
 from api_common import set_logger
+from api_exploration_data import SUPER_ROOT, get_exploration_data
+from api_highs_solver import create_model, extract_solution, get_highs, solve
 from api_rx_pydigraph import set_graph_terminal_sets_attribute
-from api_highs_solver import get_highs, create_model, solve, extract_solution
-from api_exploration_data import get_exploration_data, SUPER_ROOT
-from orchestrator_terminal_pairs import PairingStrategy
 from orchestrator import Solution
+from orchestrator_terminal_pairs import PairingStrategy
 
 
 def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
@@ -72,7 +73,7 @@ def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
 
 
 if __name__ == "__main__":
-    from orchestrator import execute_plan, Plan
+    from orchestrator import Plan, execute_plan
     from orchestrator_terminal_pairs import PairingStrategy
     from test_baselines import baselines
 

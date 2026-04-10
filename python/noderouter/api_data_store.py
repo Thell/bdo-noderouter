@@ -2,8 +2,8 @@
 
 import importlib.resources
 import json
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 
 def path() -> Path:

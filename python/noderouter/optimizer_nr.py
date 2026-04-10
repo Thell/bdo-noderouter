@@ -76,7 +76,7 @@ def optimize_with_terminals_single(terminals: dict[int, int], _config: dict) -> 
 if __name__ == "__main__":
     import api_data_store as ds
     from api_common import set_logger
-    from orchestrator import execute_plan, Plan
+    from orchestrator import Plan, execute_plan
     from orchestrator_terminal_pairs import PairingStrategy
     from test_baselines import baselines
 

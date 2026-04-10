@@ -3,8 +3,9 @@
 """Unit tests for terminal pairing strategies."""
 
 import unittest
+
 from api_exploration_data import get_exploration_data
-from orchestrator_pairing_strategy import PairingStrategy, PAIRING_TOP_N
+from orchestrator_pairing_strategy import PAIRING_TOP_N, PairingStrategy
 
 
 class TestPairingStrategies(unittest.TestCase):
@@ -153,6 +154,7 @@ class TestPairingStrategies(unittest.TestCase):
 
 if __name__ == "__main__":
     import time
+
     import api_data_store as ds
     from api_common import set_logger
 

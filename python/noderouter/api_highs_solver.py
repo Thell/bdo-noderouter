@@ -1,18 +1,18 @@
 # api_highs_solver.py
 
+import queue
+import time
 from dataclasses import dataclass
 from multiprocessing import cpu_count
 from threading import Lock, Thread
-import queue
-import time
 
-from highspy import Highs, HighsModelStatus, kHighsInf, ObjSense
-from loguru import logger
 import numpy as np
 import rustworkx as rx
+from highspy import Highs, HighsModelStatus, ObjSense, kHighsInf
+from loguru import logger
 
-from api_rx_pydigraph import subgraph_stable
 from api_exploration_data import SUPER_ROOT
+from api_rx_pydigraph import subgraph_stable
 
 
 @dataclass
@@ -296,7 +296,7 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
 
     # Isolated node removal
     isolates = list(rx.isolates(solution_graph))
-    isolate_cost = sum([solution_graph[i]["need_exploration_point"] for i in isolates])
+    isolate_cost = sum(solution_graph[i]["need_exploration_point"] for i in isolates)
     # Sanity check
     if isolate_cost > 0:
         logger.error(f"  isolates cost: {isolate_cost}")

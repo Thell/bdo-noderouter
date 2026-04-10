@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import time
 import signal
 import sys
+import time
 from functools import partial
 
 import polars as pl
@@ -13,11 +13,10 @@ from loguru import logger
 
 import api_data_store as ds
 from api_common import MAX_BUDGET, set_logger
-from orchestrator import execute_plan
-from orchestrator_types import Plan, Instance, SeedType
-from orchestrator_pairing_strategy import PairingStrategy, MAX_LEN_PAIRING_STRATEGY
-
 from optimizer_nr import optimize_with_terminals as nr_optimize
+from orchestrator import execute_plan
+from orchestrator_pairing_strategy import MAX_LEN_PAIRING_STRATEGY, PairingStrategy
+from orchestrator_types import Instance, Plan, SeedType
 
 SUMMARY_FLOAT_PRECISION = 3
 
@@ -264,7 +263,7 @@ def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     # The solver's methodology for handling dangers can potentially 'break' an otherwise
     # optimally solved problem and by keeping them fixed for danger inclusive and exclusive
     # samples we ensure that such cases are identifiable.
-    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode("utf-8")).hexdigest()[:7]
+    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:7]
 
 
 def _run_single_config(
@@ -383,7 +382,7 @@ if __name__ == "__main__":
     #       is run for each strategy within each budget times the number of samples.
     #       The logical limit would be 5..=600, stepping by less than 5 does not
     #       make sense.
-    # budgets = range(5, 46, 5)
+    budgets = range(5, 46, 5)
 
     # NOTE: For normal benchmarking or testing purposes the sample count
     #       can be adjusted as desired. The default is 20 to allow reasonable
@@ -392,7 +391,7 @@ if __name__ == "__main__":
 
     # # Settings for a very long run to collect extensive router data
     strategies = [s for s in PairingStrategy if s != PairingStrategy.custom]
-    budgets = range(5, MAX_BUDGET + 1, 5)
+    # budgets = range(5, MAX_BUDGET + 1, 5)
     samples = 50
 
     # NOTE: When doing a long run writing per test outputs can become a bottleneck.

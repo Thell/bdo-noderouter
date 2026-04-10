@@ -1,19 +1,18 @@
 # api_exploration_data.py
 
+import random
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import cached_property, lru_cache
-import random
 from typing import Any
 
 from bidict import bidict
 from loguru import logger
 from rustworkx import PyDiGraph
-from shapely.geometry import Point, MultiPoint
+from shapely.geometry import MultiPoint, Point
 
 from api_common import memory
-
 
 # Constants
 GREAT_OCEAN_TERRITORY = 5
@@ -165,7 +164,7 @@ class ExplorationData:
 
     @cached_property
     def territories(self) -> set[int]:
-        return set(n["territory_key"] for n in self.data.values())
+        return {n["territory_key"] for n in self.data.values()}
 
     @cached_property
     def territory_towns(self) -> dict[int, list[int]]:
@@ -251,6 +250,7 @@ def _get_source_data_and_hash() -> tuple[dict[int, dict], str]:
     logger.trace("get_source_data_and_hash")
     import hashlib
     import json
+
     import api_data_store as ds
 
     source_filename = "exploration.json"
@@ -410,8 +410,8 @@ def _get_all_pairs_cartesian_distances(exploration_data: dict) -> dict[tuple[int
             (exploration_data[u]["position"]["x"] - exploration_data[v]["position"]["x"]) ** 2
             + (exploration_data[u]["position"]["z"] - exploration_data[v]["position"]["z"]) ** 2
         )
-        for u in exploration_data.keys()
-        for v in exploration_data.keys()
+        for u in exploration_data
+        for v in exploration_data
     }
 
 

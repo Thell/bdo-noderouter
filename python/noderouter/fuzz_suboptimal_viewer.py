@@ -12,27 +12,25 @@ import webbrowser
 from copy import deepcopy
 from enum import Enum
 
-from branca.element import Element
 import colorcet as cc
 import flet as ft
+import rustworkx as rx
+from branca.element import Element
 from folium import FeatureGroup, Map, Marker, PolyLine, TileLayer
 from folium.map import CustomPane
-from folium.plugins import FeatureGroupSubGroup, GroupedLayerControl, BeautifyIcon
-
-import rustworkx as rx
+from folium.plugins import BeautifyIcon, FeatureGroupSubGroup, GroupedLayerControl
 from loguru import logger
 from rustworkx import PyDiGraph
 
 import api_data_store as ds
 from api_common import MAX_BUDGET, set_logger
 from api_exploration_data import SUPER_ROOT, get_exploration_data, prune_NTD1
-from api_rx_pydigraph import subgraph_stable, set_graph_terminal_sets_attribute
-from orchestrator import execute_plan
-from orchestrator_types import Plan, OptimizationFn, Instance
-from orchestrator_pairing_strategy import PairingStrategy
-
+from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
 from optimizer_mip import optimize_with_terminals as mip_optimize
 from optimizer_nr import optimize_with_terminals_single as nr_optimize
+from orchestrator import execute_plan
+from orchestrator_pairing_strategy import PairingStrategy
+from orchestrator_types import Instance, OptimizationFn, Plan
 
 TerminalsFG = tuple[FeatureGroup, dict[str, FeatureGroupSubGroup]]
 GraphFG = tuple[FeatureGroup, FeatureGroup]
@@ -88,10 +86,7 @@ class _GraphType(Enum):
 
     @property
     def show_fg(self):
-        if self == _GraphType.MAIN:
-            return False
-        else:
-            return True
+        return self != _GraphType.MAIN
 
 
 class _RootColor:
@@ -100,7 +95,7 @@ class _RootColor:
 
     def __init__(self, mip_graph: PyDiGraph, nr_graph: PyDiGraph):
         terminal_sets = mip_graph.attrs["terminal_sets"]
-        roots = sorted(list(terminal_sets))
+        roots = sorted(terminal_sets)
         self.colors = {r: c for r, c in zip(roots, cc.b_glasbey_category10[: len(roots)])}
 
         # NOTE: Suboptimal roots are those in a different cc cluster in the nr_graph than in the mip_graph.
@@ -205,7 +200,7 @@ def _add_terminal_sets_markers(m: Map, G: PyDiGraph, root_color: _RootColor) -> 
     coords = get_exploration_data().coords
     terminal_sets = G.attrs["terminal_sets"]
 
-    for root_idx in sorted(list(terminal_sets)):
+    for root_idx in sorted(terminal_sets):
         is_suboptimal = root_color.is_suboptimal(root_idx)
         root_key = G[root_idx]["waypoint_key"]
         terminal_set = terminal_sets[root_idx]
@@ -393,12 +388,12 @@ def _visualize_instances(mip_instance: Instance, nr_instance: Instance):
 def _make_plan(
     plan_args: dict, optimization_fn: OptimizationFn, as_mip: bool = False, is_custom: bool = False
 ) -> Plan:
-    allow_cache = True if as_mip else False
+    allow_cache = bool(as_mip)
     strategy = PairingStrategy(plan_args["strategy"])
 
     # NOTE: If include_danger is True dangers are added to the plan yet custom strategy
     #       already defines them manually in terminal_pairs.
-    include_danger = True if plan_args["dangers"] > 0 and not is_custom else False
+    include_danger = plan_args["dangers"] > 0 and not is_custom
 
     _plan = Plan(
         optimization_fn,
@@ -452,7 +447,7 @@ def _process_selected_plan(plan_data):
         assert mip_instance.solution and nr_instance.solution
     except Exception as e:
         logger.error(f"Solving suboptimal plan failed: {e}")
-        raise e
+        raise
 
     _visualize_instances(mip_instance, nr_instance)
 
@@ -460,9 +455,11 @@ def _process_selected_plan(plan_data):
 def _suboptimal_viewer_ui(page: ft.Page):
     def submit_custom(e):
         try:
-            assert (input := custom_input.value)
-            assert (data := {int(m[0]): int(m[1]) for m in re.findall(RE_TR_PAIRS, input)})
-        except Exception:
+            input = custom_input.value
+            assert input
+            data = {int(m[0]): int(m[1]) for m in re.findall(RE_TR_PAIRS, input)}
+            assert data
+        except Exception:  # noqa: BLE001
             input_alert.open = True
             page.update()
             return
@@ -471,8 +468,8 @@ def _suboptimal_viewer_ui(page: ft.Page):
             custom_input.disabled = True
             custom_input.update()
             _process_custom_plan(data)
-        except Exception as e:
-            logger.error(f"Error processing custom plan: {e}")
+        except Exception as err:  # noqa: BLE001
+            logger.error(f"Error processing custom plan: {err}")
             processing_alert.open = True
         finally:
             custom_input.disabled = False
@@ -481,11 +478,12 @@ def _suboptimal_viewer_ui(page: ft.Page):
 
     def submit_selected(e):
         try:
-            assert (data := e.control.data)
+            data = e.control.data
+            assert data
             _process_selected_plan(data)
             e.control.color = ft.Colors.with_opacity(0.2, "#00ff00")
             e.control.update()
-        except Exception:
+        except Exception:  # noqa: BLE001
             processing_alert.open = True
         finally:
             page.update()

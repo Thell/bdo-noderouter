@@ -42,3 +42,6 @@ manifest-path = "Cargo.toml"
 
 [tool.ty.environment]
 extra-paths = ["./python/noderouter"]
+
+[tool.ruff]
+src = ["python/noderouter"]

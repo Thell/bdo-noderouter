@@ -15,8 +15,8 @@ from loguru import logger
 import api_data_store as ds
 from api_common import memory
 from orchestrator_pairing_strategy import PairingStrategy
-from orchestrator_types import Plan, Instance, Solution
 from orchestrator_terminal_pairs import generate_terminal_pairs
+from orchestrator_types import Instance, Plan, Solution
 
 
 def execute_plan(plan: Plan) -> Instance:

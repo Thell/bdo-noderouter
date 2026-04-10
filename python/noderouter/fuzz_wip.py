@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import time
 import signal
 import sys
+import time
 from functools import partial
 
 import polars as pl
@@ -13,12 +13,11 @@ from loguru import logger
 
 import api_data_store as ds
 from api_common import MAX_BUDGET, set_logger
-from orchestrator import execute_plan
-from orchestrator_types import Plan, Instance, SeedType
-from orchestrator_pairing_strategy import PairingStrategy, MAX_LEN_PAIRING_STRATEGY
-
 from optimizer_mip import optimize_with_terminals as mip_optimize
 from optimizer_nr import optimize_with_terminals as nr_optimize
+from orchestrator import execute_plan
+from orchestrator_pairing_strategy import MAX_LEN_PAIRING_STRATEGY, PairingStrategy
+from orchestrator_types import Instance, Plan, SeedType
 
 SUMMARY_FLOAT_PRECISION = 3
 WORST_SUBOPTIMAL_REPORTING_COUNT = 50
@@ -111,9 +110,10 @@ class _FuzzInstanceMetrics(dict):
             2 = NR split components that MIP kept together
             3 = mixed merge/split or structurally incompatible
         """
-        from api_exploration_data import get_exploration_data, ExplorationData
-        from api_rx_pydigraph import subgraph_stable
         import rustworkx as rx
+
+        from api_exploration_data import ExplorationData, get_exploration_data
+        from api_rx_pydigraph import subgraph_stable
 
         def extract_components(instance: Instance):
             assert instance.solution
@@ -129,7 +129,7 @@ class _FuzzInstanceMetrics(dict):
             sccs = rx.strongly_connected_components(sol_graph)
 
             # Terminal + root node indices
-            terminal_idx = {node_map.inv[w] for w in instance.terminals.terminals.keys()}
+            terminal_idx = {node_map.inv[w] for w in instance.terminals.terminals}
             root_idx = {node_map.inv[w] for w in instance.terminals.terminals.values()}
             tr_idx = terminal_idx | root_idx
 
@@ -499,7 +499,7 @@ def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     # The solver's methodology for handling dangers can potentially 'break' an otherwise
     # optimally solved problem and by keeping them fixed for danger inclusive and exclusive
     # samples we ensure that such cases are identifiable.
-    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode("utf-8")).hexdigest()[:7]
+    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:7]
 
 
 def _run_single_config(

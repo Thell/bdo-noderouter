@@ -4,12 +4,12 @@
 
 import time
 
-from loguru import logger
 import rustworkx as rx
+from loguru import logger
 
 from api_common import set_logger
-from api_exploration_data import get_exploration_data, SUPER_ROOT
-from orchestrator_types import Solution, OptimizationFn
+from api_exploration_data import SUPER_ROOT, get_exploration_data
+from orchestrator_types import OptimizationFn, Solution
 
 
 def _validate_baselines(
