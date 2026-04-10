@@ -19,15 +19,15 @@
 /// * Bi-directional Dial's algorithm
 /// * Batching via Primal-Dual algorithm
 /// * Contraction Hierarchy cutoff generation
-/// * DSTree constant connectivity query
+/// * DNDTree constant connectivity query
 ///
 use std::cmp::Reverse;
 
+use dndtree::DNDTree;
 use fixedbitset::FixedBitSet;
 use nohash_hasher::{IntMap, IntSet};
 use smallvec::SmallVec;
 
-use crate::dstree::DSTree;
 use crate::fast_paths::FastPathsCalc;
 use crate::node_router::SharedExplorationData;
 use crate::primal_dual::PDBatchGenerator;
@@ -44,7 +44,7 @@ pub struct DialsRouter {
 
     batch_generator: PDBatchGenerator,
     fast_paths: FastPathsCalc,
-    dstree: DSTree,
+    dndtree: DNDTree,
 
     // Dial's BiDir
     forward_data: Vec<(u32, u32)>, // (distance, predecessor)
@@ -60,16 +60,13 @@ impl DialsRouter {
 
         let batch_generator = PDBatchGenerator::new(exploration.clone());
         let fast_paths = FastPathsCalc::new(exploration.clone());
-
-        // Initialize with empty adj to populate only the nodes of the DSTree.
-        let empty_adj: Vec<SmallVec<[usize; 4]>> = vec![SmallVec::with_capacity(4); num_nodes];
-        let dstree = DSTree::new(&empty_adj, true);
+        let dndtree = DNDTree::new(num_nodes);
 
         DialsRouter {
             exploration,
             batch_generator,
             fast_paths,
-            dstree,
+            dndtree,
             forward_data: vec![(u32::MAX, u32::MAX); num_nodes],
             reverse_data: vec![(u32::MAX, u32::MAX); num_nodes],
             forward_buckets: std::array::from_fn(|_| Vec::with_capacity(32)),
@@ -82,7 +79,7 @@ impl DialsRouter {
         self.forward_data = vec![(u32::MAX, u32::MAX); self.exploration.num_nodes];
         self.reverse_data = vec![(u32::MAX, u32::MAX); self.exploration.num_nodes];
         self.dials_touched_indices.clear();
-        self.dstree.reset_all_edges();
+        self.dndtree.reset_all_edges();
         self.forward_buckets = std::array::from_fn(|_| Vec::with_capacity(32));
         self.reverse_buckets = std::array::from_fn(|_| Vec::with_capacity(32));
     }
@@ -319,10 +316,10 @@ impl DialsRouter {
         &mut self,
         pairs: &[(usize, usize)],
     ) -> (IntSet<usize>, Vec<usize>) {
-        // SAFETY: Filling the bitset with ones forces the first call to dials_path
+        // NOTE: Filling the bitset with ones forces the first call to dials_path
         // to clear all data entries
         self.dials_touched_indices.insert_range(..);
-        self.dstree.reset_all_edges();
+        self.dndtree.reset_all_edges();
 
         let super_root_index = self.exploration.super_root_index;
         let mut ordered_removables = Vec::with_capacity(self.exploration.num_nodes);
@@ -423,7 +420,7 @@ impl DialsRouter {
                     let &(s, t) = &pair_index_to_pair_key[&pair_index];
 
                     // Capture pairs connected as a side-effect of connecting other pairs.
-                    if t != super_root_index && self.dstree.query(s, t) {
+                    if t != super_root_index && self.dndtree.query(s, t) {
                         if let Some(original_idx) = working_pairs.iter().position(|&p| p == (s, t))
                         {
                             used_pairs.insert(original_idx);
@@ -485,9 +482,9 @@ impl DialsRouter {
                     // TODO: Identify edge-case in fuzzer where u is neighbor of super root.
                     // This is a bug in the fuzzer. Once fixed ordered_removables should be
                     // removed from this inner loop and visited should be populated using the
-                    // dstree.
+                    // DNDTree.
                     if v != super_root_index {
-                        self.dstree.insert_edge(u, v);
+                        self.dndtree.insert_edge(u, v);
                     }
                     u = v;
                 }

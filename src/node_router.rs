@@ -6,7 +6,7 @@ use std::ops::CoroutineState;
 use std::rc::Rc;
 
 use fixedbitset::FixedBitSet;
-use idtree::IdTree;
+use idtree::IDTree;
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::algo::tarjan_scc;
 use petgraph::stable_graph::StableUnGraph;
@@ -39,7 +39,7 @@ pub struct ExplorationNodeData {
 pub struct DynamicState {
     combo_gen_direction: bool,
     has_super_terminal: bool,
-    idtree: IdTree,
+    idtree: IDTree,
     idtree_active_indices: FixedBitSet,
     terminal_to_root: IntMap<usize, usize>,
     terminal_root_pairs: RapidHashSet<(usize, usize)>,
@@ -91,7 +91,7 @@ pub struct NodeRouter {
     gssp_router: DialsRouter,
 
     // The main workhorse of the Bridge Heuristic
-    idtree: IdTree,
+    idtree: IDTree,
     idtree_active_indices: FixedBitSet,
     bridge_generator: BridgeGenerator,
 
@@ -147,7 +147,7 @@ impl NodeRouter {
             cycle_degree_threshold: 5, // max intermediate usage degree on ref_graph is 6
 
             gssp_router,
-            idtree: IdTree::new(&initialization_adj_dict),
+            idtree: IDTree::from_adj(&initialization_adj_dict),
             idtree_active_indices: FixedBitSet::with_capacity(node_count),
             bridge_generator: BridgeGenerator::new(
                 &exploration,
@@ -350,23 +350,25 @@ impl NodeRouter {
         };
         let csv_filename = "results.csv";
 
-        const DO_IOP_APPROXIMATION: bool = false;
-        const DO_IOP_PBS_FWD: bool = false;
-        const DO_IOP_PBS_REV: bool = false;
-        const DO_IOP_PBS_BET: bool = false;
+        const DO_IOP_APPROXIMATION: bool = true;
+        const DO_IOP_PBS_FWD: bool = true;
+        const DO_IOP_PBS_REV: bool = true;
+        const DO_IOP_PBS_BET: bool = true;
 
         const DO_GSSP_APPROXIMATION: bool = true;
-        const DO_GSSP_PBS_FWD: bool = false;
-        const DO_GSSP_PBS_REV: bool = false;
+        const DO_GSSP_PBS_FWD: bool = true;
+        const DO_GSSP_PBS_REV: bool = true;
         const DO_GSSP_PBS_BET: bool = true;
 
         const DO_PD_APPROXIMATION: bool = true;
-        const DO_PD_PBS_FWD: bool = false;
-        const DO_PD_PBS_REV: bool = false;
+        const DO_PD_PBS_FWD: bool = true;
+        const DO_PD_PBS_REV: bool = true;
         const DO_PD_PBS_BET: bool = true;
 
         // At least one approximation must be enabled
-        assert!(DO_IOP_APPROXIMATION || DO_GSSP_APPROXIMATION || DO_PD_APPROXIMATION);
+        const {
+            assert!(DO_IOP_APPROXIMATION || DO_GSSP_APPROXIMATION || DO_PD_APPROXIMATION);
+        }
 
         // --------------------------------------------------------------------
         // Terminal Pairs preprocessing
@@ -444,7 +446,7 @@ impl NodeRouter {
             }
 
             // The overall iop winner
-            let iop_solutions = vec![
+            let iop_solutions = [
                 (iop_fwd_indices, iop_fwd_weight),
                 (iop_rev_indices, iop_rev_weight),
                 (iop_bet_indices, iop_bet_weight),
@@ -531,7 +533,7 @@ impl NodeRouter {
             }
 
             // The overall gssp winner
-            let gssp_solutions = vec![
+            let gssp_solutions = [
                 (gssp_fwd_indices, gssp_fwd_weight),
                 (gssp_rev_indices, gssp_rev_weight),
                 (gssp_bet_indices, gssp_bet_weight),
@@ -614,7 +616,7 @@ impl NodeRouter {
             }
 
             // The overall pd winner
-            let pd_solutions = vec![
+            let pd_solutions = [
                 (pd_fwd_indices, pd_fwd_weight),
                 (pd_rev_indices, pd_rev_weight),
                 (pd_bet_indices, pd_bet_weight),
@@ -662,7 +664,7 @@ impl NodeRouter {
         // --------------------------------------------------------------------
         // Overall Winner
         // --------------------------------------------------------------------
-        let approximations = vec![iop_winner, gssp_winner, pd_winner];
+        let approximations = [iop_winner, gssp_winner, pd_winner];
         let (winner, weight) = approximations
             .iter()
             .min_by_key(|(_, weight)| *weight)
@@ -1264,9 +1266,9 @@ impl NodeRouter {
             }
         } else {
             if self.combo_gen_direction {
-                removal_candidates.sort_by(|a, b| b.1.cmp(&a.1)); // Descending
+                removal_candidates.sort_by_key(|b| std::cmp::Reverse(b.1)); // Descending
             } else {
-                removal_candidates.sort_by(|a, b| a.1.cmp(&b.1)); // Ascending
+                removal_candidates.sort_by_key(|a| a.1); // Ascending
             }
         }
 

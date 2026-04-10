@@ -29,7 +29,7 @@ struct NodeData {
 fn exploration_nodes_to_graph_nodes(nodes_map: &ExplorationGraphData) -> Vec<NodeData> {
     // ---- Prepare Exploration Data ----
     let mut nodes: IntMap<usize, NodeData> = nodes_map
-        .into_iter()
+        .iter()
         .map(|(&waypoint_key, data)| {
             let node_data = NodeData {
                 waypoint_key,
@@ -122,7 +122,7 @@ fn exploration_nodes_to_graph_nodes(nodes_map: &ExplorationGraphData) -> Vec<Nod
 
 /// Exploration Data
 ///
-/// IDTree, DsTree, and NodeRouter depend on the undirected graph structure.
+/// IDTree, DNDTree, and NodeRouter depend on the undirected graph structure.
 ///
 /// SAFETY: DiGraphs contain SUPER_ROOT node with inbound edges only.
 ///         This must not be leaked!
@@ -157,7 +157,7 @@ impl ExplorationData {
         use petgraph::algo::tarjan_scc;
         use petgraph::graph::NodeIndex;
 
-        let nodes = exploration_nodes_to_graph_nodes(&nodes_map);
+        let nodes = exploration_nodes_to_graph_nodes(nodes_map);
 
         // ---- Build Reference Graph ----
         let num_nodes = nodes.len();

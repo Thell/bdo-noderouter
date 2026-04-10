@@ -56,7 +56,8 @@ Lastly input terminal,root pairs (as waypoint ids) and hit solve.
   - uv
   - maturin for python
 
-Setup project dependencies (you may need to setup a .venv if uv doesn't just do it for you):
+Setup project dependencies
+(you may need to setup a .venv if uv doesn't just do it for you):
 
 `uv sync`
 
@@ -68,12 +69,12 @@ Build for Python using:
 
 #### `optimizer_mip.py`
 
-Uses the HiGHS linear optimization software. It utilizes the solver configuration in the `config.toml` file and
-can be configured to use multiple threads. When multiple threads are used the
-`solve()` function coordinates solution sharing between the threads to dramatically
-improve runtime. Big shout out to mathgeekcoder on the HiGHS discord server for
-providing the inspiration for the solution sharing setup and other HiGHS callback
-uses.
+Uses the HiGHS linear optimization software. It utilizes the solver
+configuration in the `config.toml` file and can be configured to use multiple
+threads. When multiple threads are used the `solve()` function coordinates
+solution sharing between the threads to dramatically improve runtime.
+Big shout out to mathgeekcoder on the HiGHS discord server for providing the
+inspiration for the solution sharing setup and other HiGHS callback uses.
 
 The problem is modelled as a Multi-Commodity Flow Problem with
 reverse flow and a 'super root' to allow 'super terminals' to connect to any
@@ -87,7 +88,7 @@ potential base town.
 
 Uses the NodeRouter approximation algorithms (PD and GSSP) along with the
 Pulsing-Bridge Spanners (PBS) heuristic.
-The heuristic uses a Rust implementation of the DSTree and IDTree data
+The heuristic uses a Rust implementation of the DNDTree and IDTree data
 structures for constant-time connectivity testing.
 
 `.venv/bin/python python/bdo_noderouter/pd_approximation.py`
@@ -120,20 +121,23 @@ using the `set_option` function:
 
 - `max_removal_attempts` (default: 350)
 - `max_frontier_rings` (default: 4)
-- `ring_combo_cutoff` (inner to outer most ring, default: [0, 3, 2, 2, 2])
+- `ring_combo_cutoff` (inner to outer most ring, default: `[0, 3, 2, 2, 2]`)
 
 ## Credits
 
 ### Core Libraries
-- **[Rustworkx](https://github.com/Qiskit/rustworkx)** and **[Petgraph](https://github.com/petgraph/petgraph)**  
-  Rustworkx is built on top of Petgraph and provides the Python‑side graph infrastructure used throughout the project.
+- **[Rustworkx](https://github.com/Qiskit/rustworkx)** and 
+  **[Petgraph](https://github.com/petgraph/petgraph)**  
+  Rustworkx is built on top of Petgraph and provides the Python‑side graph
+  infrastructure used throughout the project.
 
 - **[HiGHS linear optimization software](https://highs.dev/)**  
   Parallelizing the dual revised simplex method,  
-  Q. Huangfu and J. A. J. Hall, *Mathematical Programming Computation*, 10(1), 119–142, 2018.
+  Q. Huangfu and J. A. J. Hall, *Mathematical Programming Computation*,
+  10(1), 119–142, 2018.
 
 ### Algorithmic Foundations
-- **DSTree and IDTree** data structures from  
+- **DNDTree and IDTree** data structures from  
   Xu, Lantian, et al.  
   *Constant-time Connectivity Querying in Dynamic Graphs.*  
   Proceedings of the ACM on Management of Data 2.6 (2024): 1–23.
@@ -152,29 +156,39 @@ using the `set_option` function:
 
 ### Project‑Introduced Methods
 - **Greedy Shortest Shared Paths (GSSP)**  
-  A greedy Steiner Forest approximation that batches terminal pairs using primal‑dual intuition and processes them in a Gluttonous‑inspired order using a bi‑directional, weight‑limited variant of Dial’s Algorithm 360, combined with constant‑time connectivity querying via DSTree.
+  A greedy Steiner Forest approximation that batches terminal pairs using
+  primal‑dual intuition and processes them in a Gluttonous‑inspired order using
+  a bi‑directional, weight‑limited variant of Dial’s Algorithm 360, combined
+  with constant‑time connectivity querying via DNDTree.
 
 - **Pulsing‑Bridge Spanners (PBS)**  
   A novel augmentation/pruning heuristic for node‑weighted Steiner forests.  
-  PBS temporarily inserts targeted multi‑node “spanning bridges” to induce beneficial cycles, then prunes non‑articulation points to reduce cost while preserving connectivity.
+  PBS temporarily inserts targeted multi‑node “spanning bridges” to induce
+  beneficial cycles, then prunes non‑articulation points to reduce cost while
+  preserving connectivity.
 
 ### Implementation Notes
-To the best of our knowledge, this project contains the first public‑domain implementations of **DSTree** and **IDTree**.  
-Lantian Xu provided reference material and a C++ implementation of the DSTree, which was adapted and simplified for this project.
+To the best of our knowledge, this project contains the first public‑domain
+implementations of **DNDTree** and **IDTree**.  
+Lantian Xu provided reference material and a C++ implementation of the DNDTree,
+which was adapted and simplified for this project.
 
-- **DSTree** is used in an edge‑insertion‑only setting with multiple queries between insertions.  
-- **IDTree** is used with both insertions and removals, with relatively few queries between updates.
+- **DNDTree** is used in an edge‑insertion‑only setting with multiple queries
+  between insertions.  
+- **IDTree** is used with both insertions and removals, with relatively few
+  queries between updates.
 
 
 ## Performance and Results
 
 ** Coming soon - its takes a long time to solve the MIP problems. **
 
-This section summarizes the accuracy and runtime characteristics of the NodeRouter
-approximation stack (PD, GSSP, and PBS) compared against the optimal MIP solution.
-All results are generated using the controlled fuzzer (`fuzz.py`), which evaluates
-a wide range of (terminal, root) pairing strategies and caches MIP solutions for
-reproducibility.
+This section summarizes the accuracy and runtime characteristics of the
+NodeRouter approximation stack (PD, GSSP, and PBS) compared against the optimal
+MIP solution.
+All results are generated using the controlled fuzzer (`fuzz.py`), which
+evaluates a wide range of (terminal, root) pairing strategies and caches MIP
+solutions for reproducibility.
 
 ### Accuracy Compared to MIP Optimality
 
@@ -183,7 +197,7 @@ reproducibility.
 - **GSSP + PBS accuracy**  
 - **Distribution of suboptimality across pairing strategies**  
 
-(Insert your tables/plots here once the fuzzer completes.)
+(Coming Soon)
 
 ### Runtime Characteristics
 

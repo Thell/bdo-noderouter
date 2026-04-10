@@ -1,6 +1,5 @@
 #![feature(coroutines, coroutine_trait)]
 
-mod dstree;
 mod exploration_data;
 mod fast_paths;
 mod generator_bridge;

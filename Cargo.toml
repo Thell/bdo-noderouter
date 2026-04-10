@@ -17,10 +17,11 @@ debug = true
 debug = true
 
 [dependencies]
+dndtree = "0.3.0"
 # fast_paths = "1.0.0"
 fast_paths = { git = "https://github.com/Thell/fast_paths" }
 fixedbitset = "0.5.7"
-idtree = "0.1.0"
+idtree = "0.3.0"
 nohash-hasher = "0.2.0"
 petgraph = "0.8.3"
 rapidhash = "4.4.1"
@@ -28,10 +29,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 smallvec = "1.15.1"
 
-pyo3 = { version = "0.28.2", optional = true }
-js-sys = { version = "0.3.91", optional = true }
+pyo3 = { version = "0.28.3", optional = true }
+js-sys = { version = "0.3.94", optional = true }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
-wasm-bindgen = { version = "0.2.114", optional = true }
+wasm-bindgen = { version = "0.2.117", optional = true }
 csv = "1.4.0"
 
 [features]
