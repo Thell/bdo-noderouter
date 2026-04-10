@@ -492,7 +492,7 @@ def _suboptimal_viewer_ui(page: ft.Page):
     data_table = ft.DataTable(columns=[ft.DataColumn(ft.Text(c)) for c in rows[0]], rows=[])
     for row in rows:
         cells = [ft.DataCell(ft.Text(v)) for v in row.values()]
-        data_table.rows.append(ft.DataRow(cells=cells, data=row, on_select_changed=submit_selected))  # type: ignore
+        data_table.rows.append(ft.DataRow(cells=cells, data=row, on_select_change=submit_selected))  # type: ignore
 
     custom_input = ft.TextField(multiline=True, min_lines=4, on_submit=submit_custom, shift_enter=True)
     custom_input.hint_text = "Custom Pairs - Examples:\n{t: r, ...}\n[(t, r), ...]\nt,r t,r ..."
