@@ -452,7 +452,7 @@ def _process_selected_plan(plan_data):
     _visualize_instances(mip_instance, nr_instance)
 
 
-def _suboptimal_viewer_ui(page: ft.Page):
+async def _suboptimal_viewer_ui(page: ft.Page):
     def submit_custom(e):
         try:
             input = custom_input.value
@@ -489,31 +489,32 @@ def _suboptimal_viewer_ui(page: ft.Page):
             page.update()
 
     rows = ds.read_json("worst_suboptimal_instances.json")
-    data_table = ft.DataTable(columns=[ft.DataColumn(ft.Text(c)) for c in rows[0]], rows=[])
+    data_table = ft.DataTable(columns=[ft.DataColumn(label=ft.Text(value=c)) for c in rows[0]], rows=[])
     for row in rows:
         cells = [ft.DataCell(ft.Text(v)) for v in row.values()]
-        data_table.rows.append(ft.DataRow(cells=cells, data=row, on_select_change=submit_selected))  # type: ignore
+        data_table.rows.append(ft.DataRow(cells=cells, data=row, on_select_change=submit_selected))
 
     custom_input = ft.TextField(multiline=True, min_lines=4, on_submit=submit_custom, shift_enter=True)
     custom_input.hint_text = "Custom Pairs - Examples:\n{t: r, ...}\n[(t, r), ...]\nt,r t,r ..."
 
-    input_alert = ft.AlertDialog(content=ft.Text("Invalid or empty terminal,root pairs"))
-    processing_alert = ft.AlertDialog(content=ft.Text("Unknown error occurred while executing plan"))
-    suboptimal_title = ft.Text("SubOptimal Instances", size=16, weight=ft.FontWeight.BOLD)
+    input_alert = ft.AlertDialog(content=ft.Text(value="Invalid or empty terminal,root pairs"))
+    processing_alert = ft.AlertDialog(content=ft.Text(value="Unknown error occurred while executing plan"))
+    suboptimal_title = ft.Text(value="SubOptimal Instances", size=16, weight=ft.FontWeight.BOLD)
 
     page.title = "Solution Visualizer"
-    page.appbar = ft.AppBar(title=suboptimal_title, center_title=True)
-    page.add(ft.Container(content=ft.Column([data_table], scroll=ft.ScrollMode.HIDDEN), expand=True))
-    page.add(custom_input)
-    page.overlay.extend([input_alert, processing_alert])
     page.window.width = 1620
     page.window.height = 810
-    page.window.center()
+    page.appbar = ft.AppBar(title=suboptimal_title, center_title=True)
+    page.add(ft.Container(content=ft.Column(controls=[data_table], scroll=ft.ScrollMode.HIDDEN), expand=True))
+    page.add(custom_input)
+    page.overlay.extend([input_alert, processing_alert])
+    await page.window.center()
+    page.update()
 
 
 def viewer_main():
     set_logger(ds.get_config("config"))
-    ft.app(target=_suboptimal_viewer_ui)
+    ft.run(_suboptimal_viewer_ui)
 
 
 if __name__ == "__main__":
