@@ -2,7 +2,7 @@ import math
 from collections import Counter
 
 import networkx as nx
-from networkx.algorithms.approximation import treewidth_min_fill_in, treewidth_min_degree
+from networkx.algorithms.approximation import treewidth_min_degree, treewidth_min_fill_in
 from pyvis.network import Network
 
 
@@ -191,7 +191,7 @@ class BDONiceTreeManager:
     def generate_nice_tree(self):
         reduced = self._get_reduced_graph(self.full_graph)
         _, T = treewidth_min_fill_in(reduced)
-        root_bag = list(T.nodes())[0]
+        root_bag = next(iter(T.nodes()))
         self.root = self._transform_to_nice(T, root_bag)
         return self.root
 

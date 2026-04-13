@@ -45,12 +45,13 @@
 # This means that there are (2 + 50 * sample_count) * | budget| test runs for a total of 165,220 test runs.
 
 
-import polars as pl
-import api_data_store as ds
-import seaborn as sns
-import matplotlib.pyplot as plt
-
 from time import time
+
+import matplotlib.pyplot as plt
+import polars as pl
+import seaborn as sns
+
+import api_data_store as ds
 
 start_time = time()
 
@@ -389,10 +390,9 @@ def rank_composition_band(band_df: pl.DataFrame) -> pl.DataFrame:
             ])
         )
 
-        for mask_value in MASK_LABELS:
+        for mask_value, label in MASK_LABELS.items():
             if mask_value == 0:  # omit NONE
                 continue
-            label = MASK_LABELS[mask_value]
             pre_count = (masks["pre_mask"] == mask_value).sum()
             fwd_count = (masks["fwd_mask"] == mask_value).sum()
             rev_count = (masks["rev_mask"] == mask_value).sum()
@@ -1063,7 +1063,7 @@ print_summary(
     ),
 )
 
-print("Runtime: {:.2f} seconds".format(time() - start_time))
+print(f"Runtime: {time() - start_time:.2f} seconds")
 
 # ============================================================
 #  MARK: PLOTTING

@@ -8,29 +8,27 @@ Edit the 'subgraph' entries at the bottom of the file.
 """
 
 import io
+import os
+import tempfile
+import webbrowser
 
 import branca
 import folium
-import matplotlib.pyplot as plt
-import matplotlib.colors as plt_colors
-import webbrowser
-import os
-import tempfile
 import folium.map
+import matplotlib.colors as plt_colors
+import matplotlib.pyplot as plt
+import networkx as nx
 import rustworkx as rx
 from folium.plugins import FeatureGroupSubGroup, GroupedLayerControl
 
 import api_data_store as ds
-from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
-
-import networkx as nx
-from tree_decomp import BDONiceTreeManager
 
 # from api_common import get_clean_exploration_data
 # from api_exploration_graph import get_exploration_graph
 # from api_rx_pydigraph import inject_super_root, set_graph_terminal_sets_attribute
-
 from api_exploration_data import get_exploration_data
+from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
+from tree_decomp import BDONiceTreeManager
 
 SUPER_ROOT = 99999
 TILE_SCALE = 12800
@@ -109,7 +107,8 @@ def add_edges_from_graph(
             opacity=1,
             popup=f"Edge: {u_node['waypoint_key']} - {v_node['waypoint_key']}",
             tooltip=f"Edge: {u_node['waypoint_key']} - {v_node['waypoint_key']}",
-            **{"interactive": True, "bubblingMouseEvents": True},
+            interactive=True,
+            bubblingMouseEvents=True,
         ).add_to(fg)
 
 
@@ -408,7 +407,6 @@ def visualize_with_terminals(
         terminals (dict, optional): terminal, root mapping. Defaults to None.
     """
     # TODO: Write this up to be part of the pipeline
-    pass
 
 
 if __name__ == "__main__":
@@ -457,7 +455,7 @@ if __name__ == "__main__":
 
     set_graph_terminal_sets_attribute(G, terminals)
 
-    highlights.update(key for key in terminals.keys())
+    highlights.update(key for key in terminals)
     highlights.update(key for key in terminals.values())
     waypoint_to_index = {node["waypoint_key"]: i for i, node in enumerate(G.nodes())}
     highlight_indices = [waypoint_to_index[key] for key in highlights]

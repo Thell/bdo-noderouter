@@ -6,7 +6,7 @@ terminal, root pair assignments by strategy.
 
 import random
 
-from api_exploration_data import get_exploration_data, SUPER_ROOT
+from api_exploration_data import SUPER_ROOT, get_exploration_data
 from orchestrator_types import PairingStrategy, Plan, Terminals
 
 
@@ -14,8 +14,9 @@ def _load_optimized_terminal_pairs(plan: Plan) -> dict[int, int]:
     if plan.budget is None or plan.budget % 5 != 0 or not 5 <= plan.budget <= 550:
         raise ValueError("Optimized strategy requires valid budget (5–550, step 5).")
 
-    from pathlib import Path
     import json
+    from pathlib import Path
+
     import api_data_store as ds
 
     path = Path(ds.path()) / "workerman"

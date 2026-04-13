@@ -526,7 +526,7 @@ if __name__ == "__main__":
     # NOTE: For full fuzzing we should use a subset of budgets since the MIP
     # solver takes a long time and is executed for each strategy within each budget
     # times the number of samples.
-    budgets = range(5, 46, 5)
+    # budgets = range(5, 46, 5)
 
     # NOTE: For testing purposes or limited subsets the range can be increased
     # to include all possible budgets.
@@ -538,8 +538,8 @@ if __name__ == "__main__":
     samples = 20
 
     # # Settings for running the optimized strategy purely to populate the MIP cache
-    # strategies = [PairingStrategy.cheapest_town]
-    # budgets = range(5, 555, 5)
-    # samples = 1
+    strategies = [PairingStrategy.cheapest_town]
+    budgets = range(5, 555, 5)
+    samples = 1
 
     fuzzer_main(strategies, samples, budgets)
