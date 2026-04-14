@@ -75,8 +75,6 @@ pub struct NodeRouter {
     /// Used to control if terminal->root intermediate node betweenness is used
     /// to control the sort order of the removal set generator.
     use_betweenness: bool,
-    /// Limit inclusion of nodes with degree into removal candidates
-    cycle_degree_threshold: usize,
 
     // Greedy Shortest Shared Paths Approximation
     gssp_router: DialsRouter,
@@ -103,19 +101,14 @@ pub struct NodeRouter {
     scratch_nodes: Vec<usize>,
 }
 
+// TODO: Rather than initialize everything based on the exploration data,
+//       we should initialize it based on the reduced exploration graph _after_
+//       we get the terminal pairs.
+//
+// TODO: Consider using 'cached' crate for the exploration data.
 impl NodeRouter {
     pub fn new(exploration_data: &ExplorationGraphData) -> Self {
         let exploration = Rc::new(ExplorationData::new(exploration_data));
-
-        let gssp_router = DialsRouter::new(exploration.clone());
-
-        let mut initialization_adj_dict = IntMap::with_capacity_and_hasher(
-            exploration.ref_ungraph.node_count(),
-            BuildNoHashHasher::default(),
-        );
-        for i in exploration.ref_ungraph.node_indices() {
-            initialization_adj_dict.insert(i.index(), IntSet::default());
-        }
 
         let node_count = exploration.ref_ungraph.node_count();
         let max_frontier_rings = 3;
@@ -133,11 +126,8 @@ impl NodeRouter {
             use_betweenness: false,
             has_super_terminal: false,
 
-            // TODO: Determine if this still serves any purpose since we now have betweenness...
-            cycle_degree_threshold: 5, // max intermediate usage degree on ref_graph is 6
-
-            gssp_router,
-            idtree: IDTree::from_adj(&initialization_adj_dict),
+            gssp_router: DialsRouter::new(exploration.clone()),
+            idtree: IDTree::new(node_count),
             idtree_active_indices: FixedBitSet::with_capacity(node_count),
             bridge_generator: BridgeGenerator::new(
                 &exploration,
@@ -145,13 +135,15 @@ impl NodeRouter {
                 ring_combo_cutoff,
             ),
 
-            terminal_to_root: IntMap::default(), // static per solve run
-            terminal_root_pairs: RapidHashSet::default(), // static per solve run
+            // Static Mappings - per solve run
+            terminal_to_root: IntMap::default(),
+            terminal_root_pairs: RapidHashSet::default(),
             untouchables: IntSet::with_capacity_and_hasher(
                 node_count,
                 BuildNoHashHasher::default(),
-            ), // static per solve run
+            ),
 
+            // Static Mappings - per bridge
             bridge_affected_base_towns: IntSet::with_capacity_and_hasher(
                 node_count,
                 BuildNoHashHasher::default(),
@@ -926,7 +918,6 @@ impl NodeRouter {
     }
 
     fn removal_candidates(&mut self, bridge: &[usize]) -> Option<Vec<(usize, usize)>> {
-        let cycle_degree_threshold = self.cycle_degree_threshold;
         self.scratch_nodes.clear();
         self.scratch_nodes
             .extend_from_slice(&self.bridge_all_cycle_nodes);
@@ -941,9 +932,7 @@ impl NodeRouter {
             if self.untouchables.contains(&v) || bridge.contains(&v) {
                 continue;
             }
-            if self.idtree.degree(v) as usize <= cycle_degree_threshold {
-                idtree_candidates.push((v, self.weights[v] as usize));
-            }
+            idtree_candidates.push((v, self.weights[v] as usize));
         }
 
         (!idtree_candidates.is_empty()).then_some(idtree_candidates)
