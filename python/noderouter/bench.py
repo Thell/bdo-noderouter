@@ -296,9 +296,9 @@ def _run_single_config(
                 break
 
             seed = _make_seed(budget, strategy, i)
-            nr_plan = Plan(nr_optimize, config, budget, percent, seed, include_danger, strategy, False)
+            nr_plan = Plan(nr_optimize, budget, percent, seed, include_danger, strategy, False)
 
-            nr_instance = execute_plan(nr_plan)
+            nr_instance = execute_plan(nr_plan, config)
 
             row = _BenchInstanceMetrics(
                 seed,

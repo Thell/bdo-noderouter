@@ -93,7 +93,7 @@ if __name__ == "__main__":
         pairing_type: PairingStrategy,
         percent: int,
     ) -> Plan:
-        return Plan(optimize_with_terminals, config, budget, percent, 0, include_danger, pairing_type, False)
+        return Plan(optimize_with_terminals, budget, percent, 0, include_danger, pairing_type, False)
 
     if config.get("actions", {}).get("baseline_tests", False):
         success = baselines(optimize_with_terminals, config)
@@ -106,12 +106,12 @@ if __name__ == "__main__":
         total_time_start = time.perf_counter()
         for budget in range(5, 555, 5):
             print(f"Test: optimal terminals budget: {budget}")
-            _ = execute_plan(make_plan(budget, False, strat_optimized, 0))
-            _ = execute_plan(make_plan(budget, True, strat_optimized, 0))
+            _ = execute_plan(make_plan(budget, False, strat_optimized, 0), config)
+            _ = execute_plan(make_plan(budget, True, strat_optimized, 0), config)
         for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
             print(f"Test: random terminals coverage percent: {percent}")
-            _ = execute_plan(make_plan(0, False, strat_random_town, percent))
-            _ = execute_plan(make_plan(0, True, strat_random_town, percent))
+            _ = execute_plan(make_plan(0, False, strat_random_town, percent), config)
+            _ = execute_plan(make_plan(0, True, strat_random_town, percent), config)
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
 
     # # fmt:off

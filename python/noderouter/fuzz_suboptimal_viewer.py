@@ -24,6 +24,7 @@ from rustworkx import PyDiGraph
 
 import api_data_store as ds
 from api_common import MAX_BUDGET, set_logger
+from api_data_store import get_config
 from api_exploration_data import SUPER_ROOT, get_exploration_data, prune_NTD1
 from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
 from optimizer_mip import optimize_with_terminals as mip_optimize
@@ -397,7 +398,6 @@ def _make_plan(
 
     _plan = Plan(
         optimization_fn,
-        ds.get_config("config"),
         plan_args["budget"],
         plan_args["percent"],
         plan_args["seed"],
@@ -429,9 +429,10 @@ def _process_custom_plan(terminal_pairs: dict[int, int]):
 
     mip_plan = _make_plan(plan_args, mip_optimize, True, True)
     nr_plan = _make_plan(plan_args, nr_optimize, False, True)
+    config = get_config("config")
 
-    mip_instance = execute_plan(mip_plan)
-    nr_instance = execute_plan(nr_plan)
+    mip_instance = execute_plan(mip_plan, config)
+    nr_instance = execute_plan(nr_plan, config)
     assert mip_instance.solution and nr_instance.solution
 
     _visualize_instances(mip_instance, nr_instance)
@@ -440,10 +441,11 @@ def _process_custom_plan(terminal_pairs: dict[int, int]):
 def _process_selected_plan(plan_data):
     mip_plan = _make_plan(plan_data, mip_optimize, True, False)
     nr_plan = _make_plan(plan_data, nr_optimize, False, False)
+    config = get_config("config")
 
     try:
-        mip_instance = execute_plan(mip_plan)
-        nr_instance = execute_plan(nr_plan)
+        mip_instance = execute_plan(mip_plan, config)
+        nr_instance = execute_plan(nr_plan, config)
         assert mip_instance.solution and nr_instance.solution
     except Exception as e:
         logger.error(f"Solving suboptimal plan failed: {e}")

@@ -539,11 +539,11 @@ def _run_single_config(
             # if seed != "cf58cc0":
             #     continue
 
-            mip_plan = Plan(mip_optimize, config, budget, percent, seed, include_danger, strategy, True)
-            nr_plan = Plan(nr_optimize, config, budget, percent, seed, include_danger, strategy, False)
+            mip_plan = Plan(mip_optimize, budget, percent, seed, include_danger, strategy, True)
+            nr_plan = Plan(nr_optimize, budget, percent, seed, include_danger, strategy, False)
 
-            mip_instance = execute_plan(mip_plan)
-            nr_instance = execute_plan(nr_plan)
+            mip_instance = execute_plan(mip_plan, config)
+            nr_instance = execute_plan(nr_plan, config)
 
             row = _FuzzInstanceMetrics(
                 seed,

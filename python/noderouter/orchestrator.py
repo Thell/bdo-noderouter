@@ -19,14 +19,14 @@ from orchestrator_terminal_pairs import generate_terminal_pairs
 from orchestrator_types import Instance, Plan, Solution
 
 
-def execute_plan(plan: Plan) -> Instance:
+def execute_plan(plan: Plan, config: dict) -> Instance:
     """Generate and solve terminal-to-root mappings based on a pairing strategy."""
     if plan.allow_cache:
         start_time = time.perf_counter()
-        instance = _execute_plan_cached(plan)
+        instance = _execute_plan_cached(plan, config)
         duration = time.perf_counter() - start_time
     else:
-        instance = _execute_plan_uncached(plan)
+        instance = _execute_plan_uncached(plan, config)
         duration = None
 
     log_msg = instance.log_msg
@@ -38,14 +38,14 @@ def execute_plan(plan: Plan) -> Instance:
     return instance
 
 
-@memory.cache
-def _execute_plan_cached(plan: Plan) -> Instance:
+@memory.cache(ignore=["config"])
+def _execute_plan_cached(plan: Plan, config: dict) -> Instance:
     # Springboard for cached instances
-    return _execute_plan_uncached(plan)
+    return _execute_plan_uncached(plan, config)
 
 
-def _execute_plan_uncached(plan: Plan) -> Instance:
-    return Instance(plan, generate_terminal_pairs(plan))
+def _execute_plan_uncached(plan: Plan, config: dict) -> Instance:
+    return Instance(plan, generate_terminal_pairs(plan), config)
 
 
 if __name__ == "__main__":
@@ -64,7 +64,6 @@ if __name__ == "__main__":
     ) -> Plan:
         return Plan(
             lambda _a, _b: Solution(0.0, 0, 0, 0, 0, []),
-            config,
             budget,
             percent,
             0,

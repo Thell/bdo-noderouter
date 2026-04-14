@@ -41,7 +41,6 @@ class Terminals:
 @dataclass(frozen=True)
 class Plan:
     optimization_fn: OptimizationFn
-    config: dict
     budget: int  # used for optimized
     worker_percent: int  # required for candidate strategies
     seed: SeedType
@@ -54,10 +53,11 @@ class Plan:
 class Instance:
     plan: Plan
     terminals: Terminals
+    config: dict
     solution: Solution | None = None
 
     def __post_init__(self):
-        result = self.plan.optimization_fn(self.terminals.terminals, self.plan.config)
+        result = self.plan.optimization_fn(self.terminals.terminals, self.config)
         self.solution = result
         logger.info(f"Terminals: {self.terminals.terminals}")
         logger.info(f"Solution: {result.waypoints}")
