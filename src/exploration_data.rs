@@ -27,7 +27,6 @@ struct NodeData {
 }
 
 fn exploration_nodes_to_graph_nodes(nodes_map: &ExplorationGraphData) -> Vec<NodeData> {
-    // ---- Prepare Exploration Data ----
     let mut nodes: IntMap<usize, NodeData> = nodes_map
         .iter()
         .map(|(&waypoint_key, data)| {
