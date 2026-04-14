@@ -472,6 +472,5 @@ def prune_NTD1(graph: PyDiGraph, non_removables: set[int] | None = None):
     ]:
         graph.remove_nodes_from(removal_nodes)
         num_removed += len(removal_nodes)
-        removal_nodes = []
 
     return num_removed
