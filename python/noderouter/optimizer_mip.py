@@ -21,10 +21,11 @@ from loguru import logger
 import api_data_store as ds
 from api_common import set_logger
 from api_exploration_data import SUPER_ROOT, get_exploration_data
-from api_highs_solver import create_model, extract_solution, get_highs, solve
+from api_highs_solver import create_model, extract_solution, get_highs
 from api_rx_pydigraph import set_graph_terminal_sets_attribute
 from orchestrator import Solution
 from orchestrator_terminal_pairs import PairingStrategy
+from solver_highspy import SolverController, solve
 
 
 def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
@@ -47,7 +48,8 @@ def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
     model, vars = create_model(model, graph=exploration_graph)
 
     start_time = time.perf_counter()
-    model = solve(model, config)
+    controller = SolverController()
+    model = solve(model, config, controller)
     duration = time.perf_counter() - start_time
 
     solution_graph = extract_solution(model, vars, exploration_graph, config)

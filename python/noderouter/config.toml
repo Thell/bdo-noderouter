@@ -15,9 +15,10 @@ format = "<level>{message}</level>"
 # HiGHS MIP solver options.
 [solver]
 log_to_console = false
+log_via_callback = true
 mip_heuristic_run_root_reduced_cost = false
 mip_feasibility_tolerance = 1e-5
 mip_improvement_timeout = inf
-threads = 8                                 # HiGHs internal parallelism
-num_threads = 1                             # concurrent HiGHs threads
+threads = 1                                 # HiGHs internal parallelism
+num_threads = 8                             # concurrent HiGHs threads
 time_limit = inf
