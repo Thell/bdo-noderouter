@@ -111,8 +111,8 @@ impl NodeRouter {
         let exploration = Rc::new(ExplorationData::new(exploration_data));
 
         let node_count = exploration.ref_ungraph.node_count();
-        let max_frontier_rings = 3;
-        let ring_combo_cutoff = vec![3, 2, 2];
+        let max_frontier_rings = 4;
+        let ring_combo_cutoff = vec![3, 2, 2, 2];
 
         Self {
             exploration: exploration.clone(),
