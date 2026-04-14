@@ -6,7 +6,205 @@ use petgraph::prelude::StableDiGraph;
 use rapidhash::{RapidHashMap, RapidHashSet};
 use smallvec::SmallVec;
 
-use crate::node_router::SharedExplorationData;
+use crate::{
+    NodeRouter,
+    node_router::{SUPER_ROOT, SharedExplorationData},
+};
+
+// MARK: PD Approximation
+
+/// Solves the routing problem for a given NodeRouter and returns a list of active nodes in solution
+///
+/// NOTE: Mutates the NodeRouter to populate required data structures for post processing.
+pub(crate) fn approximate(nr: &mut NodeRouter) -> Vec<usize> {
+    let mut x = nr.untouchables.clone();
+    if nr.has_super_terminal {
+        augment_superterminal_roots(nr, &mut x);
+    }
+
+    let (x, mut ordered_removables) = primal_dual_approximation(nr, x);
+    nr.populate_idtree(&x);
+
+    // Ordered removables are in temporal order of going tight, sub ordered structurally
+    // by sorting by waypoint key.  When removing the nodes they should be processed in
+    // reverse order to facilitate the removal of the latest nodes to 'go tight' first.
+    // The list is reversed here and processed in forward order thoughout the remainder
+    // of the algorithm and bridge heuristic processing.
+    ordered_removables = ordered_removables.iter().rev().cloned().collect();
+
+    // remove_removables is setup to primarily handle 'bridged' components in the Bridge
+    // Heuristic. To simplify the code for the approximation removal testings the bridge
+    // related variables are set here to cover all removables, terminals and base towns
+    // in the graph.
+    nr.update_bridge_affected_nodes(nr.idtree_active_indices.clone());
+
+    let (freed, _freed_edges) = nr.remove_removables(&ordered_removables);
+
+    freed
+        .iter()
+        .for_each(|&v| nr.idtree_active_indices.remove(v));
+    ordered_removables.retain(|&v| !freed.contains(&v));
+
+    ordered_removables
+}
+
+/// Augments initial approximation set with super-terminal potential roots when
+/// that root is nearer than any existing rooted node in the current approximation set.
+fn augment_superterminal_roots(nr: &mut NodeRouter, x: &mut IntSet<usize>) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let mut working_roots = nr.terminal_to_root.clone();
+    let mut pending_super_terminals: IntSet<usize> = working_roots
+        .iter()
+        .filter_map(|(&t, &r)| if r == SUPER_ROOT { Some(t) } else { None })
+        .collect();
+
+    // Processes the super terminals such that the super-terminal nearest a fixed
+    // terminal or any base town is completed first and then becomes available to
+    // be a potential root until all super terminals have a potential root in x.
+    while !pending_super_terminals.is_empty() {
+        // (super_terminal, target_node, cost)
+        let mut super_terminal_distances: Vec<(usize, usize, usize)> = Vec::new();
+
+        for &terminal in &pending_super_terminals {
+            let mut heap = BinaryHeap::new();
+            let mut visited = IntSet::default();
+            heap.push((Reverse(0), Reverse(terminal)));
+
+            while let Some((Reverse(cost), Reverse(node))) = heap.pop() {
+                if !visited.insert(node) {
+                    continue;
+                }
+
+                if node != terminal {
+                    let is_rooted = match working_roots.get(&node) {
+                        Some(root) if root != &SUPER_ROOT => true,
+                        None => nr.exploration.base_town_indices.contains(&node),
+                        _ => false,
+                    };
+
+                    if is_rooted {
+                        super_terminal_distances.push((terminal, node, cost));
+                        break;
+                    }
+                }
+
+                for &neighbor in &nr.neighbors[node] {
+                    if visited.contains(&neighbor) {
+                        continue;
+                    }
+                    let next_cost = if x.contains(&neighbor) {
+                        cost
+                    } else {
+                        cost + nr.weights[neighbor] as usize
+                    };
+                    heap.push((Reverse(next_cost), Reverse(neighbor)));
+                }
+            }
+        }
+
+        super_terminal_distances.sort_by_key(|&(_, _, cost)| cost);
+        let (terminal, target, _cost) = super_terminal_distances[0];
+        x.insert(target);
+        working_roots.insert(terminal, target);
+        pending_super_terminals.remove(&terminal);
+    }
+}
+
+/// Node Weighted Primal Dual Approximation (Demaine et al.)
+fn primal_dual_approximation(
+    nr: &mut NodeRouter,
+    mut x: IntSet<usize>,
+) -> (IntSet<usize>, Vec<usize>) {
+    // The main loop operations and frontier node calculations are set based.
+    // The violated sets identification requires subgraphing the ref_graph and running
+    // connected_components. The loop usually only iterates a half dozen times.
+    let mut y = vec![0; nr.exploration.ref_ungraph.node_count()];
+    let mut ordered_removables = Vec::new();
+    let mut violated = IntSet::with_capacity_and_hasher(
+        nr.exploration.ref_ungraph.node_count(),
+        BuildNoHashHasher::default(),
+    );
+
+    let mut connected_pairs: RapidHashSet<(usize, usize)> = RapidHashSet::default();
+
+    while violated_sets(nr, &x, &mut violated, &mut connected_pairs) {
+        for v in find_frontier_nodes(nr, &violated) {
+            y[v] += 1;
+            if y[v] >= nr.weights[v] {
+                x.insert(v);
+                ordered_removables.push(v);
+            }
+        }
+        violated.clear();
+    }
+
+    (x, ordered_removables)
+}
+
+/// Returns connected components violating connectivity constraints.    
+fn violated_sets(
+    nr: &mut NodeRouter,
+    x: &IntSet<usize>,
+    violated: &mut IntSet<usize>,
+    connected_pairs: &mut RapidHashSet<(usize, usize)>,
+) -> bool {
+    // Compute connected components (undirected graph)
+    let subgraph = nr.ref_subgraph_stable(x);
+    let components: Vec<IntSet<usize>> = tarjan_scc(&subgraph)
+        .into_iter()
+        .map(|comp| comp.iter().map(|nidx| nidx.index()).collect())
+        .collect();
+
+    for cc in &components {
+        // Since the pd approximation is additive we can safely avoid duplicate checks.
+        let tmp_connected_pairs = connected_pairs.clone();
+        let active_terminals = nr
+            .terminal_to_root
+            .iter()
+            .filter(|p| !tmp_connected_pairs.contains(&(*p.0, *p.1)));
+
+        for (&terminal, &root) in active_terminals {
+            let terminal_in_cc = cc.contains(&terminal);
+
+            let root_in_cc = if root == SUPER_ROOT {
+                cc.intersection(&nr.exploration.base_town_indices)
+                    .next()
+                    .is_some()
+            } else {
+                cc.contains(&root)
+            };
+
+            if !terminal_in_cc && !root_in_cc {
+                continue;
+            }
+            if terminal_in_cc && root_in_cc {
+                connected_pairs.insert((terminal, root));
+            } else {
+                violated.extend(cc.iter().cloned());
+                break;
+            }
+        }
+    }
+
+    !violated.is_empty()
+}
+
+/// Finds and returns nodes not in settlement with neighbors in settlement.
+fn find_frontier_nodes(nr: &mut NodeRouter, settlement: &IntSet<usize>) -> IntSet<usize> {
+    let mut frontier = IntSet::with_capacity_and_hasher(
+        nr.exploration.ref_ungraph.node_count(),
+        BuildNoHashHasher::default(),
+    );
+    frontier.extend(
+        settlement
+            .iter()
+            .flat_map(|&v| &nr.neighbors[v])
+            .filter(|n| !settlement.contains(n)),
+    );
+    frontier
+}
 
 // MARK: - PDBatchGenerator
 

@@ -8,7 +8,6 @@ use std::rc::Rc;
 use fixedbitset::FixedBitSet;
 use idtree::IDTree;
 use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
-use petgraph::algo::tarjan_scc;
 use petgraph::stable_graph::StableUnGraph;
 use rapidhash::fast::RapidHasher;
 use rapidhash::{HashSetExt, RapidHashSet};
@@ -18,6 +17,7 @@ use crate::exploration_data::ExplorationData;
 use crate::generator_bridge::BridgeGenerator;
 use crate::generator_weighted_combo::WeightedRangeComboGenerator;
 use crate::gssp::DialsRouter;
+use crate::primal_dual::approximate;
 
 pub const SUPER_ROOT: usize = 99_999;
 
@@ -44,7 +44,6 @@ pub struct DynamicState {
     terminal_to_root: IntMap<usize, usize>,
     terminal_root_pairs: RapidHashSet<(usize, usize)>,
     untouchables: IntSet<usize>,
-    connected_pairs: RapidHashSet<(usize, usize)>,
     bridge_affected_base_towns: IntSet<usize>,
     bridge_affected_indices: FixedBitSet,
     bridge_affected_terminals: RapidHashSet<(usize, usize)>,
@@ -54,12 +53,16 @@ pub struct DynamicState {
 #[derive(Clone, Debug)]
 pub struct NodeRouter {
     /// All exploration node centric data.
-    exploration: SharedExplorationData,
+    pub(crate) exploration: SharedExplorationData,
 
-    // // Used in the _combinations_with_weight_range_generator to limit combo generation.
-    // max_node_weight: usize,
+    // Static Mappings (hoisted from exploration data)
+    pub(crate) neighbors: Vec<SmallVec<[usize; 4]>>,
+    pub(crate) weights: Vec<u32>,
+
+    /// Used for controlling special case handlers for super terminals
+    pub(crate) has_super_terminal: bool,
+
     // Bridge heuristics
-    // Primal-dual
     /// min 350 => 1.5x the max iter of test cases for 2-direction pass
     max_removal_attempts: usize,
     /// Controls the number of frontier rings for the bridge generator
@@ -72,38 +75,23 @@ pub struct NodeRouter {
     /// Used to control if terminal->root intermediate node betweenness is used
     /// to control the sort order of the removal set generator.
     use_betweenness: bool,
-    /// Used for controlling special case handlers for super terminals
-    has_super_terminal: bool,
     /// Limit inclusion of nodes with degree into removal candidates
     cycle_degree_threshold: usize,
-
-    // // Static Mappings
-    // base_towns: IntSet<usize>,
-    neighbors: Vec<SmallVec<[usize; 4]>>,
-    // index_to_waypoint: Vec<usize>,
-    weights: Vec<u32>,
-    // waypoint_to_index: IntMap<usize, usize>,
-
-    // // The main workhorse of the PD Approximation
-    // ref_graph: StableUnGraph<usize, usize>,
 
     // Greedy Shortest Shared Paths Approximation
     gssp_router: DialsRouter,
 
     // The main workhorse of the Bridge Heuristic
     idtree: IDTree,
-    idtree_active_indices: FixedBitSet,
+    pub(crate) idtree_active_indices: FixedBitSet,
     bridge_generator: BridgeGenerator,
 
     // Contains all terminal, root pairs
-    terminal_to_root: IntMap<usize, usize>,
+    pub(crate) terminal_to_root: IntMap<usize, usize>,
     terminal_root_pairs: RapidHashSet<(usize, usize)>,
 
     // Contains all terminals, fixed roots, leaf terminal parents
-    untouchables: IntSet<usize>,
-
-    // Used in approximation to reduce violated set connectivity checks.
-    connected_pairs: RapidHashSet<(usize, usize)>,
+    pub(crate) untouchables: IntSet<usize>,
 
     // Used in reverse deletion to filter deletion and connection checks.
     bridge_affected_base_towns: IntSet<usize>,
@@ -144,6 +132,8 @@ impl NodeRouter {
             combo_gen_direction: false,
             use_betweenness: false,
             has_super_terminal: false,
+
+            // TODO: Determine if this still serves any purpose since we now have betweenness...
             cycle_degree_threshold: 5, // max intermediate usage degree on ref_graph is 6
 
             gssp_router,
@@ -161,7 +151,6 @@ impl NodeRouter {
                 node_count,
                 BuildNoHashHasher::default(),
             ), // static per solve run
-            connected_pairs: RapidHashSet::default(),
 
             bridge_affected_base_towns: IntSet::with_capacity_and_hasher(
                 node_count,
@@ -173,90 +162,6 @@ impl NodeRouter {
             hash_buf: Vec::with_capacity(node_count * core::mem::size_of::<usize>()),
             scratch_nodes: Vec::with_capacity(64),
         }
-    }
-
-    fn clear_dynamic_state(&mut self) {
-        self.combo_gen_direction = false;
-        self.has_super_terminal = false;
-        for node in self.idtree.active_nodes_vec() {
-            self.idtree.isolate_node(node);
-        }
-        self.idtree_active_indices.clear();
-        self.terminal_to_root.clear();
-        self.terminal_root_pairs.clear();
-        self.untouchables.clear();
-        self.connected_pairs.clear();
-        self.bridge_affected_base_towns.clear();
-        self.bridge_affected_indices.clear();
-        self.bridge_affected_terminals.clear();
-    }
-
-    pub fn get_dynamic_state(&self) -> DynamicState {
-        DynamicState {
-            combo_gen_direction: self.combo_gen_direction,
-            has_super_terminal: self.has_super_terminal,
-            idtree: self.idtree.clone(),
-            idtree_active_indices: self.idtree_active_indices.clone(),
-            terminal_to_root: self.terminal_to_root.clone(),
-            terminal_root_pairs: self.terminal_root_pairs.clone(),
-            untouchables: self.untouchables.clone(),
-            connected_pairs: self.connected_pairs.clone(),
-            bridge_affected_base_towns: self.bridge_affected_base_towns.clone(),
-            bridge_affected_indices: self.bridge_affected_indices.clone(),
-            bridge_affected_terminals: self.bridge_affected_terminals.clone(),
-        }
-    }
-
-    pub fn restore_dynamic_state(&mut self, state: DynamicState) {
-        self.combo_gen_direction = state.combo_gen_direction;
-        self.has_super_terminal = state.has_super_terminal;
-        self.idtree = state.idtree.clone();
-        self.idtree_active_indices = state.idtree_active_indices.clone();
-        self.terminal_to_root = state.terminal_to_root.clone();
-        self.terminal_root_pairs = state.terminal_root_pairs.clone();
-        self.untouchables = state.untouchables.clone();
-        self.connected_pairs = state.connected_pairs.clone();
-        self.bridge_affected_base_towns = state.bridge_affected_base_towns.clone();
-        self.bridge_affected_indices = state.bridge_affected_indices.clone();
-        self.bridge_affected_terminals = state.bridge_affected_terminals.clone();
-    }
-
-    fn init_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
-        let mut terminal_idx_pairs = Vec::with_capacity(terminal_pairs.len());
-        let waypoint_to_index = &self.exploration.waypoint_to_index;
-        for (t, r) in terminal_pairs {
-            let t_idx = *waypoint_to_index.get(&t).unwrap();
-            let r_idx = if r == SUPER_ROOT {
-                self.has_super_terminal = true;
-                SUPER_ROOT
-            } else {
-                *waypoint_to_index.get(&r).unwrap()
-            };
-            terminal_idx_pairs.push((t_idx, r_idx));
-            self.terminal_to_root.insert(t_idx, r_idx);
-            self.terminal_root_pairs.insert((t_idx, r_idx));
-        }
-        terminal_idx_pairs
-    }
-
-    pub fn idtree_weight(&self) -> (FixedBitSet, usize) {
-        let active_nodes = self.idtree_active_indices.clone();
-        let total_weight: u32 = active_nodes.ones().map(|i| self.weights[i]).sum();
-        (active_nodes, total_weight as usize)
-    }
-
-    /// Induce subgraph from self.ref_graph using node indices
-    fn ref_subgraph_stable(&self, indices: &IntSet<usize>) -> StableUnGraph<(), usize> {
-        self.exploration.ref_ungraph.filter_map(
-            |node_idx, _| {
-                if indices.contains(&node_idx.index()) {
-                    Some(())
-                } else {
-                    None
-                }
-            },
-            |_, edge_idx| Some(*edge_idx),
-        )
     }
 
     /// Set node router options by string, value
@@ -568,7 +473,7 @@ impl NodeRouter {
             self.use_betweenness = false;
 
             // Approximate
-            let pd_ordered_removables = self.approximate();
+            let pd_ordered_removables = approximate(self);
             let (pd_approximation, pd_approximation_weight) = self.idtree_weight();
 
             let post_pd_state = self.get_dynamic_state();
@@ -678,9 +583,88 @@ impl NodeRouter {
 
         (winner, weight)
     }
+}
+
+impl NodeRouter {
+    fn clear_dynamic_state(&mut self) {
+        self.combo_gen_direction = false;
+        self.has_super_terminal = false;
+        for node in self.idtree.active_nodes_vec() {
+            self.idtree.isolate_node(node);
+        }
+        self.idtree_active_indices.clear();
+        self.terminal_to_root.clear();
+        self.terminal_root_pairs.clear();
+        self.untouchables.clear();
+        self.bridge_affected_base_towns.clear();
+        self.bridge_affected_indices.clear();
+        self.bridge_affected_terminals.clear();
+    }
+
+    fn get_dynamic_state(&self) -> DynamicState {
+        DynamicState {
+            combo_gen_direction: self.combo_gen_direction,
+            has_super_terminal: self.has_super_terminal,
+            idtree: self.idtree.clone(),
+            idtree_active_indices: self.idtree_active_indices.clone(),
+            terminal_to_root: self.terminal_to_root.clone(),
+            terminal_root_pairs: self.terminal_root_pairs.clone(),
+            untouchables: self.untouchables.clone(),
+            bridge_affected_base_towns: self.bridge_affected_base_towns.clone(),
+            bridge_affected_indices: self.bridge_affected_indices.clone(),
+            bridge_affected_terminals: self.bridge_affected_terminals.clone(),
+        }
+    }
+
+    fn restore_dynamic_state(&mut self, state: DynamicState) {
+        self.combo_gen_direction = state.combo_gen_direction;
+        self.has_super_terminal = state.has_super_terminal;
+        self.idtree = state.idtree.clone();
+        self.idtree_active_indices = state.idtree_active_indices.clone();
+        self.terminal_to_root = state.terminal_to_root.clone();
+        self.terminal_root_pairs = state.terminal_root_pairs.clone();
+        self.untouchables = state.untouchables.clone();
+        self.bridge_affected_base_towns = state.bridge_affected_base_towns.clone();
+        self.bridge_affected_indices = state.bridge_affected_indices.clone();
+        self.bridge_affected_terminals = state.bridge_affected_terminals.clone();
+    }
+
+    fn init_terminal_pairs(&mut self, terminal_pairs: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+        let mut terminal_idx_pairs = Vec::with_capacity(terminal_pairs.len());
+        let waypoint_to_index = &self.exploration.waypoint_to_index;
+        for (t, r) in terminal_pairs {
+            let t_idx = *waypoint_to_index.get(&t).unwrap();
+            let r_idx = if r == SUPER_ROOT {
+                self.has_super_terminal = true;
+                SUPER_ROOT
+            } else {
+                *waypoint_to_index.get(&r).unwrap()
+            };
+            terminal_idx_pairs.push((t_idx, r_idx));
+            self.terminal_to_root.insert(t_idx, r_idx);
+            self.terminal_root_pairs.insert((t_idx, r_idx));
+        }
+        terminal_idx_pairs
+    }
+
+    /// Induce subgraph from self.ref_graph using node indices
+    pub(crate) fn ref_subgraph_stable(&self, indices: &IntSet<usize>) -> StableUnGraph<(), usize> {
+        self.exploration.ref_ungraph.filter_map(
+            |node_idx, _| {
+                if indices.contains(&node_idx.index()) {
+                    Some(())
+                } else {
+                    None
+                }
+            },
+            |_, edge_idx| Some(*edge_idx),
+        )
+    }
 
     /// Set of all terminals, fixed roots and leaf terminal parents
     fn generate_untouchables(&mut self) {
+        // TODO: Rewrite this to take advantage of reduced graph transforms/pendants
+        //       so that all fixed nodes are untouchable.
         self.untouchables.clear();
         self.untouchables.extend(self.terminal_to_root.keys());
         self.untouchables.extend(self.terminal_to_root.values());
@@ -694,200 +678,14 @@ impl NodeRouter {
         }
     }
 
-    // MARK: PD Approximation
-
-    /// Solves the routing problem and returns a list of active nodes in solution   
-    fn approximate(&mut self) -> Vec<usize> {
-        let mut x = self.untouchables.clone();
-        if self.has_super_terminal {
-            self.augment_superterminal_roots(&mut x);
-        }
-
-        let (x, mut ordered_removables) = self.primal_dual_approximation(x);
-        self.populate_idtree(&x);
-
-        // Ordered removables are in temporal order of going tight, sub ordered structurally
-        // by sorting by waypoint key.  When removing the nodes they should be processed in
-        // reverse order to facilitate the removal of the latest nodes to 'go tight' first.
-        // The list is reversed here and processed in forward order thoughout the remainder
-        // of the algorithm and bridge heuristic processing.
-        ordered_removables = ordered_removables.iter().rev().cloned().collect();
-
-        // remove_removables is setup to primarily handle 'bridged' components in the Bridge
-        // Heuristic. To simplify the code for the approximation removal testings the bridge
-        // related variables are set here to cover all removables, terminals and base towns
-        // in the graph.
-        self.update_bridge_affected_nodes(self.idtree_active_indices.clone());
-
-        let (freed, _freed_edges) = self.remove_removables(&ordered_removables);
-
-        freed
-            .iter()
-            .for_each(|&v| self.idtree_active_indices.remove(v));
-        ordered_removables.retain(|&v| !freed.contains(&v));
-
-        ordered_removables
-    }
-
-    /// Augments initial approximation set with super-terminal potential roots when
-    /// that root is nearer than any existing rooted node in the current approximation set.
-    fn augment_superterminal_roots(&mut self, x: &mut IntSet<usize>) {
-        use std::cmp::Reverse;
-        use std::collections::BinaryHeap;
-
-        let mut working_roots = self.terminal_to_root.clone();
-        let mut pending_super_terminals: IntSet<usize> = working_roots
-            .iter()
-            .filter_map(|(&t, &r)| if r == SUPER_ROOT { Some(t) } else { None })
-            .collect();
-
-        // Processes the super terminals such that the super-terminal nearest a fixed
-        // terminal or any base town is completed first and then becomes available to
-        // be a potential root until all super terminals have a potential root in x.
-        while !pending_super_terminals.is_empty() {
-            // (super_terminal, target_node, cost)
-            let mut super_terminal_distances: Vec<(usize, usize, usize)> = Vec::new();
-
-            for &terminal in &pending_super_terminals {
-                let mut heap = BinaryHeap::new();
-                let mut visited = IntSet::default();
-                heap.push((Reverse(0), Reverse(terminal)));
-
-                while let Some((Reverse(cost), Reverse(node))) = heap.pop() {
-                    if !visited.insert(node) {
-                        continue;
-                    }
-
-                    if node != terminal {
-                        let is_rooted = match working_roots.get(&node) {
-                            Some(root) if root != &SUPER_ROOT => true,
-                            None => self.exploration.base_town_indices.contains(&node),
-                            _ => false,
-                        };
-
-                        if is_rooted {
-                            super_terminal_distances.push((terminal, node, cost));
-                            break;
-                        }
-                    }
-
-                    for &neighbor in &self.neighbors[node] {
-                        if visited.contains(&neighbor) {
-                            continue;
-                        }
-                        let next_cost = if x.contains(&neighbor) {
-                            cost
-                        } else {
-                            cost + self.weights[neighbor] as usize
-                        };
-                        heap.push((Reverse(next_cost), Reverse(neighbor)));
-                    }
-                }
-            }
-
-            super_terminal_distances.sort_by_key(|&(_, _, cost)| cost);
-            let (terminal, target, _cost) = super_terminal_distances[0];
-            x.insert(target);
-            working_roots.insert(terminal, target);
-            pending_super_terminals.remove(&terminal);
-        }
-    }
-
-    /// Node Weighted Primal Dual Approximation (Demaine et al.)
-    fn primal_dual_approximation(&mut self, mut x: IntSet<usize>) -> (IntSet<usize>, Vec<usize>) {
-        // The main loop operations and frontier node calculations are set based.
-        // The violated sets identification requires subgraphing the ref_graph and running
-        // connected_components. The loop usually only iterates a half dozen times.
-        let mut y = vec![0; self.exploration.ref_ungraph.node_count()];
-        let mut ordered_removables = Vec::new();
-        let mut violated = IntSet::with_capacity_and_hasher(
-            self.exploration.ref_ungraph.node_count(),
-            BuildNoHashHasher::default(),
-        );
-        while self.violated_sets(&x, &mut violated) {
-            for v in self.find_frontier_nodes(&violated) {
-                y[v] += 1;
-                if y[v] >= self.weights[v] {
-                    x.insert(v);
-                    ordered_removables.push(v);
-                }
-            }
-            violated.clear();
-        }
-
-        (x, ordered_removables)
-    }
-
-    /// Returns connected components violating connectivity constraints.    
-    fn violated_sets(&mut self, x: &IntSet<usize>, violated: &mut IntSet<usize>) -> bool {
-        // Compute connected components (undirected graph)
-        let subgraph = self.ref_subgraph_stable(x);
-        let components: Vec<IntSet<usize>> = tarjan_scc(&subgraph)
-            .into_iter()
-            .map(|comp| comp.iter().map(|nidx| nidx.index()).collect())
-            .collect();
-
-        for cc in &components {
-            // Since the pd approximation is additive we can safely avoid duplicate checks.
-            let tmp_connected_pairs = self.connected_pairs.clone();
-            let active_terminals = self
-                .terminal_to_root
-                .iter()
-                .filter(|p| !tmp_connected_pairs.contains(&(*p.0, *p.1)));
-
-            for (&terminal, &root) in active_terminals {
-                let terminal_in_cc = cc.contains(&terminal);
-
-                let root_in_cc = if root == SUPER_ROOT {
-                    cc.intersection(&self.exploration.base_town_indices)
-                        .next()
-                        .is_some()
-                } else {
-                    cc.contains(&root)
-                };
-
-                if !terminal_in_cc && !root_in_cc {
-                    continue;
-                }
-                if terminal_in_cc && root_in_cc {
-                    self.connected_pairs.insert((terminal, root));
-                } else {
-                    violated.extend(cc.iter().cloned());
-                    break;
-                }
-            }
-        }
-
-        !violated.is_empty()
-    }
-
-    /// Finds and returns nodes not in settlement with neighbors in settlement.
-    fn find_frontier_nodes(&self, settlement: &IntSet<usize>) -> IntSet<usize> {
-        let mut frontier = IntSet::with_capacity_and_hasher(
-            self.exploration.ref_ungraph.node_count(),
-            BuildNoHashHasher::default(),
-        );
-        frontier.extend(
-            settlement
-                .iter()
-                .flat_map(|&v| &self.neighbors[v])
-                .filter(|n| !settlement.contains(n)),
-        );
-        frontier
-    }
-
-    fn sort_by_weights(&self, numbers: &[usize]) -> Vec<usize> {
-        let mut pairs: Vec<(usize, usize)> = numbers
-            .iter()
-            .map(|&i| self.weights[i] as usize)
-            .zip(numbers.iter().cloned())
-            .collect();
-        pairs.sort_unstable();
-        pairs.into_iter().map(|(_, number)| number).collect()
+    fn idtree_weight(&self) -> (FixedBitSet, usize) {
+        let active_nodes = self.idtree_active_indices.clone();
+        let total_weight: u32 = active_nodes.ones().map(|i| self.weights[i]).sum();
+        (active_nodes, total_weight as usize)
     }
 
     /// Populates the IDTree and initializes idtree_active_indices
-    fn populate_idtree(&mut self, x: &IntSet<usize>) {
+    pub(crate) fn populate_idtree(&mut self, x: &IntSet<usize>) {
         self.ref_subgraph_stable(x)
             .edge_indices()
             .for_each(|edge_idx| {
@@ -902,19 +700,6 @@ impl NodeRouter {
         self.idtree_active_indices = self.idtree.active_nodes_bitset();
     }
 
-    /// Updates self._bridge_* variables with relevant bridged component nodes.
-    fn update_bridge_affected_nodes(&mut self, affected_component: FixedBitSet) {
-        self.bridge_affected_terminals = self.terminal_root_pairs.clone();
-        self.bridge_affected_terminals
-            .retain(|p| affected_component.contains(p.0));
-
-        self.bridge_affected_base_towns = self.exploration.base_town_indices.clone();
-        self.bridge_affected_base_towns
-            .retain(|&b| affected_component.contains(b));
-
-        self.bridge_affected_indices = affected_component;
-    }
-
     /////
     // MARK: Connectivity Testing
     /////
@@ -922,7 +707,7 @@ impl NodeRouter {
     /// Attempt removals of each node in ordered_removables.
     ///
     /// NOTE: This function should only be entered after terminal pairs connected check succeeds.
-    fn remove_removables(
+    pub(crate) fn remove_removables(
         &mut self,
         ordered_removables: &Vec<usize>,
     ) -> (Vec<usize>, Vec<(usize, usize)>) {
@@ -1001,6 +786,19 @@ impl NodeRouter {
     }
 
     // MARK: Bridge Heuristic
+
+    /// Updates self._bridge_* variables with relevant bridged component nodes.
+    pub(crate) fn update_bridge_affected_nodes(&mut self, affected_component: FixedBitSet) {
+        self.bridge_affected_terminals = self.terminal_root_pairs.clone();
+        self.bridge_affected_terminals
+            .retain(|p| affected_component.contains(p.0));
+
+        self.bridge_affected_base_towns = self.exploration.base_town_indices.clone();
+        self.bridge_affected_base_towns
+            .retain(|&b| affected_component.contains(b));
+
+        self.bridge_affected_indices = affected_component;
+    }
 
     /// Bridge heuristic: find and utilize potential bridges to _increase_
     /// cycle counts and then identify removable non-articulation points
@@ -1239,6 +1037,16 @@ impl NodeRouter {
         }
 
         (false, removal_attempts, vec![])
+    }
+
+    fn sort_by_weights(&self, numbers: &[usize]) -> Vec<usize> {
+        let mut pairs: Vec<(usize, usize)> = numbers
+            .iter()
+            .map(|&i| self.weights[i] as usize)
+            .zip(numbers.iter().cloned())
+            .collect();
+        pairs.sort_unstable();
+        pairs.into_iter().map(|(_, number)| number).collect()
     }
 
     /// Sorts removal candidates by betweenness and/or weight.
