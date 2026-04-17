@@ -3,7 +3,8 @@ extern crate noderouter;
 use std::hint::black_box;
 use std::path::PathBuf;
 
-use noderouter::node_router::ExplorationGraphData;
+use noderouter::ExplorationGraphData;
+// use noderouter::exploration_data::ExplorationGraphData;
 use noderouter::node_router::NodeRouter;
 
 /*

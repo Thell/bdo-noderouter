@@ -1,6 +1,5 @@
 use smallvec::SmallVec;
 
-use std::collections::{BTreeMap, HashMap};
 use std::hash::Hasher;
 use std::ops::CoroutineState;
 use std::rc::Rc;
@@ -11,29 +10,16 @@ use nohash_hasher::{BuildNoHashHasher, IntMap, IntSet};
 use petgraph::stable_graph::StableUnGraph;
 use rapidhash::fast::RapidHasher;
 use rapidhash::{HashSetExt, RapidHashSet};
-use serde::Deserialize;
 
-use crate::exploration_data::ExplorationData;
-use crate::generator_bridge::BridgeGenerator;
-use crate::generator_weighted_combo::WeightedRangeComboGenerator;
-use crate::gssp::DialsRouter;
-use crate::primal_dual::approximate;
+use crate::{
+    exploration_data::{ExplorationData, ExplorationGraphData, SUPER_ROOT},
+    generator_bridge::BridgeGenerator,
+    generator_weighted_combo::WeightedRangeComboGenerator,
+    gssp::DialsRouter,
+    primal_dual::approximate,
+};
 
-pub const SUPER_ROOT: usize = 99_999;
-
-pub type ExplorationGraphData = BTreeMap<usize, ExplorationNodeData>;
 pub type SharedExplorationData = Rc<ExplorationData>;
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ExplorationNodeData {
-    pub waypoint_key: usize,
-    pub need_exploration_point: usize,
-    pub is_base_town: bool,
-    pub link_list: Vec<usize>,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
 
 #[derive(Clone, Debug)]
 pub struct DynamicState {
@@ -158,9 +144,9 @@ impl NodeRouter {
 
     /// Set node router options by string, value
     /// Options:
-    /// "max_removal_attempts" => usize
-    /// "max_frontier_rings" => usize
-    /// "ring_combo_cutoff" => usize
+    /// - "max_removal_attempts" => usize
+    /// - "max_frontier_rings" => usize
+    /// - "ring_combo_cutoff" => usize
     pub fn set_option(&mut self, option: &str, value: &str) -> Result<(), String> {
         match option {
             "max_removal_attempts" => {
@@ -692,9 +678,7 @@ impl NodeRouter {
         self.idtree_active_indices = self.idtree.active_nodes_bitset();
     }
 
-    /////
     // MARK: Connectivity Testing
-    /////
 
     /// Attempt removals of each node in ordered_removables.
     ///
@@ -707,20 +691,20 @@ impl NodeRouter {
         let mut freed_edges = Vec::new();
         let mut active_neighbors = Vec::<(usize, usize)>::with_capacity(4);
 
+        // NOTE: Ordered removables, during the improve_component stage, are filtered
+        //       to only include active nodes from the component being tested.
         for &u in ordered_removables {
             active_neighbors.clear();
             let mut need_check = false;
 
             // Simulate removal by isolating the idtree node
-            // NOTE: Ordered removables, during the improve_component stage, are filtered
-            //       to only include active nodes from the component being tested.
             for &v in &self.idtree.neighbors_smallvec(u) {
                 match self.idtree.delete_edge(u, v) {
                     // nothing removed
                     -1 => continue,
-                    // adjacency removed OR replacement found
+                    // non-tree edge OR replacement found
                     0 | 1 => active_neighbors.push((u, v)),
-                    // new component
+                    // tree edge no replacement found (component split)
                     2 => {
                         active_neighbors.push((u, v));
                         need_check = true;

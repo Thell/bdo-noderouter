@@ -56,6 +56,18 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
         for i, j in G.edge_list():
             f_k[(k, i, j)] = model.addVariable(lb=0, ub=f_ub)
 
+    # Force select fixed nodes
+    node_key_by_index = G.attrs["node_key_by_index"]
+    all_terminals = terminal_sets.keys() | set().union(*terminal_sets.values())
+    fixed_nodes = kwargs.get("fixed_nodes", set())
+    fixed_node_indices = {node_key_by_index.inv[i] for i in fixed_nodes}
+    for i in fixed_node_indices:
+        if G.has_node(i) and not i in all_terminals and not G[i]["is_base_town"]:
+            logger.error(
+                f"  fixed node {node_key_by_index[i]} with weight {G[i]['need_exploration_point']} and {len(G[i]['collapsed_nodes'])} collapsed nodes."
+            )
+            model.addConstr(x[i] == 1)
+
     # Objective: Minimize total node weight
     model.setObjective(
         model.qsum(G[i]["need_exploration_point"] * x[i] for i in G.node_indices()),
@@ -171,12 +183,13 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
         if r_key == SUPER_ROOT:
             continue
         for t_index in terminal_set:
-            if t_index in root_indices_in_graph:
-                continue
+            # if t_index in root_indices_in_graph:
+            #     continue
+            t_key = node_key_by_index[t_index]
             if not rx.has_path(solution_graph, r_index, t_index):
-                t_key = node_key_by_index[t_index]
                 raise ValueError(f"Terminal {t_key} not connected to root {r_key}!")
             path = rx.dijkstra_shortest_paths(solution_graph, r_index, t_index)
+            logger.trace(f"  path from {r_key} to {t_key}: {[node_key_by_index[v] for v in path[t_index]]}")
             used_nodes.update(path[t_index])
             used_roots.add(r_index)
 
@@ -186,6 +199,8 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
         if r_key != SUPER_ROOT:
             continue
         for t_index in terminal_set:
+            if t_index in root_indices_in_graph:
+                continue
             for potential_root in used_roots:
                 if not rx.has_path(solution_graph, potential_root, t_index):
                     continue

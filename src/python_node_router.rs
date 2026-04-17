@@ -2,7 +2,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::collections::BTreeMap;
 
-use crate::node_router::{ExplorationGraphData, ExplorationNodeData, NodeRouter};
+use crate::{
+    exploration_data::{ExplorationGraphData, ExplorationNodeData},
+    node_router::NodeRouter,
+};
 
 #[pyclass(name = "NodeRouter", unsendable)]
 pub struct PyNodeRouter {

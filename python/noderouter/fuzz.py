@@ -421,7 +421,7 @@ def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     # The solver's methodology for handling dangers can potentially 'break' an otherwise
     # optimally solved problem and by keeping them fixed for danger inclusive and exclusive
     # samples we ensure that such cases are identifiable.
-    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:7]
+    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:10]
 
 
 def _run_single_config(
@@ -531,15 +531,15 @@ if __name__ == "__main__":
     # NOTE: For testing purposes or limited subsets the range can be increased
     # to include all possible budgets.
     # NOTE: MIP optimal solutions are available for (5, 555, 5).
-    # budgets = range(5, 555, 5)
+    budgets = range(5, 25, 5)
 
     # NOTE: For normal fuzzing or testing purposes the sample count can be adjusted
     # as desired. The default is 20 to allow for a diverse random selection of pairs.
     samples = 20
 
     # # Settings for running the optimized strategy purely to populate the MIP cache
-    strategies = [PairingStrategy.cheapest_town]
-    budgets = range(5, 555, 5)
-    samples = 1
+    # strategies = [PairingStrategy.cheapest_town]
+    # budgets = range(5, 555, 5)
+    # samples = 1
 
     fuzzer_main(strategies, samples, budgets)

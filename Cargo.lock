@@ -55,9 +55,9 @@ dependencies = [
 
 [[package]]
 name = "dndtree"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26a7def061c74716c273f32ab2b02e3bde3e8329cb24098a4ee3d1055001783c"
+checksum = "b42c68c928828e0aaaa233349103e18db10cbd4bdc146a8cf0138e3abcd6cea3"
 dependencies = [
  "fixedbitset",
  "log",
@@ -117,9 +117,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "idtree"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43f1b1aba6d32549b8a1fbe232ba6522fa2c0cae35570333424dea9872d56dc8"
+checksum = "fb7fb3f4b5ec4bd9f44d396d9bfeda10af34052058c9fd8b7a1f5abd621e7fd6"
 dependencies = [
  "fixedbitset",
  "nohash-hasher",

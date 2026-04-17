@@ -9,6 +9,7 @@ mod primal_dual;
 
 pub mod node_router;
 
+pub use crate::exploration_data::{ExplorationGraphData, ExplorationNodeData};
 pub use crate::node_router::NodeRouter;
 
 // Python PyO3 binding

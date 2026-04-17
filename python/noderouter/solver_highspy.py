@@ -10,6 +10,7 @@ import numpy as np
 import psutil
 from highspy import Highs, ObjSense
 from loguru import logger
+from numpy.typing import NDArray
 
 TIME_AND_NEWLINE_PATTERN = re.compile(r"(\d+\.\d+s)\n$")
 
@@ -67,6 +68,46 @@ class Incumbent:
     provided: list[bool]
 
 
+def validate_and_coerce_solution(
+    raw_solution,
+    expected_len: int,
+    min_nonzero_fraction: float = 0.01,  # optional sanity check
+) -> NDArray | None:
+    """
+    Return True only if the solution from HiGHS callback looks valid.
+    Logs a warning and returns False otherwise.
+    """
+    if raw_solution is None:
+        logger.warning("Received None as mip_solution from HiGHS callback.")
+        return None
+
+    try:
+        # Convert safely to numpy (handles lists, memoryviews, empty arrays, etc.)
+        sol = np.asarray(raw_solution, dtype=float)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Failed to convert mip_solution to array: {e}")
+        return None
+
+    if sol.ndim != 1 or len(sol) != expected_len:
+        logger.debug(
+            f"Dimension mismatch: expected ({expected_len},), received shape {sol.shape} from HiGHS callback."
+        )
+        return None
+
+    # Optional extra sanity check: skip obviously bogus all-zero solutions
+    # (adjust or remove if your model can legitimately have many zeros)
+    if expected_len > 50 and np.allclose(sol, 0):
+        nonzero_count = np.count_nonzero(np.abs(sol) > 1e-8)
+        if nonzero_count < expected_len * min_nonzero_fraction:
+            logger.debug(
+                f"Suspicious all-zero (or near-zero) solution received "
+                f"({nonzero_count}/{expected_len} nonzeros). Skipping."
+            )
+            return None
+
+    return sol
+
+
 def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
     if controller is None:
         controller = SolverController()
@@ -81,10 +122,11 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
     # system operations (like the UI) causes more HiGHs thread context switches
     physical_cpu_count = psutil.cpu_count(logical=False)
     physical_cpu_count = 1 if physical_cpu_count is None else max(2, physical_cpu_count) - 1
-    num_threads = config.get("num_threads", physical_cpu_count)
+    num_threads = config.get("solver", {}).get("num_threads", physical_cpu_count)
     num_threads = max(num_threads, 1)
     if num_threads > 1:
         model.setOptionValue("threads", 1)  # HiGHs internal threads
+    logger.info(f"Using {num_threads} threads")
 
     # Reduce the amount of logging (still captures all important messages)
     model.setOptionValue("mip_min_logging_interval", 30)
@@ -130,7 +172,6 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
 
     def logging_manager():
         """Consume logging events and capture final reports into clone_solution_report."""
-        # NOTE: Highs will not write anything to the console when the logging callback is enabled.
         # The final report is captured here but written to stdout prior to exiting the main function.
         while not stop_event.is_set():
             try:
@@ -161,28 +202,37 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
                 e = incumbent_queue.get(timeout=0.025)
             except queue.Empty:
                 continue
+            except Exception as qe:  # noqa: BLE001
+                logger.error(f"Queue error in incumbent_manager: {qe}")
+                continue
 
-            value = e.data_out.objective_function_value
-            if is_better(value, incumbent.value):
+            try:
+                value = e.data_out.objective_function_value
+                if not is_better(value, incumbent.value):
+                    continue
+
+                incoming_solution = validate_and_coerce_solution(
+                    e.data_out.mip_solution, expected_len=len(incumbent.solution)
+                )
+                if incoming_solution is None:
+                    continue
+
                 clone_id = int(e.user_data)
-
-                incoming_solution = e.data_out.mip_solution
-                if len(incoming_solution) != len(incumbent.solution):
-                    logger.error(
-                        f"Dimension mismatch: expected {len(incumbent.solution)}, "
-                        f"received {len(incoming_solution)} from clone {e.user_data}."
-                    )
-                    return
-
                 with incumbent.lock:
                     incumbent.value = value
-                    incumbent.solution[:] = e.data_out.mip_solution
+                    incumbent.solution[:] = incoming_solution
                     incumbent.provided = [False] * num_threads
                     incumbent.provided[clone_id] = True
                     incumbent.id = clone_id
 
                 if timeout_controller is not None:
                     timeout_controller.reset()
+
+            except Exception as ex:  # noqa: BLE001
+                logger.debug(
+                    f"Unexpected error processing incumbent from clone {getattr(e, 'user_data', '?')}: {ex}",
+                    exc_info=True,
+                )
 
     def cbLoggingHandler(e):
         logging_queue.put_nowait(e)

@@ -6,10 +6,8 @@ use petgraph::prelude::StableDiGraph;
 use rapidhash::{RapidHashMap, RapidHashSet};
 use smallvec::SmallVec;
 
-use crate::{
-    NodeRouter,
-    node_router::{SUPER_ROOT, SharedExplorationData},
-};
+use crate::exploration_data::SUPER_ROOT;
+use crate::{NodeRouter, node_router::SharedExplorationData};
 
 // MARK: PD Approximation
 

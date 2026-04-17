@@ -1,0 +1,817 @@
+from __future__ import annotations
+
+from collections import Counter
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+
+import rustworkx as rx
+from bidict import bidict
+from loguru import logger
+from rustworkx import PyDiGraph
+
+from api_exploration_data import get_exploration_data
+from api_rx_pydigraph import subgraph_stable
+
+PAYLOAD_WEIGHT_KEY = "need_exploration_point"
+HYPERNODE_CONTENTS_KEY = "collapsed_nodes"
+
+
+@dataclass
+class SFGraphReductionEngine:
+    """
+    A reduction engine for the Steiner Forest problem.
+
+    Reduces the problem space of the Steiner Forest problem solution for a multi-commodity flow problem
+    focusing on reducing the problem graph which reduces MIP model variables, constraints and non-zeros.
+
+    ** All reductions and transformations guarantee that the remaining problem space contains an optimal solution. **
+
+    With that in mind, only certified inclusion/exclusion/redundancy is a consideration.
+    """
+
+    graph: PyDiGraph
+    node_to_key: bidict[int, int]
+    super_root_index: int | None = None
+
+    fixed_nodes: set[int] = field(default_factory=set)
+    potential_roots: set[int] = field(default_factory=set)
+    terminal_sets: dict[int, set[int]] = field(default_factory=dict)
+
+    do_debug: bool = False
+
+    # MARK: Common Helpers
+
+    def get_node_key(self, node: int) -> int:
+        """Logging helper."""
+        key = self.node_to_key.get(node, None)
+        if key is None:
+            raise RuntimeError(f"Node {node} not found in index <-> key map.")
+        return key
+
+    def non_steiner_nodes(self) -> set[int]:
+        """Returns the set of nodes that are not steiner nodes in the graph."""
+        all_active = set(self.terminal_sets.keys()) | {v for s in self.terminal_sets.values() for v in s}
+
+        if self.super_root_index is not None and self.super_root_index in self.terminal_sets:
+            potential_roots = {i for i in self.potential_roots if self.graph.has_node(i)}
+            return potential_roots | all_active
+
+        return all_active
+
+    def reduction_degree(self, node: int) -> int:
+        """Returns the degree of the given node pertaining to reduction semantics."""
+        # NOTE: In the node weighted setting all edges are treated as unweighted and undirected
+        #       reresentated by bi-directional anti-parallel arcs with the exception of a super root.
+        #       If present, the super root has incoming edges only from each potential root
+        #       that can satisfy an associated super terminal demand.
+        #       As such, for the purposes of graph reduction the SUPER_ROOT degree is zero,
+        #       potential roots use in_degree and out_degree is the determinant.
+        return min(self.graph.in_degree(node), self.graph.out_degree(node))
+
+    def set_edge_weights(self):
+        """Sets the weights of all edges to the weight of the destination node."""
+        for u, v in self.graph.edge_list():
+            self.graph.update_edge(u, v, {PAYLOAD_WEIGHT_KEY: self.graph[v][PAYLOAD_WEIGHT_KEY]})
+
+    def validate_reachability(self):
+        logger.trace("validate_reachability...")
+
+        # Build pairs
+        pairs: list[tuple[int, int]] = []
+        for r_j, comp in self.terminal_sets.items():
+            for t in comp:
+                pairs.append((r_j, t))
+
+        all_ts_reachable = True
+        for r, terminals in self.terminal_sets.items():
+            for t in terminals:
+                if not rx.has_path(self.graph, r, t):
+                    logger.error(f"Unreachable ts pair: {self.get_node_key(r)} → {self.get_node_key(t)}")
+                    all_ts_reachable = False
+        all_pairs_reachable = True
+        for s, t in pairs:
+            if not rx.has_path(self.graph, s, t):
+                logger.error(f"Unreachable pair: {self.get_node_key(s)} → {self.get_node_key(t)}")
+                all_pairs_reachable = False
+        if not all_ts_reachable and not all_pairs_reachable:
+            raise RuntimeError("Unreachable pairs")
+
+    # MARK: Primitive Terminal Set Actions
+
+    def consume_terminal_set(self, terminal_sets: dict[int, set[int]], r_j: int, r_k: int):
+        """𝓐ᵏ consumes 𝓐ʲ, 𝓐ᵏ survives containing all terminals of 𝓐ʲ and Ⓡʲ as a terminal.
+        ** 𝓐ʲ ↣ 𝓐ᵏ **
+        ```
+        𝓐ᵏ ≔ 𝓐ᵏ ∪ 𝓐ʲ ∪ Ⓡʲ
+        ```
+        """
+        if self.do_debug:
+            assert r_j in terminal_sets, f"terminal set {self.get_node_key(r_j)} not in terminal sets"
+            assert r_k in terminal_sets, f"terminal set {self.get_node_key(r_k)} not in terminal sets"
+        terminal_sets[r_j].update(terminal_sets[r_k])
+        terminal_sets[r_j].add(r_k)
+        del terminal_sets[r_k]
+
+    # MARK: Primitive Graph Actions
+
+    def remove_node(self, u: int):
+        """Removes the given node from the graph.
+        `G ≔ G ∖ ⓤ`
+        """
+        if self.do_debug:
+            assert self.graph.has_node(u), f"node {self.get_node_key(u)} not in graph"
+        self.graph.remove_node(u)
+
+    def remove_nodes_from(self, nodes: Iterable[int]):
+        """Removes the given node from the graph.
+        `∀ x : x ∈ nodes ⇒ G ≔ G ∖ ⓤ`
+        """
+        if self.do_debug:
+            for x in nodes:
+                assert self.graph.has_node(x), f"node {self.get_node_key(x)} not in graph"
+        self.graph.remove_nodes_from(nodes)
+
+    def move_edges(self, u: int, v: int):
+        """Move all incident edges of ⓤ to ⓥ, avoiding self-loops and parallel edges, isolates ⓤ.
+        ```
+        ∀ x : (ⓤ ⇋ x ∈ G ∧ x ≠ ⓥ) ⇒ (ⓥ ⇋ x ∈ G), ∣ⓤ∣
+        ```
+        """
+        if self.do_debug:
+            assert self.graph.has_node(u), f"node {self.get_node_key(u)} not in graph"
+            assert self.graph.has_node(v), f"node {self.get_node_key(v)} not in graph"
+
+        preds = list(self.graph.predecessor_indices(u))
+        succs = list(self.graph.successor_indices(u))
+
+        for w in preds:
+            self.graph.remove_edge(w, u)
+            if w != v and not self.graph.has_edge(w, v):
+                self.graph.add_edge(w, v, {})
+
+        for w in succs:
+            self.graph.remove_edge(u, w)
+            if w != v and not self.graph.has_edge(v, w):
+                self.graph.add_edge(v, w, {})
+
+    def absorb(self, u: int, v: int):
+        """ⓥ absorbs ⓤ, ⓥ survives combining weights and embedded collapsed nodes.
+        **ⓤ ⇴ ⓥ**
+        ```
+        move_edges(ⓤ, ⓥ)
+        𝔀(ⓥ) ≔ 𝔀(ⓥ) + 𝔀(ⓤ)
+        ⓥ(⦿) ≔ ⓥ(⦿) ⋃ ⓤ(⦿) ⋃ {ⓤ}
+        remove(ⓤ)
+        ```
+        """
+        self.move_edges(u, v)
+        self.graph[v][PAYLOAD_WEIGHT_KEY] += self.graph[u][PAYLOAD_WEIGHT_KEY]
+        self.graph[v][HYPERNODE_CONTENTS_KEY].update(self.graph[u][HYPERNODE_CONTENTS_KEY])
+        self.graph[v][HYPERNODE_CONTENTS_KEY].add(u)
+        self.remove_node(u)
+
+    def consume(self, u: int, v: int):
+        """ⓥ consumes ⓤ, ⓥ survives.
+        **ⓤ ↣ ⓥ**
+        ```
+        𝓢 ≔ 𝓢 ⋃ ⓤ(⦿) ⋃ {ⓤ}
+        move_edges(ⓤ, ⓥ)
+        remove(ⓤ)
+        ```
+        """
+        # Absorb ⓤ(⦿) into solution, ignoring the weight - since we are buying it.
+        self.fixed_nodes.update(self.graph[u][HYPERNODE_CONTENTS_KEY])
+        self.fixed_nodes.add(u)
+
+        self.move_edges(u, v)
+        self.remove_node(u)
+
+    # MARK: Reductions
+
+    def reduce_demand_roots(self):
+        """
+        Reduces the number of distinct roots by merging fixed nodes (terminals or roots)
+        that lie in the same connected component.
+
+        Handles:
+        > **`𝑻 ⭆ 𝑻', |𝑻'𐞪| ≤ |𝑻𐞪|, 𝐃 ≡ 𝐃'`**
+
+        A subset of G consisting of the roots and terminals of all active demands with any
+        connecting edges amoungst them is taken and augmented with direct edges between each
+        terminal and its root. The resulting connected components then define the reduced
+        terminal sets.
+
+        Super Terminals are treated as independent of their root (since any super terminal
+        can be connected to any potential root).
+
+        This does NOT reduce the number of terminal-root pairs. It canonicalizes the root
+        side of each pair and adds root->root pairs for collapsed roots which potentially
+        increases the number of terminal-root pairs.
+        """
+        logger.trace("reduce_roots...")
+
+        # NOTE: SUPER_ROOT directly connects to any base-town and any super terminal can
+        #       be connected to any base-town, so it is excluded from the fixed set, and
+        #       treated separately as isolated nodes during mapping.
+        if self.do_debug:
+            logger.debug(f"reducing roots for {sum(len(ts) for ts in self.terminal_sets.values())} pairs")
+
+        graph = self.graph
+        super_root_index = self.super_root_index
+
+        roots = set(self.terminal_sets.keys())
+        roots.discard(self.super_root_index)
+        tmp_fixed = roots | {t for ts in self.terminal_sets.values() for t in ts}
+
+        # This acts as a union-find data structure for the terminal set clusters.
+        sub = subgraph_stable(graph, tmp_fixed)
+        for r, ts in self.terminal_sets.items():
+            if r == self.super_root_index:
+                continue
+            for t in ts:
+                sub.add_edge(r, t, {})
+                sub.add_edge(t, r, {})
+        components = rx.strongly_connected_components(sub)
+
+        terminal_sets: dict[int, set[int]] = {}
+        if super_root_index is not None:
+            terminal_sets[super_root_index] = set()
+
+        for comp in components:
+            comp_roots = set(comp) & roots
+            rep = next(iter(comp_roots), None)
+            if rep is not None:
+                terminal_sets[rep] = set(comp) - {rep}
+            elif super_root_index is not None:
+                terminal_sets[super_root_index].update(comp)
+            else:
+                raise RuntimeError(
+                    f"Component has no roots and super root is missing: {[self.get_node_key(n) for n in comp]}"
+                )
+
+        self.terminal_sets = terminal_sets
+
+    def reduce_adjacent_terminals(self):
+        """Reduces the number of distinct terminals by collapsing adjacent terminals per root.
+
+        NOTE: Terminal_sets must be disjoint by root, which is guaranteed by reduce_demand_roots.
+
+        Handles:
+        > **`⁝Ⓣʲ¹ ⇋ Ⓣʲ²⁝  ⭆  ⁝Ⓣʲ¹⁝, 𝐆 ∖ Ⓣʲ², 𝓢 ⋃ Ⓣʲ²(⦿)}`**
+        > **`⁝Ⓡʲ ⇋ Ⓣʲ⁝  ⭆  ⁝Ⓡʲ⁝, 𝐆 ∖ Ⓣʲ, 𝓢 ⋃ Ⓡʲ(⦿)`**
+        """
+        logger.trace("reduce_adjacent_terminals...")
+
+        def consume_adjacent_terminals(survivor: int, terminals: set[int]) -> bool:
+            # NOTE: rustworkx adjacency queries of node indices not present in the graph return empty sets.
+            neighbors = set(self.graph.predecessor_indices(survivor)) | set(
+                self.graph.successor_indices(survivor)
+            )
+            consumables = neighbors & terminals
+            for c in list(consumables):
+                self.consume(c, survivor)
+                terminals.discard(c)
+            return bool(consumables)
+
+        reduced_terminal_sets: dict[int, set[int]] = {r: set(ts) for r, ts in self.terminal_sets.items()}
+
+        for r, terminals in reduced_terminal_sets.items():
+            # Collapse terminal adjacent terminals
+            made_progress = True
+            while made_progress:
+                made_progress = False
+                for t in list(terminals):
+                    made_progress |= consume_adjacent_terminals(t, terminals)
+
+            # Collapse root adjacent terminals
+            if r != self.super_root_index:
+                consume_adjacent_terminals(r, terminals)
+
+        # Drop empty sets
+        self.terminal_sets = {r: ts for r, ts in reduced_terminal_sets.items() if ts}
+
+    def reduce_degree1_steiner_nodes(self):
+        """Multi-pass degree-1 Steiner node reduction.
+
+        If a Steiner node is a leaf, it cannot satisfy or bridge a demand.
+
+        Handles:
+        > **`|Ⓢ ⇋ ○⁝  ⭆  ○⁝, 𝐆 ∖ Ⓢ`**
+        """
+        logger.trace("reduce_degree1_steiner_nodes...")
+
+        non_steiners = self.non_steiner_nodes()
+        non_steiners.discard(self.super_root_index)
+
+        removals = 0
+
+        # NOTE: The direct usage of 'out_degree' instead of 'reduction_degree' is intentional for performance.
+        #       No node of out_degree == 1 can be a non-leaf node.
+        while removables := {i for i in self.graph.node_indices() if self.graph.out_degree(i) == 1}:
+            removables.difference_update(non_steiners)
+            if not removables:
+                break
+            self.graph.remove_nodes_from(removables)
+            removals += len(removables)
+
+        logger.debug(f"  removed {removals} degree-1 steiner nodes")
+
+    def reduce_degree1_terminals(self):
+        """Single-pass degree-1 terminal reduction.
+
+        If a terminal node is a leaf it must use its neighbor to satisfy a demand.
+
+        Handles:
+        > **`|Ⓣ ⇋ Ⓢ⁝  ⭆  Ⓣ ⇋ ⁝, 𝐆 ∖ Ⓢ, 𝓢 ⋃ {Ⓢ, Ⓢ(⦿)}`**
+        > **`|𝕥 ⇋ Ⓢ⁝  ⭆  𝕥 ⇋ ⁝, 𝐆 ∖ Ⓢ, 𝓢 ⋃ {Ⓢ, Ⓢ(⦿)}`**
+
+        """
+        logger.trace("reduce_degree1_terminals...")
+
+        terminal_sets = self.terminal_sets
+        removals = 0
+
+        for ts in terminal_sets.values():
+            for t in list(ts):
+                if self.reduction_degree(t) != 1:
+                    continue
+
+                succs = list(self.graph.successor_indices(t))
+                s = succs[0]
+
+                # Don't consume fixed nodes or SUPER_ROOT
+                # (adjacent terminals are handled in reduce_adjacent_terminals)
+                if s in self.fixed_nodes or s == self.super_root_index:
+                    if self.do_debug:
+                        roots = set(terminal_sets.keys())
+                        logger.debug(
+                            f"  ...skipping degree-1 reduction: Root: {s in roots} "
+                            f"Super Root: {s == self.super_root_index} "
+                            f"Adjacent Terminal: {s in ts} Fixed: {s in self.fixed_nodes}"
+                        )
+                    continue
+
+                self.consume(s, t)
+                removals += 1
+
+        logger.debug(f"  removed {removals} degree-1 terminals")
+
+    def reduce_degree1_roots(self):
+        """Single-pass degree-1 root reduction.
+
+        If a root node with unsatisfied demand is a leaf it must use its neighbor to satisfy a demand.
+
+        Handles:
+        > **`|Ⓡ ⇋ Ⓢ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ Ⓢ, 𝓢 ⋃ {Ⓢ, Ⓢ(⦿)}`**
+        > **`|Ⓡʲ ⇋ Ⓣʲ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ Ⓣʲ, 𝓢 ⋃ Ⓣʲ(⦿)`**
+        > **`|Ⓡʲ ⇋ Ⓣᵏ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ Ⓣᵏ, 𝓢 ⋃ Ⓣᵏ(⦿), 𝓐ʲ ⋃ {𝓐ᵏ ∖ Ⓣᵏ}`**
+        > **`|Ⓡʲ ⇋ 𝕥ᵏ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ 𝕥ᵏ, 𝓢 ⋃ 𝕥ᵏ(⦿), 𝕊 ∖ 𝕥`**
+        """
+        logger.trace("reduce_degree1_roots...")
+
+        # NOTE: Potential roots are not considered as roots here because a potential
+        #       root absorbs rather than consumes its neighbors and can only absorb
+        #       a 2-degree neighbor since if it consumes a neighbor with deg() > 2
+        #       it can end up in the optimal path of a different demand set which
+        #       would incur the cost of the previously absorbed neighbors in its
+        #       hyper node contents which may not be part of the optimal solution.
+
+        terminal_sets = self.terminal_sets
+
+        roots = set(terminal_sets.keys())
+        roots.discard(self.super_root_index)
+        # Only active roots are considered
+        roots = roots - {r for r, ts in terminal_sets.items() if not ts}
+
+        removals = 0
+
+        for r_j in list(roots):
+            # NOTE: If r_j is the root of a previously consumed terminal set then it is now a terminal.
+            if r_j not in terminal_sets:
+                continue
+
+            # A root, in the presence of a super_root, can have 2 successors
+            # but only ever 1 predecessor when reduction_degree == 1
+            if self.reduction_degree(r_j) != 1:
+                continue
+            neighbor = next(iter(self.graph.predecessor_indices(r_j)))
+
+            self.consume(neighbor, r_j)
+            removals += 1
+
+            r_k = next((r for r, ts in terminal_sets.items() if neighbor in ts), None)
+            if r_k is not None:
+                # The neighbor was not a Steiner node, fix terminal sets...
+                terminal_sets[r_k].remove(neighbor)
+                if r_j != r_k and r_k != self.super_root_index:
+                    self.consume_terminal_set(terminal_sets, r_k, r_j)
+
+        if removals > 0:
+            # Drop empty sets
+            self.terminal_sets = {r: ts for r, ts in terminal_sets.items() if ts}
+
+            if self.do_debug:
+                self.validate_reachability()
+                logger.debug(f"  removed {removals} degree-1 root Steiner nodes")
+
+    def merge_adjacent_degree2_steiner_chains(self):
+        """
+        Merge degree-2 Steiner chains that are adjacent to each other.
+        """
+        logger.trace("merge_adjacent_degree2_steiner_chains...")
+
+        non_steiners = self.non_steiner_nodes()
+        removals = 0
+
+        made_progress = True
+        while made_progress:
+            made_progress = False
+
+            for node in set(self.graph.node_indices()) - non_steiners:
+                # A stale entry will have reduction_degree == 0
+                if self.reduction_degree(node) != 2:
+                    continue
+
+                neighbor = next(
+                    (
+                        n
+                        for n in self.graph.predecessor_indices(node)
+                        if self.reduction_degree(n) == 2 and n not in non_steiners
+                    ),
+                    None,
+                )
+                if neighbor:
+                    self.absorb(neighbor, node)
+                    made_progress = True
+                    removals += 1
+                    break
+
+        logger.debug(f"  removed {removals} degree-2 nodes")
+
+    def reduce_degree2_steiner_dominance(self):
+        logger.trace("reduce_degree2_steiner_dominance...")
+
+        self.set_edge_weights()
+
+        graph = self.graph
+        non_steiner_nodes = self.non_steiner_nodes()
+        removals = 0
+
+        made_progress = True
+        while made_progress:
+            made_progress = False
+
+            for node in set(graph.node_indices()) - non_steiner_nodes:
+                if graph.out_degree(node) != 2:
+                    continue
+
+                succ = list(graph.successor_indices(node))
+                u, v = succ
+                if u == v:
+                    continue
+
+                try:
+                    paths = rx.all_shortest_paths(graph, u, v, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
+                except rx.NoPathFound:
+                    continue
+
+                dominated = any(node not in P for P in paths)
+                if not dominated:
+                    continue
+
+                graph.remove_node(node)
+                made_progress = True
+
+                removals += 1
+                break
+
+        logger.debug(f"  removed {removals} degree-2 dominated nodes")
+
+    def reduce_degreek_steiner_dominance(self, max_degree: int = 4):
+        """
+        Removes Steiner nodes of small degree k that are dominated by alternate paths.
+
+        Reduction Rule:
+        ```
+        Ⓢ : N(Ⓢ) = {○₁, ○₂, …, ○ₖ}, 2 < k ≤ K
+        ∧ ∀ {○ᵢ, ○ⱼ} ⊆ N(Ⓢ):
+            (○ᵢ ↠∣Ⓢ∣↠ ○ⱼ) exists
+            ∧ 𝔀(○ᵢ ↠∣Ⓢ∣↠ ○ⱼ) ≤ 𝔀(○ᵢ 🡒 Ⓢ 🡒 ○ⱼ)
+
+        ⭆  𝐆 ≔ 𝐆 ∖ Ⓢ
+        ```
+        """
+
+        logger.trace("reduce_degreek_steiner_dominance...")
+
+        self.set_edge_weights()
+        graph = self.graph
+        non_steiners = self.non_steiner_nodes()
+        removals = 0
+
+        def dijkstra_avoiding(start: int, forbidden: int) -> dict[int, float]:
+            """Dijkstra that skips a single forbidden node."""
+            import heapq
+
+            dist: dict[int, float] = {start: 0.0}
+            heap = [(0.0, start)]
+
+            while heap:
+                d, u = heapq.heappop(heap)
+                if d > dist[u]:
+                    continue
+
+                for v in graph.successor_indices(u):
+                    if v == forbidden:
+                        continue
+
+                    w = graph.get_edge_data(u, v)[PAYLOAD_WEIGHT_KEY]
+                    nd = d + w
+
+                    if v not in dist or nd < dist[v]:
+                        dist[v] = nd
+                        heapq.heappush(heap, (nd, v))
+
+            return dist
+
+        made_progress = True
+        while made_progress:
+            made_progress = False
+
+            for s in set(graph.node_indices()) - non_steiners:
+                deg = graph.out_degree(s)
+
+                if deg <= 2 or deg > max_degree:
+                    continue
+
+                neighbors = list(graph.successor_indices(s))
+                if len(neighbors) != deg:
+                    continue
+
+                dominated = True
+
+                for i in range(len(neighbors)):
+                    if not dominated:
+                        break
+
+                    u = neighbors[i]
+
+                    # Full distances
+                    try:
+                        dist_full = rx.dijkstra_shortest_path_lengths(
+                            graph, u, lambda e: e[PAYLOAD_WEIGHT_KEY]
+                        )
+                    except Exception:  # noqa: BLE001
+                        dominated = False
+                        break
+
+                    # Distances avoiding s
+                    dist_avoid = dijkstra_avoiding(u, s)
+
+                    for j in range(i + 1, len(neighbors)):
+                        v = neighbors[j]
+
+                        if v not in dist_full or v not in dist_avoid:
+                            dominated = False
+                            break
+
+                        if dist_avoid[v] > dist_full[v]:
+                            dominated = False
+                            break
+
+                if not dominated:
+                    continue
+
+                graph.remove_node(s)
+                made_progress = True
+
+                removals += 1
+                break
+
+        logger.debug(f"  removed {removals} degree-k dominated nodes")
+
+    def reduce_blocked_roots(self):
+        logger.trace("reduce_blocked_roots...")
+
+        merges = 0
+        made_progress = True
+
+        terminal_sets = self.terminal_sets
+
+        while made_progress:
+            made_progress = False
+
+            # Build node → root lookup
+            node_to_root: dict[int, int] = {}
+            for r, ts in terminal_sets.items():
+                for t in ts:
+                    node_to_root[t] = r
+                node_to_root[r] = r
+
+            # Precompute cluster node sets
+            cluster_nodes: dict[int, set[int]] = {r: set(ts) | {r} for r, ts in terminal_sets.items()}
+
+            def is_blocking_cluster(t: int, r: int, blocked: set[int]) -> bool:
+                visited = set()
+                stack = [t]
+
+                while stack:
+                    u = stack.pop()
+
+                    if u == r:
+                        return False
+
+                    if u in visited or u in blocked:
+                        continue
+
+                    visited.add(u)
+
+                    stack.extend(self.graph.successor_indices(u))
+                    stack.extend(self.graph.predecessor_indices(u))
+
+                return True
+
+            root_dependencies: dict[int, set[int]] = {r: set() for r in terminal_sets}
+
+            for r_i, terminals in terminal_sets.items():
+                if r_i == self.super_root_index:
+                    continue
+
+                candidates: set[int] = set()
+
+                for t in terminals:
+                    visited = set()
+                    stack = [t]
+
+                    while stack:
+                        u = stack.pop()
+                        if u in visited:
+                            continue
+                        visited.add(u)
+
+                        if u in node_to_root:
+                            r_j = node_to_root[u]
+                            if r_j != r_i:
+                                candidates.add(r_j)
+                                continue  # stop expanding past other clusters
+
+                        stack.extend(self.graph.successor_indices(u))
+                        stack.extend(self.graph.predecessor_indices(u))
+
+                for r_j in candidates:
+                    Cj = cluster_nodes[r_j]
+
+                    if any(is_blocking_cluster(t, r_i, Cj) for t in terminals):
+                        root_dependencies[r_i].add(r_j)
+
+            for r_i, deps in list(root_dependencies.items()):
+                if r_i not in terminal_sets:
+                    continue
+
+                if len(deps) != 1:
+                    continue
+
+                r_j = next(iter(deps))
+
+                if r_j not in terminal_sets:
+                    continue
+
+                if r_j == self.super_root_index or r_i == r_j:
+                    continue
+
+                terminal_sets[r_i].update(terminal_sets[r_j])
+                terminal_sets[r_i].add(r_j)
+
+                del terminal_sets[r_j]
+
+                merges += 1
+                made_progress = True
+                break  # restart with fresh state
+
+        # Drop empty sets
+        self.terminal_sets = {r: ts for r, ts in terminal_sets.items() if ts}
+
+        logger.debug(f"  merged {merges} blocked roots")
+
+    # MARK: Main Loop
+
+    def run_pipeline(self) -> tuple[set[int], dict[int, int]]:
+        """Runs the main reduction pipeline."""
+        logger.trace("run_pipeline...")
+
+        # Logging/Debugging helper
+        def dump_state(msg: str):
+            logger.debug(msg)
+            sets = self.terminal_sets
+            logger.debug(
+                f"  Nodes: {self.graph.num_nodes():4}, Edges: {self.graph.num_edges():4}, Roots: {len(sets):4}, Pairs: {sum(len(ts) for ts in sets.values()):4}"
+            )
+            sets_wp = {self.get_node_key(r): {self.get_node_key(t) for t in ts} for r, ts in sets.items()}
+            logger.debug(f"  Demand sets: {sets_wp}")
+
+        tmp_num_nodes = self.graph.num_nodes() + 1
+        while (num_nodes := self.graph.num_nodes()) != tmp_num_nodes:
+            tmp_num_nodes = num_nodes
+
+            # Isolates in the graph are always safe to remove
+            self.graph.remove_nodes_from(rx.isolates(self.graph))
+
+            self.reduce_demand_roots()
+            if self.do_debug:
+                dump_state("Post reduce_demand_roots:")
+
+            self.reduce_adjacent_terminals()
+            if self.do_debug:
+                dump_state("Post reduce_adjacent_terminals:")
+
+            self.reduce_degree1_steiner_nodes()
+            if self.do_debug:
+                dump_state("Post reduce_degree1_steiner_nodes:")
+
+            # Reduce degree1 terminals - this is a Steiner node graph reduction only
+            self.reduce_degree1_terminals()
+            if self.do_debug:
+                dump_state("Post reduce_degree1_terminals:")
+
+            # Reduce degree1 roots - this is a Steiner node graph reduction only
+            self.reduce_degree1_roots()
+            if self.do_debug:
+                dump_state("Post reduce_degree1_roots:")
+
+            if self.do_debug:
+                logger.debug(f"Removed {num_nodes - self.graph.num_nodes()} nodes...")
+
+            if num_nodes != self.graph.num_nodes():
+                # Repeat the simple reductions if the graph has changed
+                logger.trace("Graph has changed, repeating simple reductions...")
+                continue
+
+            # Reduce 2-degree steiner chains - this is a Steiner node graph reduction by absorbtion only
+            self.merge_adjacent_degree2_steiner_chains()
+            if self.do_debug:
+                dump_state("Post merge_adjacent_degree2_steiner_chains:")
+
+            # Reduce 2-degree steiner dominance - this is a Steiner node graph reduction by dominance only
+            self.reduce_degree2_steiner_dominance()
+            if self.do_debug:
+                dump_state("Post reduce_degree2_steiner_dominance:")
+
+            # Reduce k-degree steiner dominance - this is a Steiner node graph reduction by dominance only
+            self.reduce_degreek_steiner_dominance()
+            if self.do_debug:
+                dump_state("Post reduce_degreek_steiner_dominance:")
+
+            # Reduce blocked roots - this is purely a terminal cluster set reduction
+            self.reduce_blocked_roots()
+            if self.do_debug:
+                dump_state("Post reduce_blocked_roots:")
+
+        # Rebuild pairs
+        reduced_root_pairs: dict[int, int] = {}
+        for r, comp in self.terminal_sets.items():
+            for t in comp:
+                reduced_root_pairs[t] = r
+
+        fixed_nodes_wp = {self.get_node_key(n) for n in self.fixed_nodes}
+        reduced_root_pairs_wp = {
+            self.get_node_key(t): self.get_node_key(r) for t, r in reduced_root_pairs.items()
+        }
+
+        if self.do_debug:
+            print("=== Post final reduction ===")
+            logger.debug(f"  {self.graph.num_nodes()} nodes, {self.graph.num_edges()} edges")
+            logger.debug(f"  {len(reduced_root_pairs)} pairs")
+            logger.trace(f"  {reduced_root_pairs_wp=}")
+            logger.trace(f"  {fixed_nodes_wp=}")
+            logger.trace(f"  num components: {rx.number_strongly_connected_components(self.graph)}")
+            node_degrees = [self.graph.out_degree(n) for n in self.graph.node_indices()]
+            nodes_by_degree = Counter(node_degrees)
+            nodes_by_degree = sorted(nodes_by_degree.items())
+            print(f"  nodes by degree: {nodes_by_degree}")
+
+            # Breakdown by degree into fixed, basetown, and steiner
+            towns = get_exploration_data().towns
+            for d, c in nodes_by_degree:
+                sub_counter = Counter()
+                for i in self.graph.node_indices():
+                    is_town = self.get_node_key(i) in towns
+                    if self.graph.out_degree(i) == d:
+                        if i in self.fixed_nodes:
+                            sub_counter["fixed"] += 1
+                        if is_town:
+                            sub_counter["basetown"] += 1
+                        if i not in self.fixed_nodes and not is_town:
+                            sub_counter["steiner"] += 1
+                print(f"    {d}: {sub_counter}")
+
+            logger.trace("=== PATHS ===")
+            for u, v in reduced_root_pairs.items():
+                has_u = self.graph.has_node(u)
+                has_v = self.graph.has_node(v)
+                has_path = rx.has_path(self.graph, u, v) if has_u and has_v else False
+                logger.trace(
+                    f"  {self.get_node_key(u)} ({has_u}) -> {self.get_node_key(v)} ({has_v}) => {has_path}"
+                )
+            logger.trace("===  ===")
+
+        return fixed_nodes_wp, reduced_root_pairs_wp

@@ -349,7 +349,9 @@ class BDONiceTreeManager:
         """
         Returns a dictionary mapping {bottleneck_id: frequency_of_cooccurrence}
         """
-        target_id = self.index_by_key[int(target_key)]
+        target_id = self.index_by_key.get(int(target_key), None)
+        if target_id is None:
+            return {}
         bottleneck_ids = self.get_bottleneck_nodes()
 
         weights = Counter()

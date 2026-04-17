@@ -1,11 +1,11 @@
 [actions]
-baseline_tests = true
+baseline_tests = false
 scaling_tests = true
 
 [logger]
 # Basic output no timestamp, no filename
 # Set level to 'INFO' to output terminal, root pairs and solutions
-level = "SUCCESS"
+level = "INFO"
 format = "<level>{message}</level>"
 
 # The loguru default format string (useful when debugging).
@@ -15,10 +15,14 @@ format = "<level>{message}</level>"
 # HiGHS MIP solver options.
 [solver]
 log_to_console = false
-log_via_callback = true
+log_via_callback = false
 mip_heuristic_run_root_reduced_cost = false
+# mip_pool_soft_limit = 50_000
+# mip_pool_age_limit = 100
+# log_dev_level = 255
+# highs_analysis_level = 128
 mip_feasibility_tolerance = 1e-5
 mip_improvement_timeout = inf
-threads = 1                                 # HiGHs internal parallelism
-num_threads = 8                             # concurrent HiGHs threads
+threads = 1                      # HiGHs internal parallelism
+num_threads = 8                  # concurrent HiGHs threads
 time_limit = inf

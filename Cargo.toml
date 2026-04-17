@@ -17,11 +17,11 @@ debug = true
 debug = true
 
 [dependencies]
-dndtree = "0.3.0"
+dndtree = "0.3.1"
 # fast_paths = "1.0.0"
 fast_paths = { git = "https://github.com/Thell/fast_paths" }
 fixedbitset = "0.5.7"
-idtree = "0.3.0"
+idtree = "0.3.1"
 nohash-hasher = "0.2.0"
 petgraph = "0.8.3"
 rapidhash = "4.4.1"

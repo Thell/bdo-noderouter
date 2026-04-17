@@ -16,6 +16,7 @@ dependencies = [
     "altair>=6.0.0",
     "bidict>=0.23.1",
     "colorcet>=3.1.0",
+    "fast-paths>=0.1.0",
     "flet[all]>=0.84.0",
     "folium>=0.20.0",
     "highspy==1.14.0",
@@ -24,7 +25,9 @@ dependencies = [
     "matplotlib>=3.10.8",
     "maturin>=1.13.1",
     "networkx>=3.6.1",
+    "nwst-dw",
     "polars>=1.39.3",
+    "psutil>=7.2.2",
     "pyarrow>=23.0.1",
     "pyvis>=0.3.2",
     "rustworkx>=0.17.1",
@@ -45,3 +48,10 @@ extra-paths = ["./python/noderouter"]
 
 [tool.ruff]
 src = ["python/noderouter"]
+
+[tool.pyright]
+include = ["python/noderouter"]
+extraPaths = ["python/noderouter"]
+
+[tool.uv.sources]
+nwst-dw = { path = "../../Rust/nwst_dw" }

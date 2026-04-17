@@ -263,7 +263,7 @@ def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     # The solver's methodology for handling dangers can potentially 'break' an otherwise
     # optimally solved problem and by keeping them fixed for danger inclusive and exclusive
     # samples we ensure that such cases are identifiable.
-    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:7]
+    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:10]
 
 
 def _run_single_config(

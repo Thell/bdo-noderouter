@@ -20,6 +20,8 @@ OQUILLAS_EYE_KEY = 1727
 SUPER_ROOT = 99999
 TILE_SCALE = 12800
 
+type LeafMap = dict[int, tuple[int, int, list[int]]]
+
 
 class NodeType(IntEnum):
     """Exploration node types."""
@@ -122,6 +124,25 @@ class ExplorationData:
         return G
 
     @cached_property
+    def reduced_graph(self) -> tuple[PyDiGraph, LeafMap]:
+        """Lazily generates the graph, leveraging the joblib function cache."""
+        from copy import deepcopy
+
+        G = deepcopy(self.graph.copy())
+        reducedG, mappings = _reduce_graph(G)
+        return reducedG, mappings
+
+    @cached_property
+    def reduced_super_graph(self) -> tuple[PyDiGraph, LeafMap]:
+        """Lazily generates the graph with injected SuperRoot, leveraging the joblib function cache."""
+        from copy import deepcopy
+
+        G = deepcopy(self.graph.copy())  # rustworkx copy() is shallow
+        _inject_super_root(G, self.super_root)
+        reducedG, mappings = _reduce_graph(G)
+        return reducedG, mappings
+
+    @cached_property
     def path_lengths(self) -> dict[tuple[int, int], int]:
         """Lazily calculates path lengths, leveraging the joblib function cache."""
         return _get_all_pairs_path_lengths(self.graph)
@@ -207,6 +228,11 @@ class ExplorationData:
                 "has_cashproduct_storage": False,
             },
         }
+
+    def is_adjacent(self, u: int, v: int) -> bool:
+        if u == SUPER_ROOT or v == SUPER_ROOT:
+            return False
+        return u in self.data[v]["link_list"]
 
     def path_length(self, u: int, v: int) -> int:
         return self.path_lengths[(u, v)]
@@ -474,3 +500,67 @@ def prune_NTD1(graph: PyDiGraph, non_removables: set[int] | None = None):
         num_removed += len(removal_nodes)
 
     return num_removed
+
+
+def _reduce_graph(graph: PyDiGraph) -> tuple[PyDiGraph, LeafMap]:
+    """Reduces the graph by recursively removing all nodes of degree 1 while tracking
+    the mapping between each removed terminal's oldest surviving ancestor as well as
+    the pendant path from the removed terminal to the oldest surviving ancestor.
+
+    Returns:
+        tuple[PyDiGraph, dict[int, tuple[int, int, list[int]]]]:
+            The reduced graph and a mapping of the reduced graph's indices
+            to the original graph's indices.
+    """
+    exploration_data = get_exploration_data()
+    node_key_by_index = graph.attrs["node_key_by_index"]
+    town_indices = {node_key_by_index.inv[n] for n in exploration_data.towns}
+
+    reduced_graph = graph.copy()
+
+    # Single map: leaf -> (immediate_parent, surviving_ancestor, pendant_chain excl. ancestor)
+    leaf_index_data: LeafMap = {}
+
+    # NOTE: All leaf nodes of ref_graph are removed and a mapping is created from the leaf
+    #       node to its surviving parent node.
+    # NOTE: Since ref_graph was previously guaranteed to have all edges bi-directed except
+    #       the super root, the reduced ref_graph is also guaranteed to have all edges
+    #       bi-directed except the super root.
+    #
+    # When transforming input pairs, expanding the surviving ancestor is used to determine
+    # the type of expansion required for the pair and the parent index map is used to recover
+    # pendant chains.
+
+    while to_remove := [
+        v for v in reduced_graph.node_indices() if reduced_graph.in_degree(v) == 1 and v not in town_indices
+    ]:
+        for node in to_remove:
+            parent = reduced_graph.predecessors(node)[0]
+            parent = node_key_by_index.inv[parent["waypoint_key"]]
+            # Record immediate parent only; ancestor and chain computed later
+            leaf_index_data[node] = (parent, 0, [])
+            reduced_graph.remove_node(node)
+
+    # Phase 2: compute ancestors and pre-build chains
+    for leaf in list(leaf_index_data.keys()):
+        parent, _, _ = leaf_index_data[leaf]
+
+        chain: list[int] = []
+        current = parent
+
+        # Build chain in root-ward to leaf-ward order (closest to ancestor first)
+        while current in leaf_index_data:
+            next_parent, _, _ = leaf_index_data[current]
+            chain.append(current)
+            current = next_parent
+
+        # current is now the surviving ancestor (not in map)
+        leaf_index_data[leaf] = (parent, current, chain)
+
+    if __debug__:
+        for leaf, (_, ancestor, _) in leaf_index_data.items():
+            assert ancestor in reduced_graph.node_indices(), (
+                f"Surviving ancestor {ancestor} of leaf {leaf} was removed!"
+            )
+
+    return reduced_graph, leaf_index_data

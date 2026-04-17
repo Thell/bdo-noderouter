@@ -1,5 +1,7 @@
 // exploration_data.rs
 
+use std::collections::{BTreeMap, HashMap};
+
 /// Base reference graph details:
 /// * Node weighted planar graph node weights in range 0..=3
 /// * 947 nodes and 2149 edges
@@ -11,11 +13,12 @@
 ///   (the single 32 degree node is the SUPER_ROOT node)
 ///
 use nohash_hasher::{IntMap, IntSet};
+use serde::Deserialize;
 use smallvec::SmallVec;
 
 use petgraph::prelude::{StableDiGraph, StableUnGraph};
 
-use crate::node_router::{ExplorationGraphData, SUPER_ROOT};
+pub const SUPER_ROOT: usize = 99_999;
 
 #[derive(Clone)]
 struct NodeData {
@@ -24,6 +27,18 @@ struct NodeData {
     pub is_base_town: bool,
     pub in_neighbors: Vec<usize>,
     pub out_neighbors: Vec<usize>,
+}
+
+pub type ExplorationGraphData = BTreeMap<usize, ExplorationNodeData>;
+#[derive(Debug, Deserialize, Clone)]
+pub struct ExplorationNodeData {
+    pub waypoint_key: usize,
+    pub need_exploration_point: usize,
+    pub is_base_town: bool,
+    pub link_list: Vec<usize>,
+
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 fn exploration_nodes_to_graph_nodes(nodes_map: &ExplorationGraphData) -> Vec<NodeData> {

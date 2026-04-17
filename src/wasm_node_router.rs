@@ -4,7 +4,10 @@ use wasm_bindgen::prelude::*;
 
 use std::collections::BTreeMap;
 
-use crate::node_router::{ExplorationGraphData, ExplorationNodeData, NodeRouter};
+use crate::{
+    exploration_data::{ExplorationGraphData, ExplorationNodeData},
+    node_router::NodeRouter,
+};
 
 #[wasm_bindgen]
 pub struct WasmNodeRouter {
