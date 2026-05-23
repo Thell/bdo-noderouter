@@ -2222,69 +2222,69 @@ class SFGraphReductionEngine:
             iteration += 1
             logger.info(f"--- Iteration {iteration} ---")
 
-            # Isolates in the graph are always safe to directly remove
-            isolates = rx.isolates(self.graph)
-            self.graph.remove_nodes_from(isolates)
-            if self.do_debug:
-                logger.info(f"  removed {len(isolates)} isolates...")
+            # # Isolates in the graph are always safe to directly remove
+            # isolates = rx.isolates(self.graph)
+            # self.graph.remove_nodes_from(isolates)
+            # if self.do_debug:
+            #     logger.info(f"  removed {len(isolates)} isolates...")
 
-            # Reduce degree1 demand roots - this is a terminal set consolidation only
-            self.reduce_demand_roots()
+            # # Reduce degree1 demand roots - this is a terminal set consolidation only
+            # self.reduce_demand_roots()
 
-            # Reduce adjacent terminals - this is a terminal reduction by consume with terminal set consolidation
-            self.reduce_adjacent_terminals()
+            # # Reduce adjacent terminals - this is a terminal reduction by consume with terminal set consolidation
+            # self.reduce_adjacent_terminals()
 
-            # Reduce degree1 steiner nodes - this is a Steiner node graph reduction by `consume` with terminal set consolidation
-            self.reduce_degree1_steiner_nodes()
+            # # Reduce degree1 steiner nodes - this is a Steiner node graph reduction by `consume` with terminal set consolidation
+            # self.reduce_degree1_steiner_nodes()
 
-            # Reduce degree1 terminals - this is a Steiner node graph reduction by `remove` only
-            self.reduce_degree1_terminals()
+            # # Reduce degree1 terminals - this is a Steiner node graph reduction by `remove` only
+            # self.reduce_degree1_terminals()
 
-            # Reduce degree1 roots - this is a Steiner node graph reduction by `consume` with terminal set consolidation
-            self.reduce_degree1_roots()
+            # # Reduce degree1 roots - this is a Steiner node graph reduction by `consume` with terminal set consolidation
+            # self.reduce_degree1_roots()
 
-            if num_nodes != self.graph.num_nodes():
-                logger.debug("  repeating simple reductions...")
-                continue
+            # if num_nodes != self.graph.num_nodes():
+            #     logger.debug("  repeating simple reductions...")
+            #     continue
 
-            # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
-            self.reduce_degree2_articulation()
+            # # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
+            # self.reduce_degree2_articulation()
 
-            # Reduce 2-degree steiner chains - this is a Steiner node graph reduction by `absorb` only
-            self.merge_adjacent_degree2_steiner_chains()
+            # # Reduce 2-degree steiner chains - this is a Steiner node graph reduction by `absorb` only
+            # self.merge_adjacent_degree2_steiner_chains()
 
-            # Reduce steiner bridges - this is a Steiner node graph reduction by `consume` only
-            self.reduce_steiner_bridges()
+            # # Reduce steiner bridges - this is a Steiner node graph reduction by `consume` only
+            # self.reduce_steiner_bridges()
 
-            # Reduce 2-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
-            self.reduce_degree2_steiner_dominance()
+            # # Reduce 2-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
+            # self.reduce_degree2_steiner_dominance()
 
-            # Reduce k-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
-            self.reduce_degreek_steiner_dominance()
+            # # Reduce k-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
+            # self.reduce_degreek_steiner_dominance()
 
-            # Reduce degree3 steiner triangle legs - this is a Steiner node graph reduction by `absorb` only
-            self.reduce_degree3_steiner_triangle_legs()
+            # # Reduce degree3 steiner triangle legs - this is a Steiner node graph reduction by `absorb` only
+            # self.reduce_degree3_steiner_triangle_legs()
 
-            # Reduce blocked roots - this is a terminal set consolidation only
-            if num_nodes != self.graph.num_nodes():
-                self.reduce_blocked_roots()
+            # # Reduce blocked roots - this is a terminal set consolidation only
+            # if num_nodes != self.graph.num_nodes():
+            #     self.reduce_blocked_roots()
 
-            # Reduce degreek enclosed steiner - this is a Steiner node graph reduction by `consume` only
-            self.reduce_degreek_enclosed_steiner()
+            # # Reduce degreek enclosed steiner - this is a Steiner node graph reduction by `consume` only
+            # self.reduce_degreek_enclosed_steiner()
 
-            # NOTE: Definitely need better clustering setup to make this more powerful...
-            # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
-            if num_nodes == self.graph.num_nodes():
-                self.reduce_enclosed_steiner_clusters()
+            # # NOTE: Definitely need better clustering setup to make this more powerful...
+            # # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
+            # if num_nodes == self.graph.num_nodes():
+            #     self.reduce_enclosed_steiner_clusters()
 
-            # NOTE: Definitely need better clustering setup to make this more powerful...
-            # Reduce enclosed terminal clusters - this is a Steiner node graph reduction by `remove` only
-            if num_nodes == self.graph.num_nodes():
-                self.reduce_enclosed_terminal_clusters()
+            # # NOTE: Definitely need better clustering setup to make this more powerful...
+            # # Reduce enclosed terminal clusters - this is a Steiner node graph reduction by `remove` only
+            # if num_nodes == self.graph.num_nodes():
+            #     self.reduce_enclosed_terminal_clusters()
 
-            # Reduce degree2 outer face steiners - this is a Steiner node graph reduction by `remove` only
-            if num_nodes == self.graph.num_nodes():
-                self.reduce_degree2_outer_face_steiners()
+            # # Reduce degree2 outer face steiners - this is a Steiner node graph reduction by `remove` only
+            # if num_nodes == self.graph.num_nodes():
+            #     self.reduce_degree2_outer_face_steiners()
 
         # Rebuild pairs
         fixed_nodes_wp = {self.get_node_key(n) for n in self.fixed_nodes}

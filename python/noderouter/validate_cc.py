@@ -56,8 +56,8 @@ class _FuzzInstanceMetrics(dict):
         # Solver sanity checks
         ratio = nr_instance.solution.cost / mip_instance.solution.cost
         speedup = mip_instance.solution.duration / nr_instance.solution.duration
-        assert ratio >= 1.0, "NodeRouter should never have lower cost than MIP!"
-        assert speedup > 1.0, "NodeRouter should always be faster than MIP!"
+        assert ratio >= 1.0, f"NodeRouter should never have lower cost than MIP! {seed}"
+        assert speedup > 1.0, f"NodeRouter should always be faster than MIP! {seed}"
 
         super().__init__({
             "seed": seed,
@@ -421,7 +421,7 @@ def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     # The solver's methodology for handling dangers can potentially 'break' an otherwise
     # optimally solved problem and by keeping them fixed for danger inclusive and exclusive
     # samples we ensure that such cases are identifiable.
-    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:10]
+    return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:7]
 
 
 def _run_single_config(
