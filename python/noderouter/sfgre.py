@@ -810,17 +810,20 @@ class SFGraphReductionEngine:
         non_steiners.discard(self.super_root_index)
 
         removals = 0
+        edge_removals = 0
 
         # Get bridges
-        tmp_undir = self.graph.to_undirected()
+        tmp_undir = self.graph.to_undirected(multigraph=False)
+        tmp_map = {i: u for i, u in enumerate(self.graph.node_indices())}
+
         if self.super_root_index is not None:
-            tmp_undir.remove_node(self.super_root_index)
+            undir_super_root_index = next(iter([i for i, j in tmp_map.items() if j == self.super_root_index]))
+            tmp_undir.remove_node(undir_super_root_index)
+
         bridges = rx.bridges(tmp_undir)
         if not bridges:
             return 0
 
-        # Map back to self.graph indices
-        tmp_map = {i: u for i, u in enumerate(self.graph.node_indices())}
         bridges = [(tmp_map[u], tmp_map[v]) for u, v in bridges]  # ty:ignore[invalid-assignment]
 
         for u, v in bridges:
@@ -841,10 +844,24 @@ class SFGraphReductionEngine:
             tmp = self.graph.copy()
             tmp.remove_edge(u, v)
             tmp.remove_edge(v, u)
+
+            # Since super root was removed any super terminal test would violate which
+            # could potentially cause extra edges to be forced in the solution...
             violates_demand = any(
-                not rx.has_path(tmp, r, t) for r, terminals in self.terminal_sets.items() for t in terminals
+                not rx.has_path(tmp, r, t)
+                for r, terminals in self.terminal_sets.items()
+                for t in terminals
+                if r != self.super_root_index
             )
+
             if not violates_demand:
+                # In the presence of super root we can't certify exclusion without testing nearby super terminals
+                # or the presence of a potential root in the component and since hanging clusters consolidate
+                # towards roots/potential roots that would almost always be the case. So, we just skip for
+                # now instead of incurring the ovehead of super terminal testing.
+                if self.super_root_index is not None:
+                    continue
+
                 # NOTE: We can't certify exclusion of either endpoint of a single bridge because it says nothing
                 #       about the two endpoints in an optimal Solution. And in a node weighted problem if both
                 #       end up being selected then the edge is naturally selected.
@@ -854,12 +871,16 @@ class SFGraphReductionEngine:
                 sccs = rx.strongly_connected_components(tmp)
                 for scc in sccs:
                     set_scc = set(scc)
+
+                    # If the component contains no fixed nodes then it is safe to remove
                     if not set_scc & self.fixed_nodes:
                         # The component contains no fixed nodes, thus no-demand and no structure violations
                         self.graph.remove_edge(u, v)
                         self.graph.remove_edge(v, u)
-                        logger.debug("  removed bridge edge without consumption")
+                        logger.warning("  removed bridge edge without consumption")
+                        edge_removals += 1
                         break
+
                     scc_roots = set_scc & set(self.terminal_sets.keys())
                     if len(scc_roots) == 1:
                         # A single root is present, so if all of its terminals are also present then it is safe to remove
@@ -867,7 +888,8 @@ class SFGraphReductionEngine:
                         if set_scc & self.terminal_sets[scc_root]:
                             self.graph.remove_edge(u, v)
                             self.graph.remove_edge(v, u)
-                            logger.debug("  removed bridge edge without consumption")
+                            logger.warning("  removed bridge edge without consumption")
+                            edge_removals += 1
                             break
                 continue
 
@@ -877,13 +899,14 @@ class SFGraphReductionEngine:
                 self.consume(u, v)
             else:
                 self.consume(v, u)
-
             removals += 1
 
         if removals > 0:
-            logger.info(f"  consumed {removals} Steiner bridge nodes")
+            logger.info(
+                f"  consumed {removals} Steiner bridge nodes and removed {edge_removals} bridge edges"
+            )
             if self.do_debug:
-                self.dump_state("reduce_bridge_steiner_consumption", removals)
+                self.dump_state("reduce_bridge_steiner_consumption", removals + edge_removals)
                 self.validate_reachability()
 
         return removals
@@ -996,7 +1019,7 @@ class SFGraphReductionEngine:
 
         return removals
 
-    def reduce_degree3_steiner_triangle_legs(self):
+    def reduce_steiner_triangle_degree2_legs(self):
         """Absorbs degree-2 Steiner nodes adjacent to degree-3 Steiner triangles.
 
         Handles:
@@ -1012,6 +1035,8 @@ class SFGraphReductionEngine:
             v for v in set(self.graph.node_indices()) - non_steiners if self.reduction_degree(v) == 3
         }
         for node in d3_steiners:
+            if self.reduction_degree(node) != 3:
+                continue
             neighbors = self.reduction_neighbors(node)
             if neighbors & non_steiners:
                 continue
@@ -2250,30 +2275,30 @@ class SFGraphReductionEngine:
                 logger.debug("  repeating simple reductions...")
                 continue
 
-            # # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
-            # self.reduce_degree2_articulation()
+            # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
+            self.reduce_degree2_articulation()
 
-            # # Reduce 2-degree steiner chains - this is a Steiner node graph reduction by `absorb` only
-            # self.merge_adjacent_degree2_steiner_chains()
+            # Reduce 2-degree steiner chains - this is a Steiner node graph reduction by `absorb` only
+            self.merge_adjacent_degree2_steiner_chains()
+
+            # Reduce steiner triangle 2-degree legs - this is a Steiner node graph reduction by `absorb` only
+            self.reduce_steiner_triangle_degree2_legs()
+
+            # Reduce 2-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
+            self.reduce_degree2_steiner_dominance()
+
+            # Reduce k-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
+            self.reduce_degreek_steiner_dominance()
 
             # # Reduce steiner bridges - this is a Steiner node graph reduction by `consume` only
-            # self.reduce_steiner_bridges()
+            self.reduce_steiner_bridges()
 
-            # # Reduce 2-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
-            # self.reduce_degree2_steiner_dominance()
-
-            # # Reduce k-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
-            # self.reduce_degreek_steiner_dominance()
-
-            # # Reduce degree3 steiner triangle legs - this is a Steiner node graph reduction by `absorb` only
-            # self.reduce_degree3_steiner_triangle_legs()
+            # Reduce degreek enclosed steiner - this is a Steiner node graph reduction by `consume` only
+            self.reduce_degreek_enclosed_steiner()
 
             # # Reduce blocked roots - this is a terminal set consolidation only
             # if num_nodes != self.graph.num_nodes():
             #     self.reduce_blocked_roots()
-
-            # # Reduce degreek enclosed steiner - this is a Steiner node graph reduction by `consume` only
-            # self.reduce_degreek_enclosed_steiner()
 
             # # NOTE: Definitely need better clustering setup to make this more powerful...
             # # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
