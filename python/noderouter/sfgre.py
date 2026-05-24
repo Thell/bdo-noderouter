@@ -756,6 +756,8 @@ class SFGraphReductionEngine:
         if self.super_root_index is not None:
             tmp_undir.remove_node(self.super_root_index)
         articulations = rx.articulation_points(tmp_undir)
+        if not articulations:
+            return 0
 
         # Map back to self.graph indices
         tmp_map = {i: u for i, u in enumerate(self.graph.node_indices())}
@@ -813,8 +815,9 @@ class SFGraphReductionEngine:
         tmp_undir = self.graph.to_undirected()
         if self.super_root_index is not None:
             tmp_undir.remove_node(self.super_root_index)
-
         bridges = rx.bridges(tmp_undir)
+        if not bridges:
+            return 0
 
         # Map back to self.graph indices
         tmp_map = {i: u for i, u in enumerate(self.graph.node_indices())}
@@ -2222,30 +2225,30 @@ class SFGraphReductionEngine:
             iteration += 1
             logger.info(f"--- Iteration {iteration} ---")
 
-            # # Isolates in the graph are always safe to directly remove
-            # isolates = rx.isolates(self.graph)
-            # self.graph.remove_nodes_from(isolates)
-            # if self.do_debug:
-            #     logger.info(f"  removed {len(isolates)} isolates...")
+            # Isolates in the graph are always safe to directly remove
+            if isolates := rx.isolates(self.graph):
+                self.graph.remove_nodes_from(isolates)
+                if self.do_debug:
+                    logger.info(f"  removed {len(isolates)} isolates...")
 
-            # # Reduce degree1 demand roots - this is a terminal set consolidation only
-            # self.reduce_demand_roots()
+            # Reduce degree1 demand roots - this is a terminal set consolidation only
+            self.reduce_demand_roots()
 
-            # # Reduce adjacent terminals - this is a terminal reduction by consume with terminal set consolidation
-            # self.reduce_adjacent_terminals()
+            # Reduce adjacent terminals - this is a terminal reduction by consume with terminal set consolidation
+            self.reduce_adjacent_terminals()
 
-            # # Reduce degree1 steiner nodes - this is a Steiner node graph reduction by `consume` with terminal set consolidation
-            # self.reduce_degree1_steiner_nodes()
+            # Reduce degree1 steiner nodes - this is a Steiner node graph reduction by `consume` with terminal set consolidation
+            self.reduce_degree1_steiner_nodes()
 
-            # # Reduce degree1 terminals - this is a Steiner node graph reduction by `remove` only
-            # self.reduce_degree1_terminals()
+            # Reduce degree1 terminals - this is a Steiner node graph reduction by `remove` only
+            self.reduce_degree1_terminals()
 
-            # # Reduce degree1 roots - this is a Steiner node graph reduction by `consume` with terminal set consolidation
-            # self.reduce_degree1_roots()
+            # Reduce degree1 roots - this is a Steiner node graph reduction by `consume` with terminal set consolidation
+            self.reduce_degree1_roots()
 
-            # if num_nodes != self.graph.num_nodes():
-            #     logger.debug("  repeating simple reductions...")
-            #     continue
+            if num_nodes != self.graph.num_nodes():
+                logger.debug("  repeating simple reductions...")
+                continue
 
             # # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
             # self.reduce_degree2_articulation()
