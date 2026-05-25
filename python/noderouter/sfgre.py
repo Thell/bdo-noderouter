@@ -2295,9 +2295,10 @@ class SFGraphReductionEngine:
             if num_nodes == self.graph.num_nodes():
                 self.reduce_enclosed_steiner_clusters()
 
-            # # Reduce blocked roots - this is a terminal set consolidation only
-            # if num_nodes != self.graph.num_nodes():
-            #     self.reduce_blocked_roots()
+            # Reduce blocked roots - this is a terminal set consolidation only
+            if num_nodes != self.graph.num_nodes() and self.reduce_blocked_roots() > 0:
+                # Force a reduction pass if blocked roots were merged.
+                tmp_num_nodes = 0
 
             # # NOTE: Definitely need better clustering setup to make this more powerful...
             # # Reduce enclosed terminal clusters - this is a Steiner node graph reduction by `remove` only
