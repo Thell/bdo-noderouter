@@ -1967,8 +1967,6 @@ class SFGraphReductionEngine:
         MAX_OUTER_WINDOW_SIZE = 13
         MAX_INTERFACES = 7
 
-        self.dump_graph("reduce_degree2_outer_face_steiners")
-
         def get_ordered_outer_adjacent_faces(
             embedding: nx.PlanarEmbedding, outer_walk: list[int], outer_face_set: set[int]
         ) -> list[list[int]]:
@@ -2300,14 +2298,16 @@ class SFGraphReductionEngine:
                 # Force a reduction pass if blocked roots were merged.
                 tmp_num_nodes = 0
 
-            # # NOTE: Definitely need better clustering setup to make this more powerful...
-            # # Reduce enclosed terminal clusters - this is a Steiner node graph reduction by `remove` only
-            # if num_nodes == self.graph.num_nodes():
-            #     self.reduce_enclosed_terminal_clusters()
+            # NOTE: Definitely need better clustering setup to make this more powerful...
+            # TODO: Handle super terminals
+            # Reduce enclosed terminal clusters - this is a Steiner node graph reduction by `remove` only
+            if num_nodes == self.graph.num_nodes() and self.super_root_index is None:
+                self.reduce_enclosed_terminal_clusters()
 
-            # # Reduce degree2 outer face steiners - this is a Steiner node graph reduction by `remove` only
-            # if num_nodes == self.graph.num_nodes():
-            #     self.reduce_degree2_outer_face_steiners()
+            # TODO: Handle super terminals
+            # Reduce degree2 outer face steiners - this is a Steiner node graph reduction by `remove` only
+            if num_nodes == self.graph.num_nodes():
+                self.reduce_degree2_outer_face_steiners()
 
         # Rebuild pairs
         fixed_nodes_wp = {self.get_node_key(n) for n in self.fixed_nodes}
