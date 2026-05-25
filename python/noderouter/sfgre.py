@@ -877,7 +877,6 @@ class SFGraphReductionEngine:
                         # The component contains no fixed nodes, thus no-demand and no structure violations
                         self.graph.remove_edge(u, v)
                         self.graph.remove_edge(v, u)
-                        logger.warning("  removed bridge edge without consumption")
                         edge_removals += 1
                         break
 
@@ -888,7 +887,6 @@ class SFGraphReductionEngine:
                         if set_scc & self.terminal_sets[scc_root]:
                             self.graph.remove_edge(u, v)
                             self.graph.remove_edge(v, u)
-                            logger.warning("  removed bridge edge without consumption")
                             edge_removals += 1
                             break
                 continue
@@ -1309,10 +1307,6 @@ class SFGraphReductionEngine:
             return 0
 
         g_prime: PyDiGraph = subgraph_stable(self.graph, steiners)
-
-        # Visualizing for clustering...
-        self.dump_graph("g_prime for enclosed steiner clusters", g_prime)
-
         interfaces = set()
 
         for s in steiners:
@@ -2296,14 +2290,14 @@ class SFGraphReductionEngine:
             # Reduce degreek enclosed steiner - this is a Steiner node graph reduction by `consume` only
             self.reduce_degreek_enclosed_steiner()
 
+            # NOTE: Definitely need better clustering setup to make this more powerful...
+            # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
+            if num_nodes == self.graph.num_nodes():
+                self.reduce_enclosed_steiner_clusters()
+
             # # Reduce blocked roots - this is a terminal set consolidation only
             # if num_nodes != self.graph.num_nodes():
             #     self.reduce_blocked_roots()
-
-            # # NOTE: Definitely need better clustering setup to make this more powerful...
-            # # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
-            # if num_nodes == self.graph.num_nodes():
-            #     self.reduce_enclosed_steiner_clusters()
 
             # # NOTE: Definitely need better clustering setup to make this more powerful...
             # # Reduce enclosed terminal clusters - this is a Steiner node graph reduction by `remove` only
