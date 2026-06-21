@@ -16,7 +16,7 @@ def get_highs(config: dict) -> Highs:
     options = {k: v for k, v in config["solver"].items()}
     for option_name, option_value in options.items():
         # Non-standard HiGHS options need filtering...
-        if option_name not in ["num_threads", "mip_improvement_timeout"]:
+        if option_name not in ["num_processes", "mip_improvement_timeout"]:
             highs.setOptionValue(option_name, option_value)
     return highs
 

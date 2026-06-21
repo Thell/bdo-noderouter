@@ -24,5 +24,5 @@ mip_heuristic_run_root_reduced_cost = false
 mip_feasibility_tolerance = 1e-5
 mip_improvement_timeout = inf
 threads = 1                      # HiGHs internal parallelism
-num_threads = 8                  # concurrent HiGHs threads
+num_processes = 8                # concurrent HiGHs processes
 time_limit = inf

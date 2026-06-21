@@ -122,28 +122,28 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
     # system operations (like the UI) causes more HiGHs thread context switches
     physical_cpu_count = psutil.cpu_count(logical=False)
     physical_cpu_count = 1 if physical_cpu_count is None else max(2, physical_cpu_count) - 1
-    num_threads = config.get("solver", {}).get("num_threads", physical_cpu_count)
-    num_threads = max(num_threads, 1)
-    if num_threads > 1:
+    num_processes = config.get("solver", {}).get("num_processes", physical_cpu_count)
+    num_processes = max(num_processes, 1)
+    if num_processes > 1:
         model.setOptionValue("threads", 1)  # HiGHs internal threads
-    logger.info(f"Using {num_threads} threads")
+    logger.info(f"Using {num_processes} threads")
 
     # Reduce the amount of logging (still captures all important messages)
     model.setOptionValue("mip_min_logging_interval", 30)
 
-    clones = [model] + [Highs() for _ in range(num_threads - 1)]
+    clones = [model] + [Highs() for _ in range(num_processes - 1)]
     clones[0].HandleUserInterrupt = True
     clones[0].enableCallbacks()
 
-    for i in range(1, num_threads):
+    for i in range(1, num_processes):
         clones[i].passOptions(clones[0].getOptions())
         clones[i].passModel(clones[0].getModel())
         clones[i].setOptionValue("random_seed", i)
         clones[i].HandleUserInterrupt = True
         clones[i].enableCallbacks()
 
-    clone_capture_report = [False] * num_threads
-    clone_solution_report = [[] for _ in range(num_threads)]
+    clone_capture_report = [False] * num_processes
+    clone_solution_report = [[] for _ in range(num_processes)]
 
     obj_sense = clones[0].getObjectiveSense()[1]
     if obj_sense == ObjSense.kMinimize:
@@ -161,7 +161,7 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
         lock=Lock(),
         value=2**31 if obj_sense == ObjSense.kMinimize else -(2**31),
         solution=np.zeros(clones[0].getNumCol()),
-        provided=[False] * num_threads,
+        provided=[False] * num_processes,
     )
 
     # Queues and managers
@@ -221,7 +221,7 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
                 with incumbent.lock:
                     incumbent.value = value
                     incumbent.solution[:] = incoming_solution
-                    incumbent.provided = [False] * num_threads
+                    incumbent.provided = [False] * num_processes
                     incumbent.provided[clone_id] = True
                     incumbent.id = clone_id
 
@@ -258,7 +258,7 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
                 incumbent.provided[clone_id] = True
                 incumbent.lock.release()
 
-    for i in range(num_threads):
+    for i in range(num_processes):
         if config["solver"]["log_via_callback"]:
             clones[i].cbLogging.subscribe(cbLoggingHandler, i)
         clones[i].cbMipImprovingSolution.subscribe(cbMIPImprovedSolutionHandler, i)
@@ -276,7 +276,7 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
     Thread(target=logging_manager, daemon=True).start()
     Thread(target=incumbent_manager, daemon=True).start()
 
-    for i in range(num_threads):
+    for i in range(num_processes):
         Thread(target=worker_task, args=(clones[i], i), daemon=True).start()
         time.sleep(0.1)
 
@@ -289,7 +289,7 @@ def solve(model: Highs, config: dict, controller: SolverController) -> Highs:
             continue
 
     # Cancel the other threads, without any further output
-    for i in range(num_threads):
+    for i in range(num_processes):
         if i != first_to_finish:
             clones[i].silent()
         clones[i].cancelSolve()
