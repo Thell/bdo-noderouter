@@ -458,6 +458,23 @@ if __name__ == "__main__":
 
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
 
+    # # Example: Run one-off for
+    # # f3bd7a9 random_n_cheapest_town_in_territory  Budget: 20
+    # MAX_BUDGET = 550
+    # budget = 20
+    # percent = round(budget / MAX_BUDGET * 100)
+    # seed = "f3bd7a9"
+    # mip_plan = Plan(
+    #     optimize_with_terminals,
+    #     budget,
+    #     percent,
+    #     seed,
+    #     False,
+    #     PairingStrategy.random_n_cheapest_town_in_territory,
+    #     False,
+    # )
+    # execute_plan(mip_plan, config)
+
     # # fmt:off
     # terminals = {61:1, 301:1, 302:1, 601:1, 602:1, 604:1, 608:1, 1002:1, 1101:1, 1141:1, 1301:1, 1314:1, 1319:1, 1343:1, 1380:1, 1604:1, 1623:1, 1649:1, 1691:1, 1750:1, 1781:1, 1785:1, 1795:1, 1834:1, 1843:1, 1853:1, 1857:1, 1858:1, 2001:1}
     # # fmt:on
