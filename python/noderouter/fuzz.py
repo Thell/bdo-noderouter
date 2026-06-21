@@ -612,7 +612,9 @@ def _run_single_config(
     return all_cases_df
 
 
-def fuzzer_main(strategies: list[PairingStrategy], samples: int, budgets: list[int] | range) -> None:
+def fuzzer_main(
+    strategies: list[PairingStrategy], samples: int, budgets: list[int] | range, danger_states: list[bool]
+) -> None:
     set_logger(ds.get_config("config"))
     # set_logger({"logger": {"level": "ERROR", "format": "<level>{message}</level>"}})
     all_metrics: pl.DataFrame = pl.DataFrame()
@@ -621,10 +623,10 @@ def fuzzer_main(strategies: list[PairingStrategy], samples: int, budgets: list[i
     start_time = time.time()
     try:
         for budget in budgets:
-            for include_danger in (False, True):
+            for danger_state in danger_states:
                 if _shutdown_requested:
                     raise KeyboardInterrupt
-                metrics = _run_single_config(strategies, samples, budget, include_danger)
+                metrics = _run_single_config(strategies, samples, budget, danger_state)
                 all_metrics = all_metrics.vstack(metrics)
         _generate_all_cases_summaries(all_metrics)
     except KeyboardInterrupt:
@@ -651,15 +653,19 @@ if __name__ == "__main__":
     # NOTE: For testing purposes or limited subsets the range can be increased
     # to include all possible budgets.
     # NOTE: MIP optimal solutions are available for (5, 555, 5).
-    budgets = range(5, 25, 5)
+    budgets = range(300, 305, 10)
 
     # NOTE: For normal fuzzing or testing purposes the sample count can be adjusted
     # as desired. The default is 20 to allow for a diverse random selection of pairs.
-    samples = 20
+    samples = 10
 
     # # Settings for running the optimized strategy purely to populate the MIP cache
     # strategies = [PairingStrategy.cheapest_town]
     # budgets = range(5, 555, 5)
     # samples = 1
 
-    fuzzer_main(strategies, samples, budgets)
+    # # For normal fuzzing use [False, True]
+    # include_danger = [False, True]
+    danger_states = [True]
+
+    fuzzer_main(strategies, samples, budgets, danger_states)
