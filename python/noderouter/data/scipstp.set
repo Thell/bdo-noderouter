@@ -1,0 +1,4 @@
+display/verblevel = 0
+display/freq = 0
+misc/printreason = FALSE
+stp/logfile = "use_probname"
