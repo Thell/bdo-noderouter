@@ -18,12 +18,12 @@ _NODEROUTER: NodeRouter | None = None
 
 
 def _optimize_with_terminals(nr: NodeRouter, terminals: dict[int, int]) -> Solution:
-    logger.debug(f"Optimizing graph with {len(terminals)} terminals...")
+    logger.debug(f"[nr]  Approximating optimal solution for graph with {len(terminals)} terminals...")
 
     start_time = time.perf_counter()
     solution_waypoints, cost = nr.solve_for_terminal_pairs(list(terminals.items()))
     duration = time.perf_counter() - start_time
-    logger.info(f"solution time (ms): {duration * 1000:.2f}")
+    logger.info(f"[nr]  solution time (ms): {duration * 1000:.2f}")
 
     exploration_graph = get_exploration_data().super_graph
     node_key_by_index = exploration_graph.attrs["node_key_by_index"]
