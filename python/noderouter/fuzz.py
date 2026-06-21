@@ -208,6 +208,7 @@ def _generate_all_cases_summaries(all_cases_df: pl.DataFrame) -> None:
         strategy_df_summary = _generate_summary(strategy_df).drop(["include_danger"])
         strategy_df_aggregate_summary = _generate_strategy_aggregate_summary(strategy_df_summary)
         strategy_df_budget_summary = _generate_budget_aggregate_summary(strategy_df_summary)
+        strategy_df_danger_summary = _generate_danger_aggregate_summary(strategy_df_summary)
 
         strategy_df_total = _generate_summary_total(strategy_df_summary)
         out_path = ds.path() / "strategy_summary.csv"
@@ -219,6 +220,8 @@ def _generate_all_cases_summaries(all_cases_df: pl.DataFrame) -> None:
         _print_summary(strategy_df_aggregate_summary)
         print("\n--- BY BUDGET ---")
         _print_summary(strategy_df_budget_summary)
+        print("\n--- BY DANGER ---")
+        _print_summary(strategy_df_danger_summary)
         _print_total(strategy_df_total)
 
     # --- Suboptimal breakdown diagnostics ---
@@ -371,6 +374,48 @@ def _generate_budget_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame
     )
 
     return tmp_df.select("strategy", "budget", pl.all().exclude(["strategy", "budget"]))
+
+
+def _generate_danger_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame:
+    longest = max(len(str(v)) for v in summary_df["strategy"].to_list())
+    col_widths = [len(c) for c in summary_df.columns]
+    col_widths[0] = max(longest, col_widths[0])
+
+    return (
+        summary_df
+        .group_by(["avg_dangers"])
+        .agg([
+            pl.lit("-" + " " * (col_widths[0] - len("-"))).alias("strategy"),
+            pl.lit("-").alias("budget"),
+            pl.col("instances").sum(),
+            pl.col("optimal").sum(),
+            pl.col("suboptimal").sum(),
+            pl.col("optimal_percent").mean(),
+            pl.mean("avg_terminals").alias("avg_terminals"),
+            pl.mean("avg_roots").alias("avg_roots"),
+            pl.mean("avg_workers").alias("avg_workers"),
+            # pl.mean("avg_dangers").alias("avg_dangers"),
+            pl.col("avg_ratio").mean(),
+            pl.col("worst_ratio").max(),
+            pl.col("avg_speedup").mean(),
+        ])
+        .sort(["strategy", "avg_dangers"], descending=False)
+        .select(
+            "strategy",
+            "budget",
+            "instances",
+            "optimal",
+            "suboptimal",
+            "optimal_percent",
+            "avg_terminals",
+            "avg_roots",
+            "avg_workers",
+            "avg_dangers",
+            "avg_ratio",
+            "worst_ratio",
+            "avg_speedup",
+        )
+    )
 
 
 def _generate_suboptimal_breakdown(df: pl.DataFrame) -> pl.DataFrame:
