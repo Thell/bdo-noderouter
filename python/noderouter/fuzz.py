@@ -169,20 +169,6 @@ class _FuzzInstanceMetrics(dict):
         )
 
 
-def _signal_handler(signum, frame):
-    global _shutdown_requested
-    if _shutdown_requested:
-        print("\nHard exit — terminating immediately.", file=sys.stderr)
-        sys.exit(1)
-    _shutdown_requested = True
-    print("\nShutdown requested — finishing current test and reporting results...", file=sys.stderr)
-
-
-def _install_shutdown_handler():
-    handler = partial(_signal_handler)
-    signal.signal(signal.SIGINT, handler)
-
-
 # MARK: Summary Reporting
 def _generate_all_cases_summaries(all_cases_df: pl.DataFrame) -> None:
     if all_cases_df.is_empty():
