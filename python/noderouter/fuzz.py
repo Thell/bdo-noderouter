@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import signal
+import os
 import sys
+import threading
 import time
-from functools import partial
+import tkinter as tk
 
 import polars as pl
 from loguru import logger
@@ -23,6 +24,75 @@ SUMMARY_FLOAT_PRECISION = 3
 WORST_SUBOPTIMAL_REPORTING_COUNT = 50
 
 _shutdown_requested = False
+LOG_LEVELS = ["SUCCESS", "INFO", "DEBUG", "TRACE"]
+current_level_index = 1
+
+
+def _create_ui():
+    root = tk.Tk()
+    root.title("Test Control")
+    root.geometry("250x120")
+    root.attributes("-topmost", True)
+
+    # --- 1. SHUTDOWN BUTTON LOGIC ---
+    def on_shutdown_click():
+        global _shutdown_requested
+        if _shutdown_requested:
+            print("\nHard exit — terminating immediately.", file=sys.stderr)
+            os._exit(1)
+        _shutdown_requested = True
+        print("\nShutdown requested — finishing current test and reporting results...", file=sys.stderr)
+        shutdown_btn.config(text="FORCE TERMINATE", fg="white", bg="red")
+
+    shutdown_btn = tk.Button(root, text="Graceful Shutdown", command=on_shutdown_click, bg="orange")
+    shutdown_btn.pack(expand=True, fill="both", padx=10, pady=(10, 5))
+
+    # --- 2. LOG LEVEL TOGGLE LOGIC ---
+    def on_log_click():
+        global current_level_index
+        current_level_index = (current_level_index + 1) % len(LOG_LEVELS)
+        new_level = LOG_LEVELS[current_level_index]
+
+        log_btn.config(text=f"Log Level: {new_level}")
+
+        # Keep format configuration synchronised by pulling the original if available
+        try:
+            cfg = ds.get_config("config")
+            log_format = cfg.get("logger", {}).get("format", "<level>{message}</level>")
+        except Exception:  # noqa: BLE001
+            log_format = "<level>{message}</level>"
+
+        set_logger({"logger": {"level": new_level, "format": log_format}})
+        print(f"[CONTROL] Loguru runtime level updated to: {new_level}", file=sys.stdout)
+
+    # Use the globally resolved index to display the true initialization level
+    initial_text = f"Log Level: {LOG_LEVELS[current_level_index]}"
+    log_btn = tk.Button(root, text=initial_text, command=on_log_click, bg="lightgray")
+    log_btn.pack(expand=True, fill="both", padx=10, pady=(5, 10))
+
+    root.mainloop()
+
+
+def _install_shutdown_handler():
+    global current_level_index
+
+    # 1. Inspect the live configuration dict before launching the UI thread
+    try:
+        startup_config = ds.get_config("config")
+        startup_level = startup_config.get("logger", {}).get("level", "INFO").upper()
+
+        # 2. Match the string (e.g. "DEBUG") to our array index. Fallback safely if unknown string.
+        if startup_level in LOG_LEVELS:
+            current_level_index = LOG_LEVELS.index(startup_level)
+    except Exception as e:  # noqa: BLE001
+        print(
+            f"[CONTROL WARNING] Failed to read startup config level: {e}. Defaulting index to INFO.",
+            file=sys.stderr,
+        )
+
+    # 3. Safely start the UI thread with the correct initial state loaded
+    t = threading.Thread(target=_create_ui, daemon=True)
+    t.start()
 
 
 class _FuzzInstanceMetrics(dict):
