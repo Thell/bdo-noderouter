@@ -786,7 +786,7 @@
         "is_workerman_plantzone": false,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 2,
+        "need_exploration_point": 1,
         "position": {
             "x": -198865.0,
             "y": -281.5669860839844,
@@ -828,7 +828,8 @@
             62,
             69,
             637,
-            71
+            71,
+            209
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -929,7 +930,8 @@
             4,
             64,
             67,
-            201
+            201,
+            206
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -1117,7 +1119,9 @@
         },
         "link_list": [
             603,
-            62
+            62,
+            208,
+            207
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -2688,6 +2692,154 @@
             "has_rentable_storage": true,
             "has_cashproduct_lodging": true,
             "has_cashproduct_storage": true
+        }
+    },
+    "206": {
+        "waypoint_key": 206,
+        "region_key": 343,
+        "region_group_key": 62,
+        "territory_key": 0,
+        "character_key": 50557,
+        "node_type": 8,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -107873.0,
+            "y": -2576.8701171875,
+            "z": 95063.296875
+        },
+        "link_list": [
+            66
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "207": {
+        "waypoint_key": 207,
+        "region_key": 345,
+        "region_group_key": 64,
+        "territory_key": 0,
+        "character_key": 50563,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -209683.0,
+            "y": 2204.27001953125,
+            "z": 89042.3984375
+        },
+        "link_list": [
+            72
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "208": {
+        "waypoint_key": 208,
+        "region_key": 345,
+        "region_group_key": 64,
+        "territory_key": 0,
+        "character_key": 50563,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -203731.0,
+            "y": 536.719970703125,
+            "z": 90492.796875
+        },
+        "link_list": [
+            72
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "209": {
+        "waypoint_key": 209,
+        "region_key": 89,
+        "region_group_key": 64,
+        "territory_key": 0,
+        "character_key": 50554,
+        "node_type": 8,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -263248.0,
+            "y": 3744.75,
+            "z": 108841.0
+        },
+        "link_list": [
+            63
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
         }
     },
     "301": {
@@ -15956,7 +16108,8 @@
             1303,
             1306,
             1315,
-            1504
+            1504,
+            2078
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -16116,7 +16269,8 @@
         "link_list": [
             1309,
             1311,
-            1508
+            1508,
+            2082
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -16177,7 +16331,9 @@
         },
         "link_list": [
             1306,
-            1313
+            1313,
+            2083,
+            2084
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -16305,7 +16461,7 @@
         "is_workerman_plantzone": false,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 2,
+        "need_exploration_point": 1,
         "position": {
             "x": 364028.0,
             "y": -6331.7900390625,
@@ -16508,7 +16664,9 @@
             "z": 74836.3984375
         },
         "link_list": [
-            1315
+            1315,
+            2079,
+            2080
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -16635,7 +16793,8 @@
         "link_list": [
             1329,
             1514,
-            1327
+            1327,
+            2070
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -16762,7 +16921,8 @@
         },
         "link_list": [
             1333,
-            1375
+            1375,
+            2071
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -16793,7 +16953,8 @@
         },
         "link_list": [
             1332,
-            1334
+            1334,
+            2072
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -16824,7 +16985,8 @@
         },
         "link_list": [
             1333,
-            1335
+            1335,
+            2073
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -16856,7 +17018,8 @@
         "link_list": [
             1334,
             1336,
-            1344
+            1344,
+            2074
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -17103,7 +17266,7 @@
         "is_workerman_plantzone": false,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 2,
+        "need_exploration_point": 1,
         "position": {
             "x": 813638.0,
             "y": 5502.68994140625,
@@ -17202,7 +17365,7 @@
         "is_workerman_plantzone": false,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 2,
+        "need_exploration_point": 1,
         "position": {
             "x": 1002250.0,
             "y": 15114.7998046875,
@@ -17764,7 +17927,8 @@
             "z": 105182.0
         },
         "link_list": [
-            1308
+            1308,
+            2081
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -18084,7 +18248,8 @@
             "z": -80992.8984375
         },
         "link_list": [
-            1383
+            1383,
+            2075
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -18341,7 +18506,9 @@
             "z": 3222.52001953125
         },
         "link_list": [
-            1383
+            1383,
+            2076,
+            2077
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -18461,7 +18628,7 @@
         "region_group_key": 0,
         "territory_key": 0,
         "character_key": 50609,
-        "node_type": 7,
+        "node_type": 0,
         "is_town": false,
         "is_base_town": false,
         "is_plantzone": false,
@@ -18535,7 +18702,7 @@
         "is_workerman_plantzone": true,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 3,
+        "need_exploration_point": 1,
         "position": {
             "x": 403556.0,
             "y": -7214.08984375,
@@ -18572,7 +18739,7 @@
         "is_workerman_plantzone": true,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 3,
+        "need_exploration_point": 1,
         "position": {
             "x": 382467.0,
             "y": -1909.9599609375,
@@ -18750,7 +18917,7 @@
         "region_group_key": 205,
         "territory_key": 4,
         "character_key": 50604,
-        "node_type": 8,
+        "node_type": 6,
         "is_town": false,
         "is_base_town": false,
         "is_plantzone": true,
@@ -19275,7 +19442,7 @@
         "is_workerman_plantzone": true,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 3,
+        "need_exploration_point": 2,
         "position": {
             "x": 982755.0,
             "y": 14905.7998046875,
@@ -20311,7 +20478,7 @@
         "is_workerman_plantzone": true,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 3,
+        "need_exploration_point": 2,
         "position": {
             "x": 1224640.0,
             "y": 2538.800048828125,
@@ -20348,7 +20515,7 @@
         "is_workerman_plantzone": true,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 3,
+        "need_exploration_point": 2,
         "position": {
             "x": 1237880.0,
             "y": 941.0430297851562,
@@ -21149,7 +21316,9 @@
         },
         "link_list": [
             1610,
-            1612
+            1612,
+            2065,
+            2066
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -21211,7 +21380,8 @@
         },
         "link_list": [
             1609,
-            1616
+            1616,
+            2064
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -21557,7 +21727,7 @@
         "is_workerman_plantzone": false,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 2,
+        "need_exploration_point": 1,
         "position": {
             "x": -558641.0,
             "y": -3233.77001953125,
@@ -21651,7 +21821,7 @@
         "is_workerman_plantzone": false,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 2,
+        "need_exploration_point": 1,
         "position": {
             "x": -587369.0,
             "y": -4206.39990234375,
@@ -21691,7 +21861,8 @@
         },
         "link_list": [
             1627,
-            1641
+            1641,
+            2062
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -21722,7 +21893,8 @@
         },
         "link_list": [
             1627,
-            1640
+            1640,
+            2063
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -22577,7 +22749,9 @@
         "link_list": [
             1659,
             1660,
-            1664
+            1664,
+            2058,
+            2059
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -22993,7 +23167,9 @@
             "z": -345612.0
         },
         "link_list": [
-            1659
+            1659,
+            2060,
+            2061
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -23189,7 +23365,7 @@
         "region_group_key": 233,
         "territory_key": 7,
         "character_key": 50746,
-        "node_type": 6,
+        "node_type": 8,
         "is_town": false,
         "is_base_town": false,
         "is_plantzone": true,
@@ -23226,7 +23402,7 @@
         "region_group_key": 233,
         "territory_key": 7,
         "character_key": 50746,
-        "node_type": 6,
+        "node_type": 8,
         "is_town": false,
         "is_base_town": false,
         "is_plantzone": true,
@@ -23929,7 +24105,8 @@
         "link_list": [
             1741,
             1697,
-            1713
+            1713,
+            2067
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -23992,7 +24169,8 @@
         "link_list": [
             1695,
             1698,
-            1699
+            1699,
+            2068
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -24149,7 +24327,8 @@
         "link_list": [
             1703,
             1743,
-            1694
+            1694,
+            2069
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -25077,7 +25256,7 @@
         "is_workerman_plantzone": false,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 2,
+        "need_exploration_point": 1,
         "position": {
             "x": -211823.0,
             "y": 10893.599609375,
@@ -25108,7 +25287,7 @@
         "is_workerman_plantzone": false,
         "is_warehouse_town": false,
         "is_worker_npc_town": false,
-        "need_exploration_point": 2,
+        "need_exploration_point": 1,
         "position": {
             "x": -182305.0,
             "y": 17684.80078125,
@@ -26908,9 +27087,9 @@
         "is_worker_npc_town": false,
         "need_exploration_point": 1,
         "position": {
-            "x": -1384770.0,
-            "y": -2975.89990234375,
-            "z": 1006880.0
+            "x": -1349680.0,
+            "y": 6109.35009765625,
+            "z": 1025630.0
         },
         "link_list": [
             1785,
@@ -27513,9 +27692,9 @@
         "is_worker_npc_town": false,
         "need_exploration_point": 1,
         "position": {
-            "x": -1391420.0,
-            "y": -5013.3701171875,
-            "z": 1008200.0
+            "x": -1374380.0,
+            "y": -5955.83984375,
+            "z": 1015100.0
         },
         "link_list": [
             1799
@@ -27821,7 +28000,8 @@
         },
         "link_list": [
             1795,
-            1833
+            1833,
+            2055
         ],
         "worker_types": [],
         "region_houseinfo": {
@@ -32368,6 +32548,1066 @@
         },
         "link_list": [
             2053
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2055": {
+        "waypoint_key": 2055,
+        "region_key": 1312,
+        "region_group_key": 134,
+        "territory_key": 10,
+        "character_key": 0,
+        "node_type": 0,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": false,
+        "is_workerman_plantzone": false,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -864318.0,
+            "y": -7582.16015625,
+            "z": 1334040.0
+        },
+        "link_list": [
+            1832,
+            2056
+        ],
+        "worker_types": [],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2056": {
+        "waypoint_key": 2056,
+        "region_key": 0,
+        "region_group_key": 0,
+        "territory_key": 0,
+        "character_key": 0,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": false,
+        "is_workerman_plantzone": false,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -845079.0,
+            "y": -1744.77001953125,
+            "z": 1342450.0
+        },
+        "link_list": [
+            2055
+        ],
+        "worker_types": [],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2058": {
+        "waypoint_key": 2058,
+        "region_key": 877,
+        "region_group_key": 226,
+        "territory_key": 7,
+        "character_key": 50729,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -16848.400390625,
+            "y": 9621.3896484375,
+            "z": -330897.0
+        },
+        "link_list": [
+            1656
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2059": {
+        "waypoint_key": 2059,
+        "region_key": 877,
+        "region_group_key": 226,
+        "territory_key": 7,
+        "character_key": 50729,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -13570.7001953125,
+            "y": 9785.7998046875,
+            "z": -328676.0
+        },
+        "link_list": [
+            1656
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2060": {
+        "waypoint_key": 2060,
+        "region_key": 876,
+        "region_group_key": 238,
+        "territory_key": 7,
+        "character_key": 50728,
+        "node_type": 8,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": 62768.1015625,
+            "y": 31510.5,
+            "z": -350894.0
+        },
+        "link_list": [
+            1669
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2061": {
+        "waypoint_key": 2061,
+        "region_key": 876,
+        "region_group_key": 238,
+        "territory_key": 7,
+        "character_key": 50728,
+        "node_type": 8,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": 68598.1015625,
+            "y": 30351.30078125,
+            "z": -339366.0
+        },
+        "link_list": [
+            1669
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2062": {
+        "waypoint_key": 2062,
+        "region_key": 738,
+        "region_group_key": 156,
+        "territory_key": 6,
+        "character_key": 45580,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -573202.0,
+            "y": -2607.14990234375,
+            "z": -439390.0
+        },
+        "link_list": [
+            1628
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2063": {
+        "waypoint_key": 2063,
+        "region_key": 737,
+        "region_group_key": 156,
+        "territory_key": 6,
+        "character_key": 45579,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -581281.0,
+            "y": -3289.8701171875,
+            "z": -374984.0
+        },
+        "link_list": [
+            1629
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2064": {
+        "waypoint_key": 2064,
+        "region_key": 712,
+        "region_group_key": 152,
+        "territory_key": 6,
+        "character_key": 50707,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -440199.0,
+            "y": 17650.0,
+            "z": -320900.0
+        },
+        "link_list": [
+            1613
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2065": {
+        "waypoint_key": 2065,
+        "region_key": 717,
+        "region_group_key": 153,
+        "territory_key": 6,
+        "character_key": 50708,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": -346305.0,
+            "y": 32089.099609375,
+            "z": -305572.0
+        },
+        "link_list": [
+            1611
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2066": {
+        "waypoint_key": 2066,
+        "region_key": 717,
+        "region_group_key": 153,
+        "territory_key": 6,
+        "character_key": 50708,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": -339763.0,
+            "y": 32649.80078125,
+            "z": -304568.0
+        },
+        "link_list": [
+            1611
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2067": {
+        "waypoint_key": 2067,
+        "region_key": 960,
+        "region_group_key": 164,
+        "territory_key": 8,
+        "character_key": 50762,
+        "node_type": 14,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": -270507.0,
+            "y": 5890.68994140625,
+            "z": -594339.0
+        },
+        "link_list": [
+            1695
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2068": {
+        "waypoint_key": 2068,
+        "region_key": 957,
+        "region_group_key": 161,
+        "territory_key": 8,
+        "character_key": 50769,
+        "node_type": 8,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": -294441.0,
+            "y": 990.322021484375,
+            "z": -606529.0
+        },
+        "link_list": [
+            1697
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2069": {
+        "waypoint_key": 2069,
+        "region_key": 961,
+        "region_group_key": 165,
+        "territory_key": 8,
+        "character_key": 50764,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": -204919.0,
+            "y": 17967.5,
+            "z": -476950.0
+        },
+        "link_list": [
+            1702
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2070": {
+        "waypoint_key": 2070,
+        "region_key": 604,
+        "region_group_key": 204,
+        "territory_key": 4,
+        "character_key": 50637,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 735166.0,
+            "y": 12447.599609375,
+            "z": 377453.0
+        },
+        "link_list": [
+            1328
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2071": {
+        "waypoint_key": 2071,
+        "region_key": 609,
+        "region_group_key": 206,
+        "territory_key": 4,
+        "character_key": 50620,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": 827091.0,
+            "y": 7720.2998046875,
+            "z": 279608.0
+        },
+        "link_list": [
+            1332
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2072": {
+        "waypoint_key": 2072,
+        "region_key": 610,
+        "region_group_key": 206,
+        "territory_key": 4,
+        "character_key": 50618,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": 754975.0,
+            "y": 9796.580078125,
+            "z": 141316.0
+        },
+        "link_list": [
+            1333
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2073": {
+        "waypoint_key": 2073,
+        "region_key": 611,
+        "region_group_key": 206,
+        "territory_key": 4,
+        "character_key": 50619,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": 888207.0,
+            "y": 17889.30078125,
+            "z": 62268.80078125
+        },
+        "link_list": [
+            1334
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2074": {
+        "waypoint_key": 2074,
+        "region_key": 612,
+        "region_group_key": 206,
+        "territory_key": 4,
+        "character_key": 50617,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 1,
+        "position": {
+            "x": 824306.0,
+            "y": 11057.900390625,
+            "z": -20783.69921875
+        },
+        "link_list": [
+            1335
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2075": {
+        "waypoint_key": 2075,
+        "region_key": 691,
+        "region_group_key": 213,
+        "territory_key": 4,
+        "character_key": 50661,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 1138640.0,
+            "y": 16942.69921875,
+            "z": -80537.1015625
+        },
+        "link_list": [
+            1384
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2076": {
+        "waypoint_key": 2076,
+        "region_key": 429,
+        "region_group_key": 213,
+        "territory_key": 4,
+        "character_key": 50672,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 1156070.0,
+            "y": 12992.0,
+            "z": 8496.9697265625
+        },
+        "link_list": [
+            1393
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2077": {
+        "waypoint_key": 2077,
+        "region_key": 429,
+        "region_group_key": 213,
+        "territory_key": 4,
+        "character_key": 50672,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 1176070.0,
+            "y": 15340.599609375,
+            "z": 10597.599609375
+        },
+        "link_list": [
+            1393
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2078": {
+        "waypoint_key": 2078,
+        "region_key": 580,
+        "region_group_key": 203,
+        "territory_key": 4,
+        "character_key": 50589,
+        "node_type": 8,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 425030.0,
+            "y": 797.8519897460938,
+            "z": 55908.5
+        },
+        "link_list": [
+            1305
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2079": {
+        "waypoint_key": 2079,
+        "region_key": 584,
+        "region_group_key": 203,
+        "territory_key": 4,
+        "character_key": 50600,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 457008.0,
+            "y": 379.4700012207031,
+            "z": 72193.796875
+        },
+        "link_list": [
+            1324
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2080": {
+        "waypoint_key": 2080,
+        "region_key": 584,
+        "region_group_key": 203,
+        "territory_key": 4,
+        "character_key": 50600,
+        "node_type": 15,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 461012.0,
+            "y": -253.10299682617188,
+            "z": 70412.8984375
+        },
+        "link_list": [
+            1324
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2081": {
+        "waypoint_key": 2081,
+        "region_key": 589,
+        "region_group_key": 204,
+        "territory_key": 4,
+        "character_key": 50593,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 364576.0,
+            "y": 2964.449951171875,
+            "z": 100089.0
+        },
+        "link_list": [
+            1373
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2082": {
+        "waypoint_key": 2082,
+        "region_key": 241,
+        "region_group_key": 210,
+        "territory_key": 4,
+        "character_key": 45116,
+        "node_type": 7,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 476258.0,
+            "y": -4013.010009765625,
+            "z": -70747.703125
+        },
+        "link_list": [
+            1310
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2083": {
+        "waypoint_key": 2083,
+        "region_key": 593,
+        "region_group_key": 204,
+        "territory_key": 4,
+        "character_key": 50595,
+        "node_type": 8,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 474245.0,
+            "y": 953.6929931640625,
+            "z": 178854.0
+        },
+        "link_list": [
+            1312
+        ],
+        "worker_types": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "region_houseinfo": {
+            "has_rentable_lodging": false,
+            "has_rentable_storage": false,
+            "has_cashproduct_lodging": false,
+            "has_cashproduct_storage": false
+        }
+    },
+    "2084": {
+        "waypoint_key": 2084,
+        "region_key": 593,
+        "region_group_key": 204,
+        "territory_key": 4,
+        "character_key": 50595,
+        "node_type": 8,
+        "is_town": false,
+        "is_base_town": false,
+        "is_plantzone": true,
+        "is_workerman_plantzone": true,
+        "is_warehouse_town": false,
+        "is_worker_npc_town": false,
+        "need_exploration_point": 2,
+        "position": {
+            "x": 470722.0,
+            "y": 963.656982421875,
+            "z": 177441.0
+        },
+        "link_list": [
+            1312
         ],
         "worker_types": [
             0,
