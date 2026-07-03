@@ -1,25 +1,48 @@
 from __future__ import annotations
 
 import heapq
-from collections import Counter
+import random
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections import Counter, defaultdict
 from collections.abc import Iterable
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
+from itertools import combinations
+from pathlib import Path
+from time import time
 
 import networkx as nx
 import nwst_dw
 import rustworkx as rx
 from bidict import bidict
 from loguru import logger
+from more_itertools import set_partitions
 from networkx import PlanarEmbedding
 from rustworkx import PyDiGraph
 
+import api_data_store as ds
 from api_common import PAYLOAD_WEIGHT_KEY
+from api_dimacs_stp import solve_dimacs_as_highs_mcf_mip
 from api_exploration_data import get_exploration_data
 from api_rx_pydigraph import subgraph_stable
 
 HYPERNODE_CONTENTS_KEY = "collapsed_nodes"
 MAX_ENCLOSED_STEINER_INTERFACES = 6
 
+DW_SOLVE_PAR_THRESHOLD = 16  # This will never trigger when the scipstp setup is done
+DW_MAX_TREE_TERMINALS = 6
+DW_MAX_TREE_COMPLEXITY = 8_000_000_000
+
+# NOTE: The time sink in solving as trees is the partition block filtering.
+# When there is an unreachable root the partitions need to be enumerated and
+# this follows the Bell number pattern per root.
+SCIPSTP_PAR_ROOTS_THRESHOLD = 8  # This will have 2^{n}-1 partition blocks to solve
+SCIPSTP_MAX_PAR_ROOTS = 13  # This will have 2^{n}-1 partition blocks to solve
+SCIPSTP_MAX_ROOTS = 6  # Beyond this the problem will be sent to MIP
+SCIPSTP_NPERR_THRESHOLD = 15  # Beyond this the problem will be sent to MIP
 
 r"""
 # Steiner Forest Reduction Grammar (v1.0)
@@ -121,6 +144,366 @@ active demand sets as denoted by 𝓐𐞪 excluding any super root.
 > Ⓡ ≔ ⓥ ∈ { 𝓡 ∖ 𝕊 }
 """
 
+# MARK: Parallel Worker Functions
+
+
+def _worker_solve_single_block_dw(block_key, terminals_tuple, adj_map, node_weight_map, node_index):
+    import nwst_dw
+
+    terminals_list = list(terminals_tuple)
+    cost, _, solution_nodes = nwst_dw.solve_nwst(adj_map, node_weight_map, terminals_list, terminals_list[0])
+    if cost == 18446744073709551615:
+        raise RuntimeError(f"Unsolvable Steiner tree for block {block_key}!")
+
+    mask = 0
+    for u in solution_nodes:
+        mask |= 1 << node_index[u]
+
+    return block_key, mask
+
+
+def _solve_single_block_scipstp_seq(
+    instance_id: str,
+    block_key: tuple,
+    terminals_list: list[int],
+    adj_map: dict[int, list[int]],
+    node_weight_map: dict[int, int],
+    node_index: dict[int, int],
+    dimacs_id: dict[int, int],
+    inv_dimacs_id: dict[int, int],
+    enable_super_root_index: int = 0,
+    do_debug: bool = False,
+    use_mip: bool = False,
+):
+    """Sequential version of the SCIPSTP block solver."""
+    logger.trace(f"  processing block {block_key}...", flush=True)
+
+    with tempfile.NamedTemporaryFile(suffix=".stp", delete=False) as tmp:
+        filename = tmp.name
+        tmp.close()  # IMPORTANT: unlock file for external process
+    sol_filename = filename + "log"
+
+    try:
+        if do_debug:
+            logger.trace(f"      Creating DIMACS file: {filename} for block {block_key}...")
+
+        _create_DIMACS_NWST_problem_file(
+            filename,
+            adj_map,
+            node_weight_map,
+            terminals_list,
+            node_index,
+            dimacs_id,
+            enable_super_root_index=enable_super_root_index,
+            do_debug=do_debug,
+        )
+
+        if do_debug:
+            logger.trace(f"      Solving DIMACS_NWST problem file: {filename} for block {block_key}...")
+
+        _solve_DIMACS_NWST_with_scipstp(filename, do_debug)
+
+        if do_debug:
+            logger.trace(f"      Reading DIMACS_NWST solution file: {filename} for block {block_key}...")
+
+        scip_solution = _read_DIMACS_NWST_solution_file(filename, inv_dimacs_id)
+        scip_nodes = [inv_dimacs_id[u] for u in scip_solution]
+        scip_cost = sum(node_weight_map[u] for u in scip_nodes)
+
+        if use_mip:
+            mip_cost, mip_nodes = solve_dimacs_as_highs_mcf_mip(
+                filename, scip_cost=scip_cost, scip_solution=scip_solution
+            )
+            mip_nodes = {inv_dimacs_id[u] for u in mip_nodes}
+
+            # MIP cost of -1 indicates scip nodes are invalid
+            if mip_cost == -1:
+                logger.error(f"  Reachability error: scip nodes are invalid for block {block_key}...")
+                outfile = f"scipstp_errors/{block_key}_mip_cost_{mip_cost}_scip_cost_{scip_cost}.stp"
+                shutil.copyfile(filename, outfile)
+                raise RuntimeError(f"scipstp unsolvable Steiner tree for block {block_key}!")
+
+            # Otherwise scip was optimal!
+            elif mip_cost == 0:
+                logger.success(f"  MIP solution matches scipstp solution for block {block_key}...")
+
+            # MIP cost greater than 0 indicates scip nodes are suboptimal
+            else:
+                logger.error(
+                    f"  Suboptimal result error: MIP cost {mip_cost} lower than scip cost {scip_cost} for block {block_key}..."
+                )
+                outfile = f"scipstp_errors/{block_key}_mip_cost_{mip_cost}_scip_cost_{scip_cost}.stp"
+                shutil.copyfile(filename, outfile)
+                raise RuntimeError(f"scipstp suboptimal Steiner tree for block {block_key}!")
+
+    except Exception as err:
+        logger.error(f"  Error processing {instance_id} block {block_key}... saving file for debugging...")
+        outfile = f"scipstp_errors/{instance_id}_{block_key}_mip_cost_99999_scip_cost_{scip_cost}.stp"
+        shutil.copyfile(filename, outfile)
+        print(err, file=sys.stderr)
+        raise
+
+    finally:
+        for p in (filename, sol_filename):
+            try:
+                Path(p).unlink()
+            except FileNotFoundError:
+                pass
+
+    return scip_cost, scip_nodes
+
+
+def _worker_wrapper(args):
+    (
+        instance_id,
+        task,
+        component_data,
+        node_weight_map,
+    ) = args
+
+    cc_i, block_key, terminals = task
+
+    return _worker_solve_single_block_scipstp(
+        instance_id,
+        block_key,
+        terminals,
+        component_data[cc_i]["adj_map"],
+        node_weight_map,
+        component_data[cc_i]["node_index"],
+        component_data[cc_i]["dimacs_id"],
+        component_data[cc_i]["inv_dimacs_id"],
+        enable_super_root_index=0,
+        do_debug=False,
+        use_mip=False,
+    )
+
+
+def _worker_solve_single_block_scipstp(
+    instance_id: str,
+    block_key: tuple,
+    terminals_list: list[int],
+    adj_map: dict[int, list[int]],
+    node_weight_map: dict[int, int],
+    node_index: dict[int, int],
+    dimacs_id: dict[int, int],
+    inv_dimacs_id: dict[int, int],
+    enable_super_root_index: int = 0,
+    do_debug: bool = False,
+    use_mip: bool = False,
+):
+    """Executes scipstp.exe to solve a single Steiner block."""
+
+    with tempfile.NamedTemporaryFile(suffix=".stp", delete=False) as tmp:
+        filename = tmp.name
+    sol_filename = filename + "log"
+
+    try:
+        if do_debug:
+            print(f"      Creating DIMACS_NWST problem file: {filename} for block {block_key}...", flush=True)
+
+        _create_DIMACS_NWST_problem_file(
+            filename,
+            adj_map,
+            node_weight_map,
+            terminals_list,
+            node_index,
+            dimacs_id,
+            enable_super_root_index=enable_super_root_index,
+            do_debug=do_debug,
+        )
+
+        if do_debug:
+            print(f"      Solving DIMACS_NWST problem file: {filename} for block {block_key}...", flush=True)
+
+        _solve_DIMACS_NWST_with_scipstp(filename)
+
+        if do_debug:
+            print(f"      Reading DIMACS_NWST solution file: {filename} for block {block_key}...", flush=True)
+
+        scip_solution = _read_DIMACS_NWST_solution_file(filename, inv_dimacs_id)
+        scip_nodes = {inv_dimacs_id[u] for u in scip_solution}
+        scip_cost = sum(node_weight_map[u] for u in scip_nodes)
+
+        if use_mip:
+            # NOTE: Don't oversubscribe cores...
+            mip_cost, mip_nodes = solve_dimacs_as_highs_mcf_mip(
+                filename, parallel="off", scip_cost=scip_cost, scip_nodes=[dimacs_id[u] for u in scip_nodes]
+            )
+            mip_nodes = {inv_dimacs_id[u] for u in mip_nodes}
+
+            # MIP cost of -1 indicates scip nodes are invalid
+            if mip_cost == -1:
+                logger.error(f"  Reachability error: scip nodes are invalid for block {block_key}...")
+                outfile = f"scipstp_errors/{block_key}_mip_cost_{mip_cost}_scip_cost_{scip_cost}.stp"
+                shutil.copyfile(filename, outfile)
+                raise RuntimeError(f"scipstp unsolvable Steiner tree for block {block_key}!")
+
+            # Otherwise scip was optimal!
+            elif mip_cost == 0:
+                logger.success(f"  MIP solution matches scipstp solution for block {block_key}...")
+
+            # MIP cost greater than 0 indicates scip nodes are suboptimal
+            else:
+                logger.error(
+                    f"  Suboptimal result error: MIP cost {mip_cost} lower than scip cost {scip_cost} for block {block_key}..."
+                )
+                outfile = f"scipstp_errors/{block_key}_mip_cost_{mip_cost}_scip_cost_{scip_cost}.stp"
+                shutil.copyfile(filename, outfile)
+                raise RuntimeError(f"scipstp suboptimal Steiner tree for block {block_key}!")
+
+    except Exception:
+        logger.error(f"  Error processing {instance_id} block {block_key}, saving stp file for debugging...")
+        outfile = f"scipstp_errors/{instance_id}_{block_key}_mip_cost_99999_scip_cost_{scip_cost}.stp"
+        shutil.copyfile(filename, outfile)
+        raise
+
+    finally:
+        for p in (filename, sol_filename):
+            try:
+                Path(p).unlink()
+            except FileNotFoundError:
+                pass
+
+    # Convert to mask
+    mask = 0
+    for u in scip_nodes:
+        mask |= 1 << node_index[u]
+
+    return block_key, scip_cost, mask
+
+
+def _create_DIMACS_NWST_problem_file(
+    filename: str,
+    adj_map: dict[int, list[int]],
+    node_weight_map: dict[int, int],
+    terminals_list: list[int],
+    nodes_map: dict[int, int],
+    dimacs_id: dict[int, int],
+    enable_super_root_index: int = 0,
+    do_debug: bool = False,
+):
+    path = Path(filename)
+
+    edges = []
+    # This naturally disables super-root since super-root is the last index
+    # and only has incoming edges, thus u is always > v
+    for u, nbrs in adj_map.items():
+        for v in nbrs:
+            if u < v:
+                edges.append((u, v))
+
+    if enable_super_root_index > 0:
+        logger.warning(f"  Enabling super-root node {enable_super_root_index}...")
+        for nbr in adj_map[enable_super_root_index]:
+            edges.append((nbr, enable_super_root_index))
+
+    # There is a bug in scipstp requiring the edges to be sorted in some cases...
+    edges = sorted(edges)
+
+    with path.open("w", encoding="utf-8") as f:
+        f.write("33D32945 STP File, STP Format Version 1.0\n")
+        f.write("SECTION Comment\n")
+        f.write(f'Name    "{filename}"\n')
+        f.write('Creator "Thell Fowler"\n')
+        f.write('Remark  "NWSTP - partition block for composite"\n')
+        f.write("END\n")
+
+        f.write("SECTION Graph\n")
+        f.write(f"Nodes {len(nodes_map)}\n")
+        f.write(f"Edges {len(edges)}\n")
+        for u, v in edges:
+            f.write(f"E {dimacs_id[u]} {dimacs_id[v]} 0\n")
+        f.write("END\n")
+
+        f.write("SECTION Terminals\n")
+        f.write(f"Terminals {len(terminals_list)}\n")
+        for t in terminals_list:
+            f.write(f"T {dimacs_id[t]}\n")
+        f.write("END\n")
+
+        f.write("SECTION NodeWeights\n")
+        for u in nodes_map:
+            f.write(f"NW {node_weight_map[u]}\n")
+        f.write("END\n")
+
+        f.write("EOF\n")
+
+
+def _solve_DIMACS_NWST_with_scipstp(filename: str, do_debug: bool = False):
+    """
+    Calls scipstp.exe on the given DIMACS file.
+    Produces <filename>.sol as output.
+    """
+    path = Path(filename)
+    sol_path = path.with_suffix(path.suffix + "log")
+
+    # Remove stale .sol if present
+    if sol_path.exists():
+        sol_path.unlink()
+
+    if not ds.is_file("scipstp.set"):
+        logger.error("SCIPSTP settings file not found")
+        raise FileNotFoundError
+    settings_file = ds.path().joinpath("scipstp.set")
+
+    result = subprocess.run(
+        ["scipstp.exe", "-f", path.name, "-s", str(settings_file.resolve())],
+        cwd=str(path.parent),
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"SCIPSTP failed on {filename}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+    if not sol_path.exists():
+        raise RuntimeError(f"SCIPSTP did not produce a solution file: {sol_path}")
+
+
+def _read_DIMACS_NWST_solution_file(
+    filename: str,
+    inv_dimacs_id: dict[int, int],
+):
+    # Since the Primal is not really the objective value and the objective value is
+    # not always available, we will have to recalculate the solution cost after
+    # extracting the solution.
+    solution_nodes: set[int] = set()
+
+    sol_path = Path(filename).with_suffix(Path(filename).suffix + "log")
+    with sol_path.open("r", encoding="utf-8") as f:
+        mode = None
+
+        for line in f:
+            parts = line.split()
+            if not parts:
+                continue
+
+            if parts[0] == "SECTION":
+                mode = parts[1] if len(parts) > 1 else None
+                continue
+
+            if mode == "Finalsolution":
+                if parts[0] == "V":
+                    dimacs_idx = int(parts[1])
+                    solution_nodes.add(dimacs_idx)
+                continue
+
+            # I don't believe this is really needed but since we don't have a spec
+            # for the .sol file, we'll just assume it is.
+            if mode == "Solutions":
+                if parts[0] in ("V", "S"):
+                    dimacs_idx = int(parts[1])
+                    solution_nodes.add(dimacs_idx)
+                continue
+
+    if not solution_nodes:
+        raise RuntimeError("No solution nodes found (Finalsolution/Solutions missing)")
+
+    return solution_nodes
+
 
 @dataclass
 class SFGraphReductionEngine:
@@ -135,6 +518,7 @@ class SFGraphReductionEngine:
     With that in mind, only certified inclusion/exclusion/redundancy is a consideration.
     """
 
+    instance_id: str
     graph: PyDiGraph
     node_to_key: bidict[int, int]
     super_root_index: int | None = None
@@ -144,18 +528,24 @@ class SFGraphReductionEngine:
     terminal_sets: dict[int, set[int]] = field(default_factory=dict)
 
     _seen_nonreducible_outer_windows: set[tuple[int, ...]] = field(default_factory=set)
+    _seen_nonreducible_steiner_face_clusters: set[tuple[int, ...]] = field(default_factory=set)
+
+    # Global maximum distance between a root and its' furthest terminal
+    _maximum_rt_distance: float = float("inf")
 
     do_debug: bool = False
     call_counts: Counter = field(default_factory=Counter)
+    solved_trees = 0
 
     # MARK: Common Helpers
 
     # Logging/Debugging helpers
-    def dump_graph(self, msg: str, graph: PyDiGraph | None = None):
-        if not self.do_debug:
+    def dump_graph(self, msg: str, graph: PyDiGraph | None = None, override_debug: bool = False):
+        if not self.do_debug and not override_debug:
             return
         print(f"=== BEGIN: {msg} ===")
         G = graph if graph is not None else self.graph
+        print(f"    num_nodes = {G.num_nodes()}, num_edges = {G.num_edges()}\n")
         terminals = {
             self.get_node_key(t): self.get_node_key(r) for r, ts in self.terminal_sets.items() for t in ts
         }
@@ -176,10 +566,129 @@ class SFGraphReductionEngine:
 
         sets = self.terminal_sets
         logger.debug(
-            f"  Nodes: {self.graph.num_nodes():4}, Edges: {self.graph.num_edges():4}, Roots: {len(sets):4}, Pairs: {sum(len(ts) for ts in sets.values()):4}"
+            f"  Nodes: {self.graph.num_nodes():4}, Edges: {self.graph.num_edges():4}, Roots: {len(sets):4}, Terminals: {sum(len(ts) for ts in sets.values()):4}"
         )
         sets_wp = {self.get_node_key(r): {self.get_node_key(t) for t in ts} for r, ts in sets.items()}
         logger.debug(f"  Demand sets: {sets_wp}")
+
+        # # NOTE: Debugging - capture removal reduction function
+        # # Translate from waypoint_key to graph node index out of band to use here.
+        # nodes_set = set(self.graph.node_indices())
+        # if any(i not in nodes_set for i in [393, 396, 421]):
+        #     logger.error(f"Missing node: {[i for i in [393, 396, 421] if i not in nodes_set]}")
+
+    def dump_final_report(
+        self,
+        reduced_root_pairs_wp: dict[int, int],
+        fixed_nodes_wp: set[int],
+    ):
+        print("=== Post final reduction ===")
+        logger.debug(f"  {self.graph.num_nodes()} nodes, {self.graph.num_edges()} edges")
+        logger.debug(f"  {len(reduced_root_pairs_wp)} pairs")
+        logger.trace(f"  {reduced_root_pairs_wp=}")
+        logger.trace(f"  {fixed_nodes_wp=}")
+        logger.trace(f"  num components: {rx.number_strongly_connected_components(self.graph)}")
+
+        node_weights = [n[PAYLOAD_WEIGHT_KEY] for n in self.graph.nodes()]
+        nodes_by_weight = Counter(node_weights)
+        nodes_by_weight = sorted(nodes_by_weight.items())
+        logger.debug(f"  nodes by weight: {nodes_by_weight}")
+
+        node_degrees = [self.graph.out_degree(n) for n in self.graph.node_indices()]
+        nodes_by_degree = Counter(node_degrees)
+        nodes_by_degree = sorted(nodes_by_degree.items())
+        logger.debug(f"  nodes by degree: {nodes_by_degree}")
+
+        # Breakdown by degree into fixed, basetown, and steiner
+        towns = get_exploration_data().towns
+        for d, c in nodes_by_degree:
+            sub_counter = Counter()
+            for i in self.graph.node_indices():
+                is_town = self.get_node_key(i) in towns
+                if self.graph.out_degree(i) == d:
+                    if i in self.fixed_nodes:
+                        sub_counter["fixed"] += 1
+                    if is_town:
+                        sub_counter["basetown"] += 1
+                    if i not in self.fixed_nodes and not is_town:
+                        sub_counter["steiner"] += 1
+            logger.trace(f"    {d}: {sub_counter}")
+
+        logger.trace("=== PATHS ===")
+        reduced_root_pairs: dict[int, int] = {}
+        for r, comp in self.terminal_sets.items():
+            for t in comp:
+                reduced_root_pairs[t] = r
+        for u, v in reduced_root_pairs.items():
+            has_u = self.graph.has_node(u)
+            has_v = self.graph.has_node(v)
+            has_path = rx.has_path(self.graph, u, v) if has_u and has_v else False
+            logger.trace(
+                f"  {self.get_node_key(u)} ({has_u}) -> {self.get_node_key(v)} ({has_v}) => {has_path}"
+            )
+
+        logger.debug("\n=== REDUCTIONS ===")
+        assert self.call_counts
+        logger.debug(f"Total reduction trigger count: {sum(self.call_counts.values())}")
+        logger.debug("Trigger counts per reduction step:")
+        for msg, count in sorted(self.call_counts.items()):
+            logger.debug(f"  {msg}: {count}")
+
+        logger.debug("=== STEINERS ===")
+        nodes = set(self.graph.node_indices())
+        non_steiner_nodes = set(self.non_steiner_nodes())
+        steiner_nodes = nodes - non_steiner_nodes
+        logger.debug(f"  {len(steiner_nodes)} steiner nodes")
+
+        critical_steiner_nodes = self.critical_steiner_nodes()
+        if critical_steiner_nodes:
+            logger.warning(f"  {len(critical_steiner_nodes)} critical steiner nodes")
+            logger.warning(f"  {critical_steiner_nodes=}")
+
+    def dump_reduction_results(
+        self,
+        msg: str,
+        num_edges_start: int,
+        num_nodes_start: int,
+        num_terminal_roots_start: int,
+        num_terminals_start: int,
+    ):
+        # Reduction percentages
+        num_edges_end = self.graph.num_edges()
+        num_nodes_end = self.graph.num_nodes()
+        num_terminal_roots_end = len(self.terminal_sets)
+        num_terminals_end = sum(len(ts) for ts in self.terminal_sets.values()) + num_terminal_roots_end
+        per_edges = (num_edges_end - num_edges_start) / num_edges_start
+        per_nodes = (num_nodes_end - num_nodes_start) / num_nodes_start
+        per_terminals = (num_terminals_end - num_terminals_start) / num_terminals_start
+        per_roots = (num_terminal_roots_end - num_terminal_roots_start) / num_terminal_roots_start
+        num_super_terminals = (
+            0 if self.super_root_index is None else len(self.terminal_sets.get(self.super_root_index, []))
+        )
+        print(
+            f"  {msg}: Reduction Percentages: Edges ({num_edges_start} -> {num_edges_end}): {per_edges * 100:.2f}%, Nodes ({num_nodes_start} -> {num_nodes_end}): {per_nodes * 100:.2f}%, Terminals ({num_terminals_start} -> {num_terminals_end}): {per_terminals * 100:.2f}%, Roots ({num_terminal_roots_start} -> {num_terminal_roots_end}): {per_roots * 100:.2f}% ({num_super_terminals} super terminals) [Trees solved: {self.solved_trees}]"
+        )
+
+    def critical_steiner_nodes(self):
+        """Identifies all Steiner nodes that are critical to the graph."""
+        nodes = set(self.graph.node_indices())
+        non_steiner_nodes = set(self.non_steiner_nodes())
+        steiner_nodes = nodes - non_steiner_nodes
+        critical_nodes = set()
+        for steiner_node in steiner_nodes:
+            # Demand separation test
+            tmp = self.graph.copy()
+            tmp.remove_node(steiner_node)
+            violates_demand = any(
+                # Traverse from terminal to root to ensure super terminal reachability
+                not rx.has_path(tmp, t, r)
+                for r, terminals in self.terminal_sets.items()
+                for t in terminals
+            )
+            if violates_demand:
+                critical_nodes.add(steiner_node)
+        critical_nodes = {self.get_node_key(n) for n in critical_nodes}
+        return critical_nodes
 
     def get_node_key(self, node: int) -> int:
         """Logging helper."""
@@ -224,9 +733,10 @@ class SFGraphReductionEngine:
 
     def set_edge_weights(self):
         """Sets the weights of all edges to the weight of the destination node."""
+        non_steiner_nodes = self.non_steiner_nodes()
         for u, v in self.graph.edge_list():
             weight = self.graph[v][PAYLOAD_WEIGHT_KEY]
-            if v not in self.potential_roots and v in self.fixed_nodes:
+            if v in non_steiner_nodes - self.potential_roots:
                 weight = 0
             self.graph.update_edge(u, v, {PAYLOAD_WEIGHT_KEY: weight})
 
@@ -242,6 +752,53 @@ class SFGraphReductionEngine:
                     all_ts_reachable = False
         if not all_ts_reachable:
             raise RuntimeError("Unreachable pairs")
+        logger.trace("    ...successful")
+
+    def choose_minimax_root(self, candidate_roots: set[int], terminals: set[int]) -> int:
+        """
+        Given a set of candidate roots and a merged terminal set,
+        return the root r that minimizes max_t d(r, t).
+
+        This is the minimax root selection used when trees collide.
+        """
+        best_root = next(iter(candidate_roots))
+        best_value = float("inf")
+
+        for r in candidate_roots:
+            # Compute distances from r to all terminals
+            path_lengths = [self.shortest_path_length(r, t) for t in terminals]
+
+            # Compute the maximum distance to terminals
+            max_rt = max(path_lengths)
+            if max_rt < best_value:
+                best_value = max_rt
+                best_root = r
+
+        return best_root
+
+    def shortest_path_length(self, source_node, target_node) -> float:
+        """Returns the length of the shortest path from source_node to target_node."""
+        path_lengths = rx.dijkstra_shortest_path_lengths(
+            self.graph,
+            node=source_node,
+            edge_cost_fn=lambda e: e[PAYLOAD_WEIGHT_KEY],  # Maps edge head weight
+            goal=target_node,
+        )
+        length = path_lengths[target_node] if target_node in path_lengths else float("inf")
+        return length
+
+    def get_maximum_rt_distance(self) -> float:
+        """Returns the maximum root to terminal distance."""
+        max_rt_distance = 1
+        for r, terminals in self.terminal_sets.items():
+            for t in terminals:
+                if r == self.super_root_index:
+                    # Ensure path goes from terminal to root to handle super-root reachability
+                    max_rt_distance = max(max_rt_distance, self.shortest_path_length(t, r))
+                else:
+                    max_rt_distance = max(max_rt_distance, self.shortest_path_length(r, t))
+
+        return max_rt_distance
 
     # MARK: Primitive Terminal Set Actions
 
@@ -370,6 +927,8 @@ class SFGraphReductionEngine:
         roots.discard(self.super_root_index)
         tmp_fixed = roots | {t for ts in self.terminal_sets.values() for t in ts}
 
+        self.set_edge_weights()
+
         # This acts as a union-find data structure for the terminal set clusters.
         sub = subgraph_stable(graph, tmp_fixed)
         for r, ts in self.terminal_sets.items():
@@ -394,15 +953,41 @@ class SFGraphReductionEngine:
 
         for comp in components:
             comp_roots = set(comp) & roots
+
+            # Collect roots contained in component and select the one that minimizes the maximum d(root, terminal)
+            # of the graph.
             rep = next(iter(comp_roots), None)
             if rep is not None:
-                terminal_sets[rep] = set(comp) - {rep}
+                comp = set(comp)
+                if len(comp_roots) > 1 and len(comp - comp_roots) > 0:
+                    merged_terminals = comp - comp_roots
+                    rep = self.choose_minimax_root(comp_roots, merged_terminals)
+                terminal_sets[rep] = comp - {rep}
             elif super_root_index is not None:
                 terminal_sets[super_root_index].update(comp)
             else:
                 raise RuntimeError(
                     f"Component has no roots and super root is missing: {[self.get_node_key(n) for n in comp]}"
                 )
+
+        if self.super_root_index is not None and terminal_sets[self.super_root_index]:
+            # Remove any terminal in the set that has a direct edge to super root
+            # which happens when other reductions cascade into the super root.
+            orig_set = set(terminal_sets[self.super_root_index])
+            terminal_sets[self.super_root_index] = {
+                t
+                for t in terminal_sets[self.super_root_index]
+                if not self.graph.has_edge(t, self.super_root_index)
+            }
+            for t in orig_set - terminal_sets[self.super_root_index]:
+                # We need to ensure that any hyper node contents are added to fixed nodes
+                # then remove this node from the terminal set but leave it available to any
+                # other routing.
+                self.fixed_nodes.update(self.graph[t][HYPERNODE_CONTENTS_KEY])
+                self.fixed_nodes.add(t)
+                self.graph[t][HYPERNODE_CONTENTS_KEY].clear()
+                terminal_sets[self.super_root_index].discard(t)
+                logger.trace(f"Removed direct connected super terminal: {self.get_node_key(t)}")
 
         if self.super_root_index is not None and not terminal_sets[self.super_root_index]:
             terminal_sets.pop(self.super_root_index)
@@ -418,6 +1003,106 @@ class SFGraphReductionEngine:
             logger.info(f"  merged {merges} roots")
             if self.do_debug:
                 self.dump_state("reduce_demand_roots", merges)
+                self.validate_reachability()
+
+        return merges
+
+    def reduce_roots_via_articulation_points(self) -> int:
+        """Merge roots whose connectivity is separated by cut vertices in the full graph."""
+        logger.trace("reduce_via_articulation_points...")
+
+        if self.graph.num_nodes() <= 2:
+            return 0
+
+        # --- Begin Undirected Graph ---
+
+        # We only need subgraph for articulation point identification but we need to compress
+        # the sparse indices before conversion to undirected.
+        self.set_edge_weights()
+        sub, node_map = self.graph.subgraph_with_nodemap(
+            list(set(self.graph.node_indices()) - {self.super_root_index})
+        )
+        sub_undir = sub.to_undirected()
+
+        articulations = rx.articulation_points(sub_undir)
+        if not articulations:
+            return 0
+
+        # Convert back to original indices
+        cuts = [node_map[a] for a in articulations]
+
+        # --- End Undirected Graph ---
+
+        merges = 0
+
+        g_prime = self.graph.copy()
+        active_roots = set(self.terminal_sets.keys())
+
+        if self.super_root_index is not None:
+            g_prime.remove_node(self.super_root_index)
+            active_roots.discard(self.super_root_index)
+
+        for cut in cuts:
+            if cut == self.super_root_index:
+                continue
+
+            g_tmp = g_prime.copy()
+            g_tmp.remove_node(cut)
+            components = list(rx.strongly_connected_components(g_tmp))
+
+            # Map each component to the set of active roots that have nodes in it
+            comp_to_roots: dict[int, set[int]] = {}
+            for comp_id, comp_nodes in enumerate(components):
+                comp_set = set(comp_nodes)
+                for r in active_roots:
+                    # A root "touches" this component if root or any terminal is here
+                    touches = comp_set & (self.terminal_sets[r] | {r})
+                    if touches:
+                        comp_to_roots.setdefault(comp_id, set()).add(r)
+
+            # Find groups of roots that are split across multiple components
+            root_to_comps: dict[int, set[int]] = {}
+            for comp_id, roots_in_comp in comp_to_roots.items():
+                for r in roots_in_comp:
+                    root_to_comps.setdefault(r, set()).add(comp_id)
+
+            # These trees _must_ collide; meaning we can merge them.
+            multi_comp_roots = {r for r, comps in root_to_comps.items() if len(comps) > 1}
+            if len(multi_comp_roots) < 2:
+                continue
+
+            # Merge them
+            to_merge = list(multi_comp_roots)
+
+            merged_ts = set()
+            for r in to_merge:
+                merged_ts.update(self.terminal_sets[r])
+
+            to_merge = set(to_merge)
+            if to_merge:
+                rep = self.choose_minimax_root(to_merge, merged_ts)
+
+                # The merged roots become terminals in the new cluster.
+                self.terminal_sets[rep] = merged_ts
+                self.terminal_sets[rep].update(to_merge)
+                self.terminal_sets[rep].discard(rep)
+
+                # Clear out the old roots
+                for r in to_merge - {rep}:
+                    self.terminal_sets.pop(r, None)
+                    active_roots.discard(r)
+
+                if rep in self.terminal_sets[rep]:
+                    logger.error(f"Duplicate rep {rep} root: {self.get_node_key(rep)}")
+                    if rep == 476:
+                        print("DEBUG")
+
+                merges += len(to_merge) - 1
+
+        if merges > 0:
+            logger.info(f"  reduced {merges} bottleneck merged roots")
+            if self.do_debug:
+                self.dump_state("reduce_roots_via_articulation_points", merges)
                 self.validate_reachability()
 
         return merges
@@ -486,20 +1171,19 @@ class SFGraphReductionEngine:
         non_steiners = self.non_steiner_nodes()
         non_steiners.discard(self.super_root_index)
 
-        removals = 0
-
-        # NOTE: The direct usage of 'out_degree' instead of 'reduction_degree' is intentional for performance.
-        #       No node of out_degree == 1 can be a non-leaf node.
-        while removables := {i for i in self.graph.node_indices() if self.graph.out_degree(i) == 1}:
-            removables.difference_update(non_steiners)
-            if not removables:
+        removables = []
+        while deg1_nodes := {i for i in self.graph.node_indices() if self.reduction_degree(i) == 1}:
+            deg1_nodes.difference_update(non_steiners)
+            if not deg1_nodes:
                 break
-            self.graph.remove_nodes_from(removables)
-            removals += len(removables)
+            self.graph.remove_nodes_from(deg1_nodes)
+            removables.extend(deg1_nodes)
 
+        removals = len(removables)
         if removals > 0:
             logger.info(f"  removed {removals} degree-1 steiner nodes")
             if self.do_debug:
+                logger.trace(f"    {sorted(self.get_node_key(i) for i in removables)}")
                 self.dump_state("reduce_degree1_steiner_nodes", removals)
                 self.validate_reachability()
 
@@ -577,8 +1261,9 @@ class SFGraphReductionEngine:
         roots.discard(self.super_root_index)
         # Only active roots are considered
         roots = roots - {r for r, ts in terminal_sets.items() if not ts}
+        all_terminals = set(terminal_sets.keys()) | roots
 
-        removals = 0
+        removables = []
 
         for r_k in list(roots):
             # NOTE: If r_k is the root of a previously consumed terminal set then it is now a terminal.
@@ -590,9 +1275,12 @@ class SFGraphReductionEngine:
             if self.reduction_degree(r_k) != 1:
                 continue
             neighbor = next(iter(self.reduction_neighbors(r_k)))
+            if neighbor in all_terminals:
+                # Don't consume adjacent roots or terminals, they are handled during adjacent root reduction
+                continue
 
             self.consume(neighbor, r_k)
-            removals += 1
+            removables.append(neighbor)
 
             r_j = next((r for r, ts in terminal_sets.items() if neighbor in ts), None)
             if r_j is not None:
@@ -601,11 +1289,13 @@ class SFGraphReductionEngine:
                 if r_k != r_j and r_j != self.super_root_index:
                     self.consume_terminal_set(terminal_sets, r_j, r_k)
 
+        removals = len(removables)
         if removals > 0:
             # Drop empty sets
             self.terminal_sets = {r: ts for r, ts in terminal_sets.items() if ts}
             logger.info(f"  removed {removals} degree-1 root Steiner nodes")
             if self.do_debug:
+                logger.trace(f"    {[self.get_node_key(i) for i in removables]}")
                 self.dump_state("reduce_degree1_roots", removals)
                 self.validate_reachability()
 
@@ -625,7 +1315,7 @@ class SFGraphReductionEngine:
         logger.trace("merge_adjacent_degree2_steiner_chains...")
 
         non_steiners = self.non_steiner_nodes()
-        removals = 0
+        removables = []
 
         made_progress = True
         while made_progress:
@@ -646,13 +1336,16 @@ class SFGraphReductionEngine:
                 )
                 if neighbor:
                     self.absorb(neighbor, node)
+                    # logger.trace(f"    {self.get_node_key(neighbor)} ⇴ {self.get_node_key(node)}")
+                    removables.append(neighbor)
                     made_progress = True
-                    removals += 1
                     break
 
+        removals = len(removables)
         if removals > 0:
-            logger.info(f"  removed {removals} degree-2 Steiner chain nodes")
+            logger.info(f"  absorbed {removals} degree-2 Steiner chain nodes")
             if self.do_debug:
+                logger.trace(f"    {sorted(self.get_node_key(i) for i in removables)}")
                 self.dump_state("merge_adjacent_degree2_steiner_chains", removals)
                 self.validate_reachability()
 
@@ -667,22 +1360,21 @@ class SFGraphReductionEngine:
         """
         logger.trace("reduce_degree2_steiner_dominance...")
 
-        self.set_edge_weights()
-
         graph = self.graph
         non_steiner_nodes = self.non_steiner_nodes()
-        removals = 0
+        removables = []
 
         made_progress = True
         while made_progress:
             made_progress = False
 
+            # Each iteration recomputes the edge weights and steiner nodes...
+            self.set_edge_weights()
             for node in set(graph.node_indices()) - non_steiner_nodes:
                 if graph.out_degree(node) != 2:
                     continue
-
-                succ = list(graph.successor_indices(node))
-                u, v = succ
+                neighbors = list(self.reduction_neighbors(node))
+                u, v = neighbors
                 if u == v:
                     continue
 
@@ -696,14 +1388,17 @@ class SFGraphReductionEngine:
                     continue
 
                 self.remove_node(node)
+
+                removables.append(node)
                 made_progress = True
 
-                removals += 1
                 break
 
+        removals = len(removables)
         if removals > 0:
             logger.info(f"  removed {removals} degree-2 dominated nodes")
             if self.do_debug:
+                logger.trace(f"    {[self.get_node_key(i) for i in removables]}")
                 self.dump_state("reduce_degree2_steiner_dominance", removals)
                 self.validate_reachability()
 
@@ -879,6 +1574,9 @@ class SFGraphReductionEngine:
                         self.graph.remove_edge(u, v)
                         self.graph.remove_edge(v, u)
                         edge_removals += 1
+                        logger.trace(
+                            f"  removed bridge edge: no fixed nodes: ({self.get_node_key(u)}, {self.get_node_key(v)})"
+                        )
                         break
 
                     scc_roots = set_scc & set(self.terminal_sets.keys())
@@ -889,6 +1587,9 @@ class SFGraphReductionEngine:
                             self.graph.remove_edge(u, v)
                             self.graph.remove_edge(v, u)
                             edge_removals += 1
+                            logger.trace(
+                                f"  removed bridge edge: single root: ({self.get_node_key(u)}, {self.get_node_key(v)})"
+                            )
                             break
                 continue
 
@@ -896,8 +1597,10 @@ class SFGraphReductionEngine:
             # Consume Steiner into the other side
             if steiner_u:
                 self.consume(u, v)
+                logger.trace(f"  consumed Steiner bridge node: {self.get_node_key(u)}")
             else:
                 self.consume(v, u)
+                logger.trace(f"  consumed Steiner bridge node: {self.get_node_key(v)}")
             removals += 1
 
         if removals > 0:
@@ -1256,6 +1959,304 @@ class SFGraphReductionEngine:
 
         return consumptions
 
+    def reduce_degree2_outer_face_steiners(self) -> int:
+        logger.trace("reduce_degree2_outer_face_steiners...")
+        # 15 and 8 worked well but took a bit too long (for Python that is expected)
+        MAX_OUTER_WINDOW_SIZE = 10
+        MAX_INTERFACES = 7
+        MAX_FULLY_INTERNAL_ROOTS = 3
+
+        def get_ordered_outer_adjacent_faces(
+            embedding: nx.PlanarEmbedding, outer_walk: list[int], outer_face_set: set[int]
+        ) -> list[list[int]]:
+            last_seen = ()
+            ordered = []
+            n = len(outer_walk)
+
+            outer_face_key = tuple(sorted(outer_face_set))
+
+            for i in range(n):
+                u = outer_walk[i]
+                v = outer_walk[(i + 1) % n]
+
+                # traverse the face on the OTHER side of the outer edge
+                face = embedding.traverse_face(v, u)
+                face_key = tuple(sorted(face))
+                if face_key != last_seen and face_key != outer_face_key:
+                    ordered.append(face)
+                    last_seen = face_key
+
+            return ordered
+
+        non_steiner = self.non_steiner_nodes()
+
+        # --- START: Rustworkx <-> networkx (prototyping-only) ---
+        nx_to_rx = {i: j for i, j in enumerate(self.graph.node_indices())}
+        rx_to_nx = {v: k for k, v in nx_to_rx.items()}
+
+        Gx = nx.Graph()
+        for u, v in self.graph.edge_list():
+            if not Gx.has_edge(rx_to_nx[u], rx_to_nx[v]):
+                Gx.add_edge(rx_to_nx[u], rx_to_nx[v])
+
+        is_planar, embedding = nx.check_planarity(Gx)
+        if not is_planar:
+            return 0
+        assert isinstance(embedding, PlanarEmbedding)  # For linter
+
+        # Simply here for debugging...
+        self.dump_graph("reduce_degree2_outer_face_steiners")
+
+        # --- outer-face extraction ---
+
+        # Iterate through all half-edges to find every face boundary
+        visited_edges = set()
+        faces = {}
+        for edge in embedding.edges():
+            u, v = edge
+            if edge not in visited_edges:
+                face = embedding.traverse_face(u, v, visited_edges)
+                faces[edge] = face
+        if not faces:
+            return 0
+
+        # Select the face with the largest number of nodes as the outer face
+        outer_face_entry = max(faces.items(), key=lambda x: len(x[1]))
+        outer_face_list = outer_face_entry[1]
+
+        # Filter to all-outer adjacent faces...
+        outer_face_set = set(outer_face_list)
+        for k in [k for k, f in faces.items() if not any(i in outer_face_set for i in f)]:
+            del faces[k]
+
+        # We don't want the outer face to be iterated over during the reduction...
+        del faces[outer_face_entry[0]]
+
+        # We need ordering for windowed left, middle, right faces...
+        ordered_outer_adjacent_faces = get_ordered_outer_adjacent_faces(
+            embedding, outer_face_list, outer_face_set
+        )
+
+        # Translate all networkx indices to rustworkx indices
+        outer_face_list = [nx_to_rx[i] for i in outer_face_list]
+        outer_face_set = set(outer_face_list)
+        outer_face_degree2_steiners = {
+            i for i in outer_face_list if self.reduction_degree(i) == 2 and i not in non_steiner
+        }
+        ordered_outer_adjacent_faces = [{nx_to_rx[i] for i in f} for f in ordered_outer_adjacent_faces]
+
+        # We're done with the embedding and face edge traversals.
+        # From here on out everything graph related is rustworkx
+        # --- END: networkx <-> rustworkx ---
+
+        # --- Dreyfus-Wagner static data ---
+        all_inner_and_outer_face_nodes = outer_face_set | set().union(*ordered_outer_adjacent_faces)
+        adj_map: dict[int, set[int]] = {n: set() for n in all_inner_and_outer_face_nodes}
+        node_weight_map: dict[int, int] = {}
+        for u in all_inner_and_outer_face_nodes:
+            nbrs = self.reduction_neighbors(u)
+            for v in nbrs:
+                if v in all_inner_and_outer_face_nodes:
+                    adj_map[u].add(v)
+            node_weight_map[u] = int(self.graph[u][PAYLOAD_WEIGHT_KEY])
+
+        def steiner_tree_nodes(terminals: tuple[int, ...]) -> set[int]:
+            """Invokes the Rust DW solver, returns the OPT_ST solution."""
+            terminals_list = list(terminals)
+            cost, _d_nodes, solution_nodes = nwst_dw.solve_nwst(
+                adj_map, node_weight_map, terminals_list, terminals_list[0]
+            )
+            if cost == 18446744073709551615:  # Rust u64::MAX representation for INF
+                logger.error("  Unsolvable Steiner tree!")
+                raise RuntimeError("Steiner tree is empty!")
+            return set(solution_nodes)
+
+        # NOTE: This is simply for out of band prototype visualization...
+        if self.do_debug:
+            logger.warning(
+                f"  All inner and outer face nodes: {[self.get_node_key(i) for i in all_inner_and_outer_face_nodes]}"
+            )
+
+        # --- Reduction Processing ---
+        #
+        # NOTE: See the code, doc-strings and commentary of the enclosed DW Steiner and terminal
+        #       cluster reduction functions for more details on the DW enclosure logic.
+        #
+        # NOTE: When all of a root's demands are enclosed within the composite region C,
+        #       then any other internal structuring within the composite region creates
+        #       ambiguity for that root's arbor and potential route sharing.
+        #       We handle this for cases up to 2 small arbors.
+        #
+
+        terminal_to_root = {t: r for r, ts in self.terminal_sets.items() for t in ts}
+        terminal_to_root.update({r: r for r in self.terminal_sets})
+
+        # Witness preservation
+        keep: set[int] = set()
+        removables = set()
+        n = len(ordered_outer_adjacent_faces)
+        if n < 3:
+            return 0
+
+        for i in range(n):
+            F_left = ordered_outer_adjacent_faces[(i - 1) % n]
+            F_middle = ordered_outer_adjacent_faces[i]
+            F_right = ordered_outer_adjacent_faces[(i + 1) % n]
+            if self.do_debug:
+                logger.warning(f"  Outer adjacent face #{i}:")
+                logger.warning(f"    F_left: {[self.get_node_key(i) for i in F_left]}")
+                logger.warning(f"    F_middle: {[self.get_node_key(i) for i in F_middle]}")
+                logger.warning(f"    F_right: {[self.get_node_key(i) for i in F_right]}")
+
+            # NOTE: F_left and F_right must be disjoint to ensure that all ambiguity is handled
+            #       within the composite region C, if they are not disjoint then it could still
+            #       be a witness preserving case but handling is needed for different root cases
+            #       (see below and the doc-strings of the enclosed DW Steiner and terminal cluster
+            #       reduction functions for more details).
+            if not F_left.isdisjoint(F_right):
+                logger.debug("    skipping because F_left and F_right are not disjoint")
+                continue
+
+            # NOTE: There must be some degree-2 Steiner on the middle outer face segment for us to potentially remove.
+            f_middle_candidates = F_middle & outer_face_degree2_steiners
+            if not f_middle_candidates:
+                continue
+
+            # Build composite region C
+            C_nodes = set(F_left) | set(F_middle) | set(F_right)
+            if tuple(sorted(C_nodes)) in self._seen_nonreducible_outer_windows:
+                if self.do_debug:
+                    logger.warning(f"    skipping seen before: {[self.get_node_key(i) for i in C_nodes]}")
+                continue
+
+            # All non-steiner nodes in C must exist for each witnessed composite OPT_ST to exist
+            # so even though we can solve the DW for disjoint groups of these nodes, we can't
+            # ever omit any of them as they act as anchors.
+            anchors = C_nodes & non_steiner
+            if self.do_debug:
+                logger.warning(f"      anchors: {[self.get_node_key(i) for i in anchors]}")
+
+            # Active roots are those which have a demand represented within the composite region C
+            active_roots = {terminal_to_root[t] for t in anchors}
+
+            # Small terminal set clusters may have all demands within the composite region C.
+            # Potential roots are never considered as fully internal roots: `.get(r, [])`
+            fully_internal_roots = {r for r in active_roots if (set(self.terminal_sets[r]) | {r}) <= C_nodes}
+            if len(fully_internal_roots) > MAX_FULLY_INTERNAL_ROOTS:
+                if self.do_debug:
+                    logger.warning(
+                        f"      skipping fully internal: {[self.get_node_key(i) for i in fully_internal_roots]}"
+                    )
+                continue
+
+            # Independent enclosed-root composites:
+            #   𝓐¹, 𝓐², ..., 𝓐ⁿ
+            # followed by a single aggregate exterior composite of remaining anchors:
+            #   𝓐ⁿ⁺¹
+            # The exterior aggregate preserves adversarial coexistence
+            # without reintroducing full root activation combinatorics.
+            anchor_sets: list[set[int]] = []
+            if fully_internal_roots:
+                # 𝓐¹, 𝓐², ..., 𝓐ⁿ
+                for root in fully_internal_roots:
+                    anchor_sets.append({t for t in anchors if terminal_to_root.get(t, t) == root})
+
+                # 𝓐ⁿ⁺¹
+                # exterior = anchors - set().union(*anchor_sets)
+                # if exterior:
+                anchor_sets.append(anchors)
+
+                if self.do_debug:
+                    reconstructed = set().union(*anchor_sets)
+                    if reconstructed != anchors:
+                        logger.error(
+                            "      fully internal roots mismatch: "
+                            f"{[self.get_node_key(r) for r in fully_internal_roots]}"
+                        )
+                        continue
+            else:
+                anchor_sets = [anchors]
+
+            # NOTE: This ensures that a route _must_ make it to the outer middle face from the inside.
+            #       In the case of fully_internal_roots only one anchor must be on the outer middle face.
+            # TODO: Find a way to determine when this is truly required to eliminate ambiguity because when
+            #       we can reduce without an anchor on the outer middle face we can unlock far more cascading
+            #       reductions and fully collapse many problems.
+            f_middle_has_anchor = F_middle & outer_face_set & anchors
+            if not f_middle_has_anchor:
+                if self.do_debug:
+                    logger.warning(
+                        f"      skipping no anchor: {[self.get_node_key(i) for i in f_middle_has_anchor]}"
+                    )
+                continue
+
+            # Each non-anchor node with a neighbor in the full graph that is not in the composite
+            # region C is an interface and each interface must be considered for composite witness
+            # preserving cases.
+            interfaces = {i for i in C_nodes if any(n not in C_nodes for n in self.reduction_neighbors(i))}
+            # We also need to ensure that any fixed node that are no longer 'active' _but_ are still in
+            # the composite region C are also considered interfaces.
+            interfaces |= self.fixed_nodes & C_nodes
+            interfaces -= anchors
+            if self.do_debug:
+                logger.warning(f"      interfaces: {[self.get_node_key(i) for i in interfaces]}")
+
+            # Performance sanity checks, the DW undergoes a combinatorial explosion for each terminal
+            # (anchor + interface) node, and the interface loop also has the combinatorial explosion
+            # of all possible interface/anchor set subsets.
+            if (
+                len(interfaces) + len(anchors) > MAX_OUTER_WINDOW_SIZE
+                or len(interfaces) < 2
+                or len(interfaces) > MAX_INTERFACES
+            ):
+                continue
+
+            interface_list = sorted(interfaces)
+
+            # --- DW Witness preserving cases ---
+            # We need to enumerate all C(I, 0..=|I|) interface combinations for each of 𝓐ʲ, 𝓐ᵏ, 𝓐ʲᵏ
+            for subset_mask in range(1 << len(interface_list)):
+                active_interfaces = {
+                    interface_list[i] for i in range(len(interface_list)) if subset_mask & (1 << i)
+                }
+
+                for witness_anchors in anchor_sets:
+                    terminals = tuple(sorted(witness_anchors | active_interfaces))
+                    if len(terminals) < 2:
+                        continue
+                    if self.do_debug:
+                        logger.warning(f"      terminals: {[self.get_node_key(i) for i in terminals]}")
+                    nodes = steiner_tree_nodes(terminals)
+                    keep |= nodes & F_middle
+
+            removable_in_middle = (F_middle - keep) & f_middle_candidates
+            if self.do_debug:
+                logger.warning(
+                    f"    removable_in_middle: {[self.get_node_key(i) for i in removable_in_middle]}"
+                )
+            for i in removable_in_middle:
+                if self.reduction_degree(i) != 2:
+                    logger.error(f"ERROR: Node {self.get_node_key(i)} has bad degree!")
+
+            if removable_in_middle:
+                removables |= removable_in_middle
+                break
+            else:
+                self._seen_nonreducible_outer_windows.add(tuple(sorted(C_nodes)))
+
+            if removables:
+                break
+
+        if removables:
+            self.remove_nodes_from(removables)
+            logger.warning(f"  => removed {len(removables)} outer face Steiner nodes")
+            if self.do_debug:
+                logger.trace(f"    {sorted(self.get_node_key(n) for n in removables)}")
+                self.dump_state("reduce_outer_face_steiner_nodes", len(removables))
+                self.validate_reachability()
+
+        return len(removables)
+
     def reduce_enclosed_steiner_clusters(self) -> int:
         """
         Removes Steiner nodes provably absent from every optimal Steiner tree
@@ -1298,30 +2299,27 @@ class SFGraphReductionEngine:
         self.set_edge_weights()
 
         non_steiners = self.non_steiner_nodes()
+        steiners = set(self.graph.node_indices()) - non_steiners
         non_steiners.discard(self.super_root_index)
-
-        steiners = {
-            n for n in self.graph.node_indices() if n not in non_steiners and n != self.super_root_index
-        }
-
         if len(steiners) < 3:
             return 0
 
         g_prime: PyDiGraph = subgraph_stable(self.graph, steiners)
-        interfaces = set()
-
-        for s in steiners:
-            nbrs = self.reduction_neighbors(s)
-            if nbrs - steiners:
-                interfaces.add(s)
-
+        interfaces = {i for i in steiners if any(n not in steiners for n in self.reduction_neighbors(i))}
         if len(interfaces) < 2:
             return 0
 
+        # self.dump_graph("reduce_enclosed_steiner_clusters", g_prime)
+
+        # This is an node weighted undirected graph...
+        g_steiner_undir = nx.Graph()
+        for i in g_prime.node_indices():
+            g_steiner_undir.add_node(i, weight=g_prime[i][PAYLOAD_WEIGHT_KEY])
+        g_steiner_undir.add_edges_from(g_prime.edge_list())  # ignores multi-edges
+
         removables = set()
 
-        comps = rx.weakly_connected_components(g_prime)
-        # for max_interfaces in range(2, MAX_ENCLOSED_STEINER_INTERFACES + 1):
+        comps = nx.connected_components(g_steiner_undir)
         for comp_nodes in comps:
             comp = set(comp_nodes)
             comp_interfaces = comp & interfaces
@@ -1336,11 +2334,13 @@ class SFGraphReductionEngine:
             removables.update(removable)
 
         if removables:
+            # self.dump_graph("pre-remove enclosed steiner cluster nodes", self.graph)
             self.graph.remove_nodes_from(removables)
-            logger.info(f"  => removed {len(removables)} enclosed Steiner cluster nodes")
+            logger.info(f"  removed {len(removables)} Steiner cluster nodes")
+            # self.dump_graph("post-remove enclosed steiner cluster nodes", self.graph)
             if self.do_debug:
                 logger.trace(f"  {sorted(self.get_node_key(n) for n in removables)}")
-                self.dump_state("reduce_enclosed_steiner_clusters", len(removables))
+                self.dump_state("reduce_enclosed_steiner_clusters_new", len(removables))
                 self.validate_reachability()
 
         return len(removables)
@@ -1354,30 +2354,26 @@ class SFGraphReductionEngine:
         """
         Recursive bounded-interface exact certification.
 
-        Components exceeding the interface limit are recursively split across
-        bridge edges. Split endpoints become interfaces in both child
-        components.
+        Components exceeding the interface limit are recursively split.
+        Split endpoints become interfaces in their respective child components.
         """
-        if self.do_debug:
-            logger.debug(
-                f"=> reduce_cluster_dreyfus_wagner({sorted(self.get_node_key(n) for n in component)}, {sorted(self.get_node_key(n) for n in interfaces)}, {interface_limit})"
-            )
+        # logger.trace("  reduce_steiner_cluster_dreyfus_wagner...")
 
         k = len(interfaces)
-
         if k <= 1:
             return set()
 
         # Recursive decomposition phase
         if k > interface_limit:
-            split = self._find_component_bridge_split(component)
+            split = self._split_steiner_component(component, interfaces)
             if split is None:
                 # No valid decomposition found - refuse certification.
                 return set()
 
-            left_nodes, right_nodes, bridge_u, bridge_v = split
-            left_interfaces = (interfaces | {bridge_u, bridge_v}) & left_nodes
-            right_interfaces = (interfaces | {bridge_u, bridge_v}) & right_nodes
+            left_nodes, right_nodes, bridges_u, bridges_v = split
+
+            left_interfaces = (interfaces | bridges_u | bridges_v) & left_nodes
+            right_interfaces = (interfaces | bridges_u | bridges_v) & right_nodes
 
             removable = set()
             removable |= self._reduce_steiner_cluster_dreyfus_wagner(
@@ -1392,521 +2388,81 @@ class SFGraphReductionEngine:
             )
             return removable
 
-        # Preparation phase for Rust Native Solver Input Maps
+        # Preparation phase for Dreyfus-Wagner algorithm
         local_nodes = list(component)
         adj_map: dict[int, set[int]] = {n: set() for n in local_nodes}
         node_weight_map: dict[int, int] = {}
 
+        # Build adjacency map
         for u in local_nodes:
-            # Extract standard rustworkx graph topology indices
             nbrs = self.reduction_neighbors(u)
             for v in nbrs:
                 if v in component:
                     adj_map[u].add(v)
-
-            # Extract mandatory node weights mapped to u64
             node_weight_map[u] = int(self.graph[u][PAYLOAD_WEIGHT_KEY])
 
         def steiner_tree_nodes(terminals: tuple[int, ...]) -> set[int]:
-            """
-            Invokes the high-performance native Rust solver.
-            Returns the exact optimal Steiner tree topology nodes.
-            """
+            """Returns the exact optimal Steiner tree topology nodes."""
             terminals_list = list(terminals)
             # Use the first terminal arbitrarily as the root/source node context
             cost, _d_nodes, solution_nodes = nwst_dw.solve_nwst(
                 adj_map, node_weight_map, terminals_list, terminals_list[0]
             )
-
             if cost == 18446744073709551615:  # Matches Rust u64::MAX representation for INF
                 return set(terminals)
-
             return set(solution_nodes)
 
         # Build KEEP set: nodes that appear in some optimal routing
         keep: set[int] = set()
         interface_list = sorted(interfaces)
 
-        # Pairwise shortest paths for all interface pairs
-        for i in range(len(interface_list)):
-            for j in range(i + 1, len(interface_list)):
-                s = interface_list[i]
-                t = interface_list[j]
-                if s not in component or t not in component:
-                    continue
-
-                # Fallback to a single pair Steiner evaluation via Rust
-                nodes = steiner_tree_nodes((s, t))
-                keep.update(nodes)
-
         # Steiner trees for all interface subsets up to interface_limit
         for subset_mask in range(1, 1 << len(interface_list)):
             subset = tuple(interface_list[i] for i in range(len(interface_list)) if subset_mask & (1 << i))
-
-            # Pairwise shortest paths are already evaluated and populated above
-            if 3 <= len(subset) <= interface_limit:
+            if len(subset) <= interface_limit:
                 nodes = steiner_tree_nodes(subset)
                 keep.update(nodes)
+            else:
+                logger.warning(f"    skipping interface subset with {len(subset)} interfaces...")
 
         # Final component removals: unneeded internal nodes
         return (component - interfaces) - keep
 
-    def reduce_enclosed_terminal_clusters(
-        self,
-        nearest_terminals: int = 5,
-        max_component_interfaces: int = 5,
-        max_component_nodes: int = 128,
-        max_component_terminals: int = 12,
-    ) -> int:
-        """
-        Identifies terminal-anchored Steiner pockets and removes Steiner nodes
-        provably absent from every witnessed optimal realization over all
-        feasible interface activations.
-
-        Candidate pockets are constructed from:
-            - same-root terminal neighborhoods,
-            - induced Steiner routing structure,
-            - and iterative dead-leg trimming.
-
-        Each surviving component is certified using exact anchored
-        Dreyfus-Wagner witness reconstruction.
-
-        Handles:
-        ```
-        ∀ ℂ ⊆ G :
-        A ≔ enclosed terminals
-        I ≔ structural interfaces
-
-        ∀ X ⊆ I :
-            Wₓ ∈ OPT_ST(A ⋃ X, ℂ)
-
-        k ≔ ℂ ∖ ( I ⋃ A ⋃ ⋃ Wₓ )
-
-        G ≔ G ∖ k
-        ```
-        """
-        logger.trace("reduce_enclosed_terminal_clusters...")
-
-        self.set_edge_weights()
-
-        #
-        # STEP 0:
-        # Identify Steiner backbone candidates.
-        # We only operate on Steiner-dense regions since terminals
-        # are preserved anchors and not reduction targets.
-        #
-        non_steiners = self.non_steiner_nodes()
-        non_steiners.discard(self.super_root_index)
-
-        steiners = {
-            n for n in self.graph.node_indices() if n not in non_steiners and n != self.super_root_index
-        }
-
-        if len(steiners) < 3:
-            return 0
-
-        removables: set[int] = set()
-
-        # TODO: Research why this would fail on some incidents when using term and interfaces limits of 6 instead of 5
-        # # (sample: [  12/20] 39d3339 random_n_cheapest_capital )
-        terminal_clusters = {r: ts | {r} for r, ts in self.terminal_sets.items()}
-
-        # The failure doesn't show up when using the following...
-        # terminal_clusters = {r: ts for r, ts in self.terminal_sets.items()}
-
-        #
-        # STEP 1:
-        # Precompute local terminal neighborhoods.
-        # This is used to bias component extraction toward
-        # regions that can actually support multi-terminal DP structure.
-        #
-        terminal_to_nearest: dict[int, list[int]] = {}
-
-        for ts in terminal_clusters.values():
-            ts = set(ts)
-
-            if len(ts) < 2:
-                continue
-
-            for t in ts:
-                dist = rx.dijkstra_shortest_path_lengths(
-                    self.graph,
-                    t,
-                    edge_cost_fn=lambda e: e.get(PAYLOAD_WEIGHT_KEY, 1),
-                )
-
-                terminal_to_nearest[t] = sorted(
-                    (x for x in ts if x != t and x in dist),
-                    key=lambda x: dist[x],
-                )[:nearest_terminals]
-
-            #
-            # STEP 2:
-            # For each terminal cluster, build candidate pockets.
-            # The goal is to over-approximate support, not under-approximate it.
-            #
-            # for max_interfaces in range(2, max_component_interfaces + 1):
-            for ts in terminal_clusters.values():
-                terminal_set = set(ts)
-
-                if len(terminal_set) < 2:
-                    continue
-
-                for anchor in terminal_set:
-                    nearest = terminal_to_nearest.get(anchor)
-                    if not nearest:
-                        continue
-
-                    #
-                    # STEP 3:
-                    # Seed terminals define the minimal “activation context”
-                    # for candidate DP regions.
-                    #
-                    seed_terminals = {anchor, *nearest}
-
-                    #
-                    # STEP 4:
-                    # Build Steiner-enriched skeleton.
-                    # We intentionally include all Steiner nodes to avoid
-                    # prematurely excluding valid DP-supporting structure.
-                    #
-                    skeleton_nodes = steiners | seed_terminals
-                    skeleton = subgraph_stable(self.graph, skeleton_nodes)
-
-                    #
-                    # STEP 5:
-                    # Extract anchored connected component.
-                    # This defines the candidate pocket ℂ.
-                    #
-                    component: set[int] | None = None
-                    for cc in rx.weakly_connected_components(skeleton):
-                        if anchor in cc:
-                            component = set(cc)
-                            break
-
-                    if component is None:
-                        continue
-
-                    terminal_in_component = component & terminal_set
-
-                    #
-                    # We require at least two terminals to form
-                    # a meaningful Steiner interface problem instance.
-                    #
-                    if len(terminal_in_component) < 2:
-                        continue
-
-                    #
-                    # STEP 6:
-                    # Terminal-supported DFS pruning.
-                    #
-                    # This removes dead structural “legs” that do not
-                    # participate in any terminal-to-terminal reachability
-                    # within the component.
-                    #
-                    # This is critical because DW witness reconstruction
-                    # must operate on a structure where every node is
-                    # potentially DP-relevant.
-                    #
-                    component, _ = self._dfs_dead_leg_prune(
-                        component=component,
-                        terminals=terminal_in_component,
-                        interfaces=set(),
-                    )
-
-                    terminal_in_component = component & terminal_set
-
-                    if len(terminal_in_component) < 2:
-                        continue
-
-                    #
-                    # STEP 7:
-                    # Structural bounds ensure tractability of DW certification.
-                    #
-                    if len(component) < 4:
-                        continue
-                    if len(component) > max_component_nodes:
-                        continue
-                    if len(terminal_in_component) > max_component_terminals:
-                        continue
-
-                    #
-                    # STEP 8:
-                    # Ensure non-tree structure exists.
-                    # If no cycles exist, there is no alternative routing
-                    # structure for interface-conditioned OPT_ST.
-                    #
-                    sub = subgraph_stable(self.graph, component)
-                    if sub.num_edges() // 2 <= len(component) - 1:
-                        continue
-
-                    #
-                    # STEP 9:
-                    # Interface extraction.
-                    #
-                    # Interfaces are boundary nodes of ℂ that connect
-                    # to external graph structure and define DP boundary conditions.
-                    #
-                    interfaces: set[int] = set()
-
-                    for n in component:
-                        nbrs = self.reduction_neighbors(n)
-                        if nbrs - component:
-                            interfaces.add(n)
-
-                    if len(interfaces) < 2:
-                        continue
-
-                    if len(interfaces) > max_component_interfaces:
-                        continue
-
-                    #
-                    # STEP 10:
-                    # Exact anchored DW certification.
-                    #
-                    # This stage determines which nodes participate in at least one
-                    # optimal realization over all interface activations.
-                    #
-                    removable = self._reduce_anchored_interface_dreyfus_wagner(
-                        component=component,
-                        anchors=terminal_in_component,
-                        interfaces=interfaces,
-                        interface_limit=max_component_interfaces,
-                    )
-
-                    removables.update(removable)
-
-        removables -= non_steiners
-
-        if removables:
-            self.graph.remove_nodes_from(removables)
-            logger.info(f"  => removed {len(removables)} enclosed terminal cluster nodes")
-            if self.do_debug:
-                logger.trace(f"  {sorted(self.get_node_key(n) for n in removables)}")
-                self.dump_state("enclosed terminal cluster nodes", len(removables))
-                self.validate_reachability()
-
-        return len(removables)
-
-    def _dfs_dead_leg_prune(
+    def _split_steiner_component(
         self,
         component: set[int],
-        terminals: set[int],
         interfaces: set[int],
-    ) -> tuple[set[int], set[int]]:
+    ) -> tuple[set[int], set[int], set[int], set[int]] | None:
         """
-        Terminal-supported DFS closure with dead-leg elimination.
-
-        A node survives iff it is reachable from at least one terminal
-        during DFS over the induced component.
-
-        Interfaces are updated by promoting surviving neighbors of
-        removed interface nodes along valid adjacency in the pruned graph.
+        Split a Steiner cluster component into two child components.
         """
+        # logger.trace("      split_steiner_component...")
 
-        adj = {n: self.reduction_neighbors(n) & component for n in component}
+        if len(component) < 6 or len(interfaces) < 2:
+            return None
 
-        visited: set[int] = set()
+        result = self._find_and_split_bridge_edge_components(component)
+        if result is not None:
+            # logger.trace("      found single edge bridge split")
+            left_component, right_component, bridge_u, bridge_v = result
+            return left_component, right_component, {bridge_u}, {bridge_v}
 
-        #
-        # STEP 1:
-        # Multi-source DFS over component from all terminals.
-        # This computes the terminal-supported closure of the component.
-        #
+        rxG = subgraph_stable(self.graph, component)
+        result = self.find_and_split_2_edge_components(rxG, PAYLOAD_WEIGHT_KEY)
+        if result is None:
+            return None
 
-        def dfs(start: int):
-            stack = [start]
+        # logger.trace("      found 2-edge bridge split")
 
-            while stack:
-                u = stack.pop()
+        left_gsub, right_gsub, bridges_u, bridges_v = result
+        left_component = set(left_gsub.node_indices())
+        right_component = set(right_gsub.node_indices())
 
-                if u in visited:
-                    continue
+        return left_component, right_component, set(bridges_u), set(bridges_v)
 
-                visited.add(u)
-
-                for v in adj[u]:
-                    if v not in visited:
-                        stack.append(v)
-
-        for t in terminals:
-            if t in component:
-                dfs(t)
-
-        #
-        # STEP 2:
-        # Nodes not reachable from any terminal are dead by definition.
-        #
-
-        _dead = component - visited
-
-        #
-        # STEP 3:
-        # Iteratively remove dead leaves that become isolated
-        # after terminal closure.
-        #
-
-        changed = True
-        while changed:
-            changed = False
-
-            new_dead = set()
-
-            for n in visited:
-                if n in terminals:
-                    continue
-
-                deg = sum(1 for v in adj[n] if v in visited)
-
-                if deg == 0:
-                    new_dead.add(n)
-
-            if new_dead:
-                visited -= new_dead
-                changed = True
-
-        surviving = visited & component
-
-        #
-        # STEP 4:
-        # Interface promotion based on surviving adjacency only.
-        #
-
-        updated_interfaces = set(interfaces)
-
-        for n in interfaces:
-            if n not in surviving:
-                nbrs = adj[n] & surviving
-                if nbrs:
-                    updated_interfaces.add(next(iter(nbrs)))
-
-        updated_interfaces &= surviving
-
-        return surviving, updated_interfaces
-
-    def _reduce_anchored_interface_dreyfus_wagner(
-        self,
-        component: set[int],
-        anchors: set[int],
-        interfaces: set[int],
-        interface_limit: int,
-    ) -> set[int]:
-        """
-        Exact existential witness certification for anchored Steiner pockets.
-
-        Let:
-            A ≔ mandatory anchor terminals
-            I ≔ optional interface activations
-
-        For every interface activation subset:
-
-            ∀ X ⊆ I :
-                Wₓ ∈ OPT_ST(A ⋃ X, ℂ)
-
-        preserve all nodes participating in at least one witnessed optimal
-        realization.
-
-        Components exceeding the interface limit are recursively decomposed
-        across bridge edges. Split endpoints become interfaces in both child
-        components.
-        """
-        if self.do_debug:
-            logger.debug(
-                "=> reduce_anchored_interface_dreyfus_wagner("
-                f"{sorted(self.get_node_key(n) for n in component)}, "
-                f"{sorted(self.get_node_key(n) for n in anchors)}, "
-                f"{sorted(self.get_node_key(n) for n in interfaces)}, "
-                f"{interface_limit})"
-            )
-
-        anchors = anchors & component
-        interfaces = interfaces & component
-
-        if len(anchors) < 2:
-            return set()
-
-        # Recursive decomposition phase
-        if len(interfaces) > interface_limit:
-            split = self._find_component_bridge_split(component)
-
-            if split is None:
-                # No valid decomposition found. Conservatively refuse certification.
-                return set()
-
-            left_nodes, right_nodes, bridge_u, bridge_v = split
-
-            left_interfaces = (interfaces | {bridge_u, bridge_v}) & left_nodes
-            right_interfaces = (interfaces | {bridge_u, bridge_v}) & right_nodes
-
-            left_anchors = anchors & left_nodes
-            right_anchors = anchors & right_nodes
-
-            removable = set()
-            removable |= self._reduce_anchored_interface_dreyfus_wagner(
-                component=left_nodes,
-                anchors=left_anchors,
-                interfaces=left_interfaces,
-                interface_limit=interface_limit,
-            )
-            removable |= self._reduce_anchored_interface_dreyfus_wagner(
-                component=right_nodes,
-                anchors=right_anchors,
-                interfaces=right_interfaces,
-                interface_limit=interface_limit,
-            )
-            return removable
-
-        # Preparation phase for DW Input Maps
-        local_nodes = list(component)
-        adj_map: dict[int, set[int]] = {n: set() for n in local_nodes}
-        node_weight_map: dict[int, int] = {}
-
-        for u in local_nodes:
-            nbrs = self.reduction_neighbors(u)
-            for v in nbrs:
-                if v in component:
-                    adj_map[u].add(v)
-
-            node_weight_map[u] = int(self.graph[u][PAYLOAD_WEIGHT_KEY])
-
-        def steiner_tree_nodes(terminals: tuple[int, ...]) -> set[int]:
-            """
-            Invokes the high-performance native Rust solver.
-            Returns the exact optimal Steiner tree topology nodes.
-            """
-            terminals_list = list(terminals)
-            cost, _d_nodes, solution_nodes = nwst_dw.solve_nwst(
-                adj_map, node_weight_map, terminals_list, terminals_list[0]
-            )
-
-            if cost == 18446744073709551615:  # Matches Rust u64::MAX representation for INF
-                return set(terminals)
-
-            return set(solution_nodes)
-
-        # Witness preservation
-        keep: set[int] = set()
-        interface_list = sorted(interfaces)
-
-        for subset_mask in range(1 << len(interface_list)):
-            active_interfaces = {
-                interface_list[i] for i in range(len(interface_list)) if subset_mask & (1 << i)
-            }
-
-            terminals = tuple(sorted(anchors | active_interfaces))
-
-            if len(terminals) < 2:
-                continue
-
-            nodes = steiner_tree_nodes(terminals)
-            keep.update(nodes)
-
-        if self.do_debug:
-            logger.trace(f"  DW - keep: {sorted(self.get_node_key(n) for n in keep)}")
-
-        return component - anchors - interfaces - keep
-
-    def _find_component_bridge_split(self, component: set[int]) -> tuple[set[int], set[int], int, int] | None:
+    def _find_and_split_bridge_edge_components(
+        self, component: set[int]
+    ) -> tuple[set[int], set[int], int, int] | None:
         """
         Finds a bridge edge suitable for recursive decomposition.
 
@@ -1962,268 +2518,1826 @@ class SFGraphReductionEngine:
 
         return None
 
-    def reduce_degree2_outer_face_steiners(self) -> int:
-        logger.trace("reduce_degree2_outer_face_steiners...")
-        # 15 and 8 worked well but took a bit too long (for Python that is expected)
-        MAX_OUTER_WINDOW_SIZE = 13
-        MAX_INTERFACES = 7
+    def find_and_split_2_edge_components(
+        self, digraph: rx.PyDiGraph, weight_attr: str = "weight"
+    ) -> tuple[rx.PyDiGraph, rx.PyDiGraph, set[int], set[int]] | None:
+        """
+        Finds 2-edge cuts using index-aligned local subgraphs, safely maps endpoints
+        back to the original DiGraph space using scalar lookups, and returns two valid
+        subgraphs for the re-entrant DP states.
+        """
+        # 1. Isolate structural connectivity with a tracked NodeMap
+        g_sub, node_map = digraph.subgraph_with_nodemap(digraph.node_indices())
+        undirected_g = g_sub.to_undirected(multigraph=False)
 
-        def get_ordered_outer_adjacent_faces(
-            embedding: nx.PlanarEmbedding, outer_walk: list[int], outer_face_set: set[int]
-        ) -> list[list[int]]:
-            last_seen = ()
-            ordered = []
-            n = len(outer_walk)
+        # 2. Extract node weights using local subgraph keys
+        node_weights = {i: g_sub[i].get(weight_attr, 1) for i in undirected_g.node_indices()}
+        total_graph_weight = sum(node_weights.values())
 
-            outer_face_key = tuple(sorted(outer_face_set))
+        # 3. Construct local spanning tree
+        tree_edges_list = rx.graph_dfs_edges(undirected_g)
+        tree_edges = set()
+        adj_tree = defaultdict(list)
+        for u, v in tree_edges_list:
+            edge_key = (min(u, v), max(u, v))
+            tree_edges.add(edge_key)
+            adj_tree[u].append(v)
+            adj_tree[v].append(u)
 
-            for i in range(n):
-                u = outer_walk[i]
-                v = outer_walk[(i + 1) % n]
+        all_edges = [(min(u, v), max(u, v)) for u, v in undirected_g.edge_list()]
+        non_tree_edges = [e for e in all_edges if e not in tree_edges]
 
-                # traverse the face on the OTHER side of the outer edge
-                face = embedding.traverse_face(v, u)
-                face_key = tuple(sorted(face))
-                if face_key != last_seen and face_key != outer_face_key:
-                    ordered.append(face)
-                    last_seen = face_key
-
-            return ordered
-
-        non_steiner = self.non_steiner_nodes()
-
-        # --- Rustworkx <-> networkx (prototyping-only) ---
-        nx_to_rx = {i: j for i, j in enumerate(self.graph.node_indices())}
-        rx_to_nx = {v: k for k, v in nx_to_rx.items()}
-
-        Gx = nx.Graph()
-        for u, v in self.graph.edge_list():
-            if not Gx.has_edge(rx_to_nx[u], rx_to_nx[v]):
-                Gx.add_edge(rx_to_nx[u], rx_to_nx[v])
-
-        is_planar, embedding = nx.check_planarity(Gx)
-        if not is_planar:
-            return 0
-        assert isinstance(embedding, PlanarEmbedding)  # For linter
-
-        # --- outer-face extraction ---
-
-        # Iterate through all half-edges to find every face boundary
-        visited_edges = set()
-        faces = {}
-        for edge in embedding.edges():
+        # 4. Generate random 64-bit structural hashes
+        edge_hashes = {}
+        node_xor_accumulator = defaultdict(int)
+        for edge in non_tree_edges:
+            h = random.getrandbits(64)
+            edge_hashes[edge] = h
             u, v = edge
-            if edge not in visited_edges:
-                face = embedding.traverse_face(u, v, visited_edges)
-                faces[edge] = face
-        if not faces:
-            return 0
+            node_xor_accumulator[u] ^= h
+            node_xor_accumulator[v] ^= h
 
-        # Select the face with the largest number of nodes as the outer face
-        outer_face_entry = max(faces.items(), key=lambda x: len(x[1]))
-        outer_face_list = outer_face_entry[1]
-        if self.do_debug:
-            logger.warning(
-                f"  Outer face: edge_key: {outer_face_entry[0]} {[self.get_node_key(nx_to_rx[i]) for i in outer_face_list]}"
+        # 5. Accumulate values up the spanning tree
+        visited = set()
+        tree_edge_hashes = {}
+        subtree_weights = {}
+        node_parent = {}
+
+        def dfs_accumulate(u, p=None):
+            visited.add(u)
+            node_parent[u] = p
+            current_xor = node_xor_accumulator[u]
+            current_weight = node_weights[u]
+
+            for v in adj_tree[u]:
+                if v != p and v not in visited:
+                    child_xor, child_weight = dfs_accumulate(v, u)
+                    edge_key = (min(u, v), max(u, v))
+                    tree_edge_hashes[edge_key] = child_xor
+                    current_xor ^= child_xor
+                    current_weight += child_weight
+
+            subtree_weights[u] = current_weight
+            return current_xor, current_weight
+
+        for node in undirected_g.node_indices():
+            if node not in visited:
+                dfs_accumulate(node)
+
+        edge_hashes.update(tree_edge_hashes)
+
+        # 6. Group by structural hash
+        hash_to_edges = defaultdict(list)
+        for edge, h in edge_hashes.items():
+            if h != 0:
+                hash_to_edges[h].append(edge)
+
+        valid_cuts = [edge_list for edge_list in hash_to_edges.values() if len(edge_list) == 2]
+
+        best_left_graph = None
+        best_right_graph = None
+        best_cut_left_endpoints = None
+        best_cut_right_endpoints = None
+        min_balance_diff = float("inf")
+
+        # 7. Evaluate and extract cuts using translated original IDs
+        for e1, e2 in valid_cuts:
+            # FIX: e1 and e2 are tuples of (u_sub, v_sub). Extract and map individual integers!
+            u1_sub, v1_sub = e1
+            u2_sub, v2_sub = e2
+
+            u1_orig = node_map[u1_sub]
+            v1_orig = node_map[v1_sub]
+            u2_orig = node_map[u2_sub]
+            v2_orig = node_map[v2_sub]
+
+            # Clone original input graph for validation testing
+            test_graph = digraph.copy()
+
+            # Identify all matching anti-parallel directed arcs using original node coordinates
+            edges_to_remove = []
+            for src, dst in [(u1_orig, v1_orig), (v1_orig, u1_orig), (u2_orig, v2_orig), (v2_orig, u2_orig)]:
+                if test_graph.has_edge(src, dst):
+                    edges_to_remove.append((src, dst))
+            test_graph.remove_edges_from(edges_to_remove)
+
+            # Verify if a real structural partition occurred
+            components = rx.weakly_connected_components(test_graph)
+            if len(components) < 2:
+                continue  # Rejects false hash collisions or edge shortcuts
+
+            # Sort components by their aggregate node weight to isolate the two largest parts
+            components = sorted(
+                components, key=lambda c: sum(digraph[n].get(weight_attr, 1) for n in c), reverse=True
             )
 
-        # Filter to all-outer adjacent faces...
-        outer_face_set = set(outer_face_list)
-        for k in [k for k, f in faces.items() if not any(i in outer_face_set for i in f)]:
-            del faces[k]
-        # pop outer face entry as well
-        del faces[outer_face_entry[0]]
+            left_nodes_orig = next(iter(components))
+            right_nodes_orig = []
+            for other_comp in components[1:]:
+                right_nodes_orig.extend(list(other_comp))
 
-        if self.do_debug:
-            logger.warning("  Outer-adjacent faces:")
-            for k, f in faces.items():
-                logger.warning(f"  Face: edge_key: {k} {[self.get_node_key(nx_to_rx[i]) for i in f]}")
+            # FIX: Construct subgraphs using node indices from the ORIGINAL graph coordinate space
+            # This keeps the internal edge wiring and planarity perfectly intact
+            left_graph = subgraph_stable(digraph, left_nodes_orig)
+            right_graph = subgraph_stable(digraph, right_nodes_orig)
 
-        ordered_outer_adjacent_faces = get_ordered_outer_adjacent_faces(
-            embedding, outer_face_list, outer_face_set
-        )
+            # Evaluate balance
+            left_weight = sum(digraph[n].get(weight_attr, 1) for n in left_nodes_orig)
+            right_weight = total_graph_weight - left_weight
+            diff = abs(left_weight - right_weight)
 
-        if self.do_debug:
-            logger.warning("  Ordered outer adjacent faces:")
-            for f in ordered_outer_adjacent_faces:
-                logger.warning(f"    {[self.get_node_key(nx_to_rx[i]) for i in f]}")
+            if diff < min_balance_diff:
+                min_balance_diff = diff
+                best_left_graph = left_graph
+                best_right_graph = right_graph
+                best_cut_left_endpoints = {u1_orig, u2_orig}
+                best_cut_right_endpoints = {v1_orig, v2_orig}
 
-        # Translate all networkx indices to rustworkx indices
-        outer_face_list = [nx_to_rx[i] for i in outer_face_list]
-        outer_face_set = set(outer_face_list)
-        outer_face_degree2_steiners = {
-            i for i in outer_face_list if self.reduction_degree(i) == 2 and i not in non_steiner
-        }
-        ordered_outer_adjacent_faces = [{nx_to_rx[i] for i in f} for f in ordered_outer_adjacent_faces]
+        if (
+            best_left_graph is None
+            or best_right_graph is None
+            or best_cut_left_endpoints is None
+            or best_cut_right_endpoints is None
+        ):
+            return None
 
-        # --- Dreyfus-Wagner static data ---
-        all_inner_and_outer_face_nodes = outer_face_set | set().union(*ordered_outer_adjacent_faces)
-        adj_map: dict[int, set[int]] = {n: set() for n in all_inner_and_outer_face_nodes}
-        node_weight_map: dict[int, int] = {}
-        for u in all_inner_and_outer_face_nodes:
-            nbrs = self.reduction_neighbors(u)
-            for v in nbrs:
-                if v in all_inner_and_outer_face_nodes:
-                    adj_map[u].add(v)
-            node_weight_map[u] = int(self.graph[u][PAYLOAD_WEIGHT_KEY])
+        return best_left_graph, best_right_graph, best_cut_left_endpoints, best_cut_right_endpoints
 
-        def steiner_tree_nodes(terminals: tuple[int, ...]) -> set[int]:
-            """
-            Invokes the high-performance native Rust solver.
-            Returns the exact optimal Steiner tree topology nodes.
-            """
-            terminals_list = list(terminals)
-            cost, _d_nodes, solution_nodes = nwst_dw.solve_nwst(
-                adj_map, node_weight_map, terminals_list, terminals_list[0]
+    def reduce_roots_by_distance(self) -> int:
+        """
+        Root arbor reduction by distance.
+
+        Following from the reduce_steiner_nodes_by_distance() method where:
+        For each Steiner node v: if its weight is greater than the longest root -> terminal path,
+        v is dominated and can be removed.
+        Also, for each Steiner node v: if the _shortest_ distance to a terminal is greater than the
+        longest root -> terminal path, v is dominated and can be removed.
+
+        We can safely state that:
+        For each Root node v: if the weight of the gap between any of its terminals (and root) is greater than
+        the longest root -> terminal path, then the arbor is isolated and that tree can be solved exactly.
+
+        Returns number of collapsed nodes.
+        """
+        logger.trace("reduce_steiner_nodes_by_distance...")
+
+        self.set_edge_weights()
+        max_rt_distance = min(self._maximum_rt_distance, self.get_maximum_rt_distance())
+        if max_rt_distance != self._maximum_rt_distance and max_rt_distance > 0:
+            logger.trace(
+                f"  => max_rt_distance changed from {self._maximum_rt_distance} to {max_rt_distance}"
+            )
+            self._maximum_rt_distance = int(max_rt_distance)
+        logger.trace(f"  => max_rt_distance: {max_rt_distance}")
+
+        all_consumed = set()
+
+        # Test in reverse order by size of terminal set...
+        sr_index = self.super_root_index
+        for root in sorted(self.terminal_sets.keys(), key=lambda r: len(self.terminal_sets[r]), reverse=True):
+            if root == sr_index:
+                continue
+
+            # We now need the minimum gap for this particular cluster set (terminals|{root}) to any other terminal/root
+            # not in this cluster...
+            cluster = self.terminal_sets[root] | {root}
+
+            gap = float("inf")
+            self.set_edge_weights()
+
+            all_others = set().union(*self.terminal_sets.values()) | set(self.terminal_sets.keys())
+            all_others -= cluster
+            all_others.discard(self.super_root_index)
+
+            # When all_others is empty it means cluster is the sole remaining terminal cluster
+            # and gap would be infinite so we can skip calcuting it.
+            # NOTE: We can do this more efficiently by using a BFS after prototyping...
+            if all_others:
+                for u in cluster:
+                    for v in all_others:
+                        gap = min(gap, self.shortest_path_length(u, v))
+
+            if gap <= max_rt_distance:
+                continue
+
+            logger.debug(
+                f"  => identified isolated terminal cluster for root {self.get_node_key(root)} with {len(cluster)} terminals (gap: {gap})..."
             )
 
-            if cost == 18446744073709551615:  # Matches Rust u64::MAX representation for INF
-                return set(terminals)
+            consumed = set()
 
-            return set(solution_nodes)
-
-        # Simply for out of band protype visualization...
-        if self.do_debug:
-            logger.warning(
-                f"  All inner and outer face nodes: {[self.get_node_key(i) for i in all_inner_and_outer_face_nodes]}"
-            )
-
-        terminal_to_root = {t: r for r, ts in self.terminal_sets.items() for t in ts}
-        terminal_to_root.update({r: r for r in self.terminal_sets})
-
-        # Witness preservation
-        keep: set[int] = set()
-        removables = set()
-        n = len(ordered_outer_adjacent_faces)
-        if n < 3:
-            return 0
-
-        for i in range(n):
-            # NOTE: See the code, doc-strings and commentary of the enclosed DW Steiner and terminal
-            #       cluster reduction functions for more details on the DW enclosure logic.
-            #
-            # NOTE: When all of a root's demands are enclosed within the composite region C,
-            #       then any other internal structuring within the composite region creates
-            #       ambiguity for that root's arbor and potential route sharing.
-            #       This could be handled for cases up to 3 small arbors without too much complexity,
-            #       but for prototyping we simply ignore these cases.
-            #
-            # NOTE: Pretty much all failing cases happen in an eye situation or adjacent left and right
-            #       outer faces. So I added a quick check to ensure disjointness.
-            #
-            F_left = ordered_outer_adjacent_faces[(i - 1) % n]
-            F_middle = ordered_outer_adjacent_faces[i]
-            F_right = ordered_outer_adjacent_faces[(i + 1) % n]
-            if self.do_debug:
-                logger.warning(f"  Outer adjacent face #{i}:")
-                logger.warning(f"    F_left: {[self.get_node_key(i) for i in F_left]}")
-                logger.warning(f"    F_middle: {[self.get_node_key(i) for i in F_middle]}")
-                logger.warning(f"    F_right: {[self.get_node_key(i) for i in F_right]}")
-
-            # NOTE: F_left and F_right must be disjoint to ensure that all ambiguity is handled
-            #       within the composite region C, if they are not disjoint then it could still
-            #       be a witness preserving case but handling is needed for different root cases
-            #       (see below and the doc-strings of the enclosed DW Steiner and terminal cluster
-            #       reduction functions for more details).
-            if not F_left.isdisjoint(F_right):
-                logger.debug("    skipping because F_left and F_right are not disjoint")
-                continue
-
-            # There must be some degree-2 Steiner to remove from the middle outerface segment...
-            f_middle_candidates = F_middle & outer_face_degree2_steiners
-            if not f_middle_candidates:
-                continue
-
-            # Build composite region C
-            C_nodes = set(F_left) | set(F_middle) | set(F_right)
-            if tuple(sorted(C_nodes)) in self._seen_nonreducible_outer_windows:
-                if self.do_debug:
-                    logger.warning(f"    skipping seen before: {[self.get_node_key(i) for i in C_nodes]}")
-                continue
-
-            anchors = {node for node in C_nodes if node in non_steiner}
-            if self.do_debug:
-                logger.warning(f"      anchors: {[self.get_node_key(i) for i in anchors]}")
-
-            active_roots = {terminal_to_root[t] for t in anchors}
-
-            # NOTE: The case for small fully enclosed roots _might_ be able to be handled, but not yet...
-            fully_internal_roots = {r for r in active_roots if (set(self.terminal_sets[r]) | {r}) <= C_nodes}
-            if fully_internal_roots:
-                if self.do_debug:
-                    logger.warning(
-                        f"      skipping fully internal: {[self.get_node_key(i) for i in fully_internal_roots]}"
-                    )
-                continue
-
-            # NOTE: The case for multi-root composites _might_ be able to be handled, but not yet...
-            # if active_roots not in [0, 1] or fully_internal_roots:
-            #     # logger.warning(f"      skipping multi-root: {[self.get_node_key(i) for i in active_roots]}")
-            #     continue
-            # logger.warning(f"      checking unfiltered: {[self.get_node_key(i) for i in active_roots]}")
-
-            # NOTE: This ensures that a route _must_ make it to the outer middle face from the inside.
-            f_middle_has_anchor = F_middle & outer_face_set & anchors
-            if not f_middle_has_anchor:
-                if self.do_debug:
-                    logger.warning(
-                        f"      skipping no anchor: {[self.get_node_key(i) for i in f_middle_has_anchor]}"
-                    )
-                continue
-
-            interfaces = {i for i in C_nodes if any(n not in C_nodes for n in self.reduction_neighbors(i))}
-            interfaces -= anchors
-            if self.do_debug:
-                logger.warning(f"      interfaces: {[self.get_node_key(i) for i in interfaces]}")
-            if (
-                len(interfaces) + len(anchors) > MAX_OUTER_WINDOW_SIZE
-                or len(interfaces) < 2
-                or len(interfaces) > MAX_INTERFACES
-            ):
-                continue
-
-            interface_list = sorted(interfaces)
-            for subset_mask in range(1 << len(interface_list)):
-                active_interfaces = {
-                    interface_list[i] for i in range(len(interface_list)) if subset_mask & (1 << i)
-                }
-
-                terminals = tuple(sorted(anchors | active_interfaces))
-                if len(terminals) < 2:
-                    continue
-                if self.do_debug:
-                    logger.warning(f"      terminals: {[self.get_node_key(i) for i in terminals]}")
-
-                nodes = steiner_tree_nodes(terminals)
-                keep |= nodes & F_middle
-
-            removable_in_middle = (F_middle - keep) & f_middle_candidates
-            if self.do_debug:
-                logger.warning(
-                    f"    removable_in_middle: {[self.get_node_key(i) for i in removable_in_middle]}"
-                )
-            for i in removable_in_middle:
-                if self.reduction_degree(i) != 2:
-                    logger.error(f"ERROR: Node {self.get_node_key(i)} has bad degree!")
-
-            if removable_in_middle:
-                removables |= removable_in_middle
-                break
+            # Then we'll solve the tree to get the witnessed solution nodes...
+            if len(cluster) <= DW_MAX_TREE_TERMINALS:
+                witnessed_nodes = self.solve_root_with_dw(root)
             else:
-                self._seen_nonreducible_outer_windows.add(tuple(sorted(C_nodes)))
+                witnessed_nodes = self.solve_root_with_scipstp(root)
 
-            if removables:
-                break
+            # Now consume all witnessed nodes, from the root outward; leaving the root node in the graph.
+            witnessed_to_remove = set(witnessed_nodes)
+            while len(witnessed_to_remove) > 0:
+                neighbors = self.reduction_neighbors(root)
+                neighbors.discard(self.super_root_index)
+                neighbors = neighbors & witnessed_to_remove
+                if len(neighbors) == 0:
+                    break
+
+                # Places the consumed node and hyper node contents into the fixed solution set
+                for n in neighbors:
+                    self.consume(n, root)
+                    consumed.add(n)
+                    witnessed_to_remove.discard(n)
+
+            all_consumed.update(consumed)
+
+            logger.trace(f"    witnessed: {sorted(self.get_node_key(n) for n in witnessed_nodes)}")
+
+            # Handle any settled super-root terminals
+            if self.super_root_index is not None:
+                settled_super_terminals = {
+                    i for i in self.terminal_sets[self.super_root_index] if i in witnessed_nodes
+                }
+                for t in settled_super_terminals:
+                    self.terminal_sets[self.super_root_index].remove(t)
+                if len(self.terminal_sets[self.super_root_index]) == 0:
+                    self.terminal_sets.pop(self.super_root_index)
+                    self.super_root_index = None
+
+            # Lastly remove the terminal set cluster
+            self.terminal_sets.pop(root)
+
+        if all_consumed:
+            logger.debug(f"  => consumed {len(all_consumed)} witnessed nodes")
+            if self.do_debug:
+                logger.trace(f"    consumed: {sorted(self.get_node_key(n) for n in all_consumed)}")
+                self.dump_state("reduce_roots_by_distance", len(all_consumed))
+                self.validate_reachability()
+
+        return len(all_consumed)
+
+    def reduce_steiner_nodes_by_distance(self) -> int:
+        """
+        Steiner node reduction by distance.
+
+        For each Steiner node v: if its weight is greater than the longest root -> terminal path, v is dominated and can be removed.
+        Also, for each Steiner node v: if the _shortest_ distance to a terminal is greater than the longest root -> terminal path, v is dominated and can be removed.
+
+        Returns number of removed/absorbed nodes.
+        """
+        logger.trace("reduce_steiner_nodes_by_distance...")
+
+        self.set_edge_weights()
+        non_steiner_nodes = self.non_steiner_nodes()
+
+        max_rt_distance = min(self._maximum_rt_distance, self.get_maximum_rt_distance())
+        if max_rt_distance != self._maximum_rt_distance and max_rt_distance > 0:
+            logger.trace(
+                f"  => max_rt_distance changed from {self._maximum_rt_distance} to {max_rt_distance}"
+            )
+            self._maximum_rt_distance = int(max_rt_distance)
+        logger.trace(f"  => max_rt_distance: {max_rt_distance}")
+
+        removables = []
+        removed_by_weight = 0
+        removed_by_distance = 0
+
+        for v in self.graph.node_indices():
+            if v in non_steiner_nodes or v == self.super_root_index:
+                continue
+
+            if self.graph[v][PAYLOAD_WEIGHT_KEY] > max_rt_distance:
+                logger.trace(f"  => removing Steiner node {self.get_node_key(v)} by weight")
+                removables.append(v)
+                removed_by_weight += 1
+                continue
+
+            min_rt_distance = float("inf")
+            for r, terminals in self.terminal_sets.items():
+                for t in terminals | {r}:
+                    min_rt_distance = min(min_rt_distance, self.shortest_path_length(v, t))
+
+            if min_rt_distance > max_rt_distance:
+                logger.trace(f"  => removing Steiner node {self.get_node_key(v)} by distance")
+                removables.append(v)
+                removed_by_distance += 1
+                continue
 
         if removables:
             self.remove_nodes_from(removables)
-            logger.warning(f"  => removed {len(removables)} outer face Steiner nodes")
+            logger.info(
+                f"  => removed {len(removables)} Steiner nodes [({max_rt_distance}) by weight: {removed_by_weight}, by distance: {removed_by_distance}]"
+            )
             if self.do_debug:
                 logger.trace(f"    {sorted(self.get_node_key(n) for n in removables)}")
-                self.dump_state("reduce_outer_face_steiner_nodes", len(removables))
+                self.dump_state("reduce_steiner_nodes_by_distance", len(removables))
                 self.validate_reachability()
 
         return len(removables)
+
+    def reduce_local_steiner_dominance_by_distance(self, radius: int = 16, max_demand: int = 16) -> int:
+        """
+        Node-weighted local dominance reduction over roots ∪ terminals.
+
+        For each Steiner node v:
+        - collect nearby demand nodes U_v within node-weighted distance <= radius
+        - if |U_v| <= max_demand:
+            check whether v ever improves any pair (a, b) in U_v
+            if not, v is locally dominated and can be removed/absorbed
+        Returns number of removed/absorbed nodes.
+        """
+        logger.trace("reduce_local_steiner_dominance_by_distance...")
+        removals = []
+
+        node_weight_map = {node: self.graph[node][PAYLOAD_WEIGHT_KEY] for node in self.graph.node_indices()}
+
+        def dijkstra_avoiding(start: int, forbidden: int) -> dict[int, float]:
+            """Node-weighted Dijkstra that forbids stepping on `forbidden`."""
+            import heapq
+
+            if start == forbidden:
+                return {}  # unreachable
+
+            dist = {start: node_weight_map[start]}
+            heap = [(node_weight_map[start], start)]
+
+            while heap:
+                d, u = heapq.heappop(heap)
+                if d > dist[u]:
+                    continue
+
+                for v in self.reduction_neighbors(u):
+                    if v == forbidden:
+                        continue
+
+                    nd = d + node_weight_map[v]
+                    if nd < dist.get(v, float("inf")):
+                        dist[v] = nd
+                        heapq.heappush(heap, (nd, v))
+
+            return dist
+
+        # Build demand set: roots ∪ terminals
+        roots = set(self.terminal_sets.keys())
+        terminals = set().union(*self.terminal_sets.values()) if self.terminal_sets else set()
+        demand_nodes = roots | terminals
+        if not demand_nodes:
+            return 0
+
+        # Precompute node weights for quick access
+        weight = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        for v in list(self.graph.node_indices()):
+            # Skip non-Steiner nodes
+            if v in demand_nodes:
+                continue
+
+            # 1) Collect local neighborhood around v up to node-weighted distance <= radius
+            U_v = self._collect_local_demand_neighborhood(v, demand_nodes, weight, radius)
+            if len(U_v) < 2 or len(U_v) > max_demand:
+                continue  # too trivial or too large to bother
+
+            # 2) Precompute distances from v (normal local Dijkstra)
+            d_from_v = self._local_dijkstra(v, radius, weight)
+
+            # 3) For each a in U_v, compute distances avoiding v
+            d_without_v = {a: dijkstra_avoiding(a, v) for a in U_v}
+
+            # 4) Check if v is ever strictly better for any pair (a, b) in U_v
+            v_useful = False
+            U_v_list = list(U_v)
+
+            for i in range(len(U_v_list)):
+                a = U_v_list[i]
+
+                # If a cannot reach v locally, skip pairs involving a
+                if a not in d_from_v:
+                    continue
+
+                for j in range(i + 1, len(U_v_list)):
+                    b = U_v_list[j]
+
+                    # If b cannot reach v locally, skip
+                    if b not in d_from_v:
+                        continue
+
+                    # Cost via v
+                    cost_v = d_from_v[a] + d_from_v[b] - weight[v]
+
+                    # Cost without v
+                    dist_a = d_without_v[a]
+                    cost_without = dist_a.get(b, float("inf"))
+
+                    # If v provides a strictly better connection, it's useful
+                    if cost_v < cost_without:
+                        v_useful = True
+                        break
+
+                if v_useful:
+                    break
+
+            if v_useful:
+                continue  # cannot dominate v
+
+            # 5) v is locally dominated; remove it
+            self.remove_node(v)
+            removals.append(v)
+
+        if removals:
+            # self.dump_graph("pre-remove enclosed steiner cluster nodes", self.graph)
+            # self.graph.remove_nodes_from(removables)
+            logger.info(f"  => removed {len(removals)} distance-locally dominated steiner nodes")
+            # self.dump_graph("post-remove enclosed steiner cluster nodes", self.graph)
+            if self.do_debug:
+                logger.trace(f"  {sorted(self.get_node_key(n) for n in removals)}")
+                self.dump_state("reduce_local_steiner_dominance_by_distance", len(removals))
+                self.validate_reachability()
+
+        return len(removals)
+
+    def _local_dijkstra(self, source: int, radius: int, weight: dict[int, int]) -> dict[int, int]:
+        import heapq
+
+        dist: dict[int, int] = {source: weight[source]}
+        heap = [(weight[source], source)]
+
+        while heap:
+            d, u = heapq.heappop(heap)
+            if d > dist[u]:
+                continue
+            if d > radius:
+                break  # stop expanding beyond radius
+
+            for v in self.graph.neighbors(u):
+                nd = d + weight[v]
+                if nd < dist.get(v, float("inf")) and nd <= radius:
+                    dist[v] = nd
+                    heapq.heappush(heap, (nd, v))
+
+        return dist
+
+    def _collect_local_demand_neighborhood(
+        self,
+        center: int,
+        demand_nodes: set[int],
+        weight: dict[int, int],
+        radius: int,
+    ) -> set[int]:
+        dist = self._local_dijkstra(center, radius, weight)
+        return {u for u in dist if u in demand_nodes}
+
+    def solve_as_tree_super(self):
+        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
+        logger.trace("solve_as_tree...")
+
+        if self.super_root_index is None:
+            return 0
+
+        complexity = 0  # 3^t * n + 2^t * n^2 for Dreyfus Wagner
+
+        num_nodes = self.graph.num_nodes()
+        num_roots = len(self.terminal_sets)
+        num_terminals = len(set().union(*self.terminal_sets.values()))
+        num_super_terminals = len(self.terminal_sets[self.super_root_index])
+
+        for choose_count in range(1, num_roots + 1):
+            for comb in combinations(self.terminal_sets.keys(), choose_count):
+                num_terms = sum(len(self.terminal_sets[c]) for c in comb) + choose_count
+                complexity += (3**num_terms * num_nodes) + (2**num_terms) * (num_nodes**2)
+
+        # TODO: Change back to info level after seeing how well scipstp scales...
+        logger.warning(
+            f"    remaining complexity: {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |st|: {num_super_terminals}, |n|: {num_nodes}"
+        )
+
+        presolve_solution, presolve_block_results, presolve_block_costs = self.pre_solve_with_scipstp_super()
+
+        # --- Reassign witnessed super terminals ---
+        # If there were any super terminals in the best solution then they can be unambiguously
+        # reassigned to the root of the cluster they are witnessed in by removing them from the
+        # super_root set and adding them to a root set it is connected to.
+        num_reassigned_super_terminals = 0
+
+        roots = set(self.terminal_sets.keys()) - {self.super_root_index}
+        witnessed_super_terminals = {
+            t for t in self.terminal_sets[self.super_root_index] if t in presolve_solution
+        }
+
+        solutionGraph = subgraph_stable(self.graph, presolve_solution)
+        components = rx.weakly_connected_components(solutionGraph)
+
+        if witnessed_super_terminals:
+            for t in witnessed_super_terminals:
+                self.terminal_sets[self.super_root_index].remove(t)
+                if not self.terminal_sets[self.super_root_index]:
+                    del self.terminal_sets[self.super_root_index]
+
+                # Identify the root set that the super terminal is connected to
+                for comp in components:
+                    if t in comp:
+                        r = set(comp).intersection(roots).pop()
+                        logger.trace(
+                            f"    super terminal {self.get_node_key(t)} is connected to root {self.get_node_key(r)}"
+                        )
+                        num_reassigned_super_terminals += 1
+                        self.terminal_sets[r].add(t)
+                        break
+
+        logger.info(f"      {num_reassigned_super_terminals} super terminals reassigned to roots")
+
+        # --- Collect remaining super terminal candidate roots ---
+        # If there are any remaining super terminals we must not remove them from the graph
+        # _nor_ allow them to become isolated terminals. Therefore, we need to identify the
+        # demand sinks (roots, potential roots and terminals) in the neighborhood of each
+        # super terminal and add them to the candidate roots for that super terminal.
+        candidate_roots: dict[int, set[int]] = defaultdict(set)
+
+        if self.super_root_index in self.terminal_sets:
+            all_terminals = set().union(*self.terminal_sets.values())
+            weight_map = {i: self.graph[i][PAYLOAD_WEIGHT_KEY] for i in self.graph.node_indices()}
+
+            for t in self.terminal_sets[self.super_root_index]:
+                # We add the super root since there is potential that the super terminal is
+                # further from demand sinks than the neighborhood radius and super terminal
+                # will ensure we have the nearest potential root.
+                # NOTE: While 10 and 5 are arbitrary choices we could make them configurable,
+                #       the important thing is the super root is included.
+
+                # Root/Potential Root sinks
+                root_sinks = self._collect_local_demand_neighborhood(t, self.potential_roots, weight_map, 10)
+                # Ensure that at least one sink is in root sinks by utilizing the super root
+                paths = rx.all_shortest_paths(self.graph, t, self.super_root_index)
+                for path in paths:
+                    for v in path:
+                        if v in self.potential_roots:
+                            root_sinks.add(v)
+                            break
+                candidate_roots[t].update(root_sinks)
+
+                # Terminal sinks
+                # We include the roots of the neighborhood terminals as well as potential sinks
+                # since they could be closer and the root could be out of the neighborhood.
+                terminal_sinks = self._collect_local_demand_neighborhood(t, all_terminals, weight_map, 5)
+                terminal_roots = set()
+                for t in terminal_sinks:
+                    for r, ts in self.terminal_sets.items():
+                        if t in ts:
+                            terminal_roots.add(r)
+                            break
+                candidate_roots[t].update(terminal_roots)
+
+            logger.warning(
+                f"      {len(self.terminal_sets[self.super_root_index])} super terminals not reassigned to roots"
+            )
+
+        # Clean up potential roots
+        # At this point any potential root that is not represented in the solution can be removed from the
+        # class's potential roots list.
+        num_prev_potential_roots = len(self.potential_roots)
+        self.potential_roots.difference_update(candidate_roots)
+        num_potential_roots_removed = num_prev_potential_roots - len(self.potential_roots)
+        logger.warning(f"    removed {num_potential_roots_removed} potential roots")
+
+        # If we have reassigned any super terminal or removed any potential roots then there is the
+        # potential for the graph to further reduce in the pipeline reductions.
+        if num_reassigned_super_terminals > 0 or num_potential_roots_removed > 0:
+            return num_potential_roots_removed + num_reassigned_super_terminals
+
+        # --- Solve as tree ---
+        # Now that we have a stably reduced graph and have obtained the candidate roots for each
+        # super terminal we can solve as a tree.
+
+        start_time = time()
+        solution = self.solve_with_scipstp_super(
+            candidate_roots, presolve_block_results, presolve_block_costs
+        )
+        end_time = time()
+
+        removables = set(self.graph.node_indices()) - set(solution)
+        if self.super_root_index in removables:
+            removables.remove(self.super_root_index)
+        removals = len(removables)
+
+        if removals > 0:
+            duration = end_time - start_time
+            logger.warning(
+                f"    solved as tree in {duration:.2f}s with complexity {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |st|: {num_super_terminals}, |n|: {num_nodes}"
+            )
+
+            self.graph.remove_nodes_from(removables)
+
+            logger.info(f"    removed {removals} dead tree solution nodes")
+
+            if self.do_debug:
+                logger.trace(f"    {sorted(self.get_node_key(i) for i in removables)}")
+                self.dump_state("solve_as_tree_super", removals)
+                self.validate_reachability()
+                self.dump_graph("after solving as tree")
+
+        else:
+            logger.error("    failed to solve as tree")
+
+        return removals
+
+    def solve_as_tree(self):
+        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
+        logger.trace("solve_as_tree...")
+
+        if self.super_root_index is not None:
+            return 0
+
+        complexity = 0  # 3^t * n + 2^t * n^2 for Dreyfus Wagner
+
+        num_nodes = self.graph.num_nodes()
+        num_roots = len(self.terminal_sets)
+        num_terminals = len(set().union(*self.terminal_sets.values()))
+
+        for choose_count in range(1, num_roots + 1):
+            for comb in combinations(self.terminal_sets.keys(), choose_count):
+                num_terms = sum(len(self.terminal_sets[c]) for c in comb) + choose_count
+                complexity += (3**num_terms * num_nodes) + (2**num_terms) * (num_nodes**2)
+
+        # TODO: Change back to info level after seeing how well scipstp scales...
+        logger.warning(
+            f"    remaining complexity: {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |n|: {num_nodes}"
+        )
+
+        use_dw = (
+            self.terminal_sets
+            and num_roots + num_terminals <= DW_MAX_TREE_TERMINALS
+            and complexity <= DW_MAX_TREE_COMPLEXITY
+        )
+
+        use_scip = not use_dw and self.terminal_sets and (num_nodes > 110 or num_roots < 6)
+        # use_scip = (
+        #     not use_dw and self.terminal_sets and ((num_nodes > 110 and num_roots <= 10) or num_roots < 6)
+        # )
+
+        start_time = time()
+        if use_dw:
+            logger.warning("      solving as tree composite using Dreyfus-Wagner solver")
+            solution = self.solve_with_dw()
+
+        elif use_scip:
+            logger.warning("      solving as tree composite using SCIP-Jack solver")
+            solution = self.solve_with_scipstp()
+
+        else:
+            logger.warning("      solving as MCF MIP using HiGHS solver...")
+            return 0
+        end_time = time()
+
+        removables = set(self.graph.node_indices()) - set(solution)
+        removals = len(removables)
+
+        if removals > 0:
+            duration = end_time - start_time
+            logger.warning(
+                f"    solved as tree in {duration:.2f}s with complexity {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |n|: {num_nodes}"
+            )
+
+            if self.do_debug:
+                print("pre-tree-solution graph dead node removal...")
+                self.validate_reachability()
+                self.dump_graph("before solving as tree")
+
+            self.graph.remove_nodes_from(removables)
+
+            logger.info(f"    removed {removals} dead tree solution nodes")
+            if self.do_debug:
+                logger.trace(f"    {sorted(self.get_node_key(i) for i in removables)}")
+                self.dump_state("solve_as_tree", removals)
+                self.validate_reachability()
+                self.dump_graph("after solving as tree")
+
+        else:
+            logger.error("    failed to solve as tree")
+
+        return removals
+
+    # MARK: Tree Solvers
+
+    def solve_root_with_dw(self, root: int):
+        """Solves a single root from the remaining reduced state graph."""
+        import nwst_dw
+
+        logger.trace("solve_root_as_dw...")
+
+        adj_map = {u: set(self.graph.neighbors(u)) for u in self.graph.node_indices()}
+        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        solver = nwst_dw.Solver(adj_map, node_weight_map)
+        terminals_list = list(self.terminal_sets[root] | {root})
+
+        self.solved_trees += 1
+        cost, _, solution_nodes = solver.solve(terminals_list, root)
+        if cost == 18446744073709551615:
+            raise RuntimeError("Unsolvable Steiner tree!")
+
+        if solution_nodes:
+            logger.debug(
+                f"    solved tree for root {self.get_node_key(root)} containing {len(terminals_list)} terminals with cost {cost}"
+            )
+            logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
+
+        return solution_nodes
+
+    def solve_with_dw(self):
+        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
+        logger.trace("solve_as_dw...")
+
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        adj_map = {u: set(self.graph.neighbors(u)) for u in self.graph.node_indices()}
+        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        terminal_keys = list(self.terminal_sets.keys())
+        partitions = set_partitions(terminal_keys)
+
+        valid_blocks = set()
+        valid_partitions = []
+
+        # Partition filtering
+        for partition in partitions:
+            is_valid = True
+            for block in partition:
+                block_key = tuple(sorted(block))
+                if len(block) < 2 or block_key in valid_blocks:
+                    continue
+                block_reachable = True
+                for i in range(len(block)):
+                    for j in range(i + 1, len(block)):
+                        if not rx.has_path(self.graph, block[i], block[j]):
+                            block_reachable = False
+                            break
+                    if not block_reachable:
+                        break
+                if block_reachable:
+                    valid_blocks.add(block_key)
+                else:
+                    is_valid = False
+                    break
+            if is_valid:
+                valid_partitions.append(partition)
+
+        # 2. Collect all unique blocks that actually exist within valid partitions
+        unique_valid_blocks = set()
+        for partition in valid_partitions:
+            for block in partition:
+                unique_valid_blocks.add(tuple(sorted(block)))
+
+        block_results = {}
+
+        num_roots = len(terminal_keys)
+        num_terminals = len(set().union(*self.terminal_sets.values()))
+
+        # For index masking...
+        nodes_list = list(self.graph.node_indices())
+        node_index = {u: i for i, u in enumerate(nodes_list)}
+
+        # Determine if parallel block solving is warranted
+        if num_roots + num_terminals > DW_SOLVE_PAR_THRESHOLD:
+            # Map unique blocks to their full, flattened terminal sets for the solver
+            logger.trace(f"  Concurrently solving {len(unique_valid_blocks)} unique valid blocks...")
+
+            worker_tasks = []
+            for block_key in unique_valid_blocks:
+                terminals = set()
+                for k in block_key:
+                    terminals.add(k)
+                    terminals.update(self.terminal_sets[k])
+                worker_tasks.append((block_key, tuple(terminals)))
+
+            self.solved_trees += len(worker_tasks)
+            with ProcessPoolExecutor() as executor:
+                futures = [
+                    executor.submit(
+                        _worker_solve_single_block_dw, task[0], task[1], adj_map, node_weight_map, node_index
+                    )
+                    for task in worker_tasks
+                ]
+                for f in as_completed(futures):
+                    block_key, mask = f.result()
+                    block_results[block_key] = mask
+        else:
+            # Fallback to sequential block solving if below threshold
+            import nwst_dw
+
+            logger.trace(f"  Sequentially solving {len(unique_valid_blocks)} unique valid blocks...")
+            solver = nwst_dw.Solver(adj_map, node_weight_map)
+
+            for block_key in unique_valid_blocks:
+                terminals = set()
+                for k in block_key:
+                    terminals.add(k)
+                    terminals.update(self.terminal_sets[k])
+                terminals_list = list(terminals)
+
+                logger.trace(f"    solving block {block_key}...")
+
+                self.solved_trees += 1
+                cost, _, solution_nodes = solver.solve(terminals_list, terminals_list[0])
+                if cost == 18446744073709551615:
+                    raise RuntimeError("Unsolvable Steiner tree!")
+
+                logger.trace(
+                    f"    solved block {block_key} containing {len(terminals_list)} terminals with cost {cost}"
+                )
+                logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
+
+                mask = 0
+                for u in solution_nodes:
+                    mask |= 1 << node_index[u]
+
+                block_results[block_key] = mask
+
+        # Phase 2: Sequential realization of partitions using memoized blocks
+        best_cost = float("inf")
+        best_solution_mask = 0
+
+        for partition in valid_partitions:
+            solution_mask = 0
+            for block in partition:
+                block_key = tuple(sorted(block))
+                solution_mask |= block_results[block_key]
+
+            # sum weights over bits
+            total_cost = 0
+            mask = solution_mask
+            while mask:
+                lsb = mask & -mask
+                idx = lsb.bit_length() - 1
+                u = nodes_list[idx]
+                total_cost += node_weight_map[u]
+                mask ^= lsb
+
+            if total_cost < best_cost:
+                best_cost = total_cost
+                best_solution_mask = solution_mask
+
+        best_solution = set()
+        mask = best_solution_mask
+        while mask:
+            lsb = mask & -mask
+            idx = lsb.bit_length() - 1
+            u = nodes_list[idx]
+            best_solution.add(u)
+            mask ^= lsb
+
+        if best_solution:
+            logger.debug(
+                f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
+            )
+            logger.debug(
+                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
+            )
+
+        return best_solution
+
+    def solve_root_with_scipstp(self, root: int):
+        """Solves a single root from the remaining reduced state graph."""
+        logger.trace("solve_root_with_scipstp...")
+
+        # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
+        # so we need to pass in the adjacency map and node weights
+        adj_map = {u: sorted(self.reduction_neighbors(u)) for u in self.graph.node_indices()}
+        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        terminal_keys = [root]
+        partitions = set_partitions(terminal_keys)
+
+        valid_blocks = set()
+        valid_partitions = []
+
+        # 1. Sequential partition filtering loop
+        for partition in partitions:
+            is_valid = True
+            for block in partition:
+                block_key = tuple(sorted(block))
+                if len(block) < 2 or block_key in valid_blocks:
+                    continue
+                block_reachable = True
+                for i in range(len(block)):
+                    for j in range(i + 1, len(block)):
+                        if not rx.has_path(self.graph, block[i], block[j]):
+                            block_reachable = False
+                            break
+                    if not block_reachable:
+                        break
+                if block_reachable:
+                    valid_blocks.add(block_key)
+                else:
+                    is_valid = False
+                    break
+            if is_valid:
+                valid_partitions.append(partition)
+
+        # 2. Collect all unique blocks that actually exist within valid partitions
+        unique_valid_blocks = set()
+        for partition in valid_partitions:
+            for block in partition:
+                unique_valid_blocks.add(tuple(sorted(block)))
+
+        block_results = {}
+
+        # For index masking...
+        nodes_list = list(self.graph.node_indices())
+        node_index = {u: i for i, u in enumerate(nodes_list)}
+
+        # DIMACS node ids are 1-based, contiguous
+        dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
+        inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
+
+        for block_key in unique_valid_blocks:
+            terminals = set()
+            for k in block_key:
+                terminals.add(k)
+                terminals.update(self.terminal_sets[k])
+            terminals_list = list(terminals)
+
+            logger.trace(f"    solving block {block_key}...")
+
+            self.solved_trees += 1
+            cost, solution_nodes = _solve_single_block_scipstp_seq(
+                self.instance_id,
+                block_key,
+                terminals_list,
+                adj_map,
+                node_weight_map,
+                node_index,
+                dimacs_id,
+                inv_dimacs_id,
+                enable_super_root_index=0,
+                do_debug=self.do_debug,
+            )
+
+            logger.trace(
+                f"    solved block {block_key} containing {len(terminals_list)} terminals with cost {cost}"
+            )
+            logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
+
+            mask = 0
+            for u in solution_nodes:
+                mask |= 1 << node_index[u]
+
+            block_results[block_key] = mask
+
+        # Phase 2: Sequential realization of partitions using memoized blocks
+        best_cost = float("inf")
+        best_solution_mask = 0
+
+        for partition in valid_partitions:
+            solution_mask = 0
+            for block in partition:
+                block_key = tuple(sorted(block))
+                solution_mask |= block_results[block_key]
+
+            # sum weights over bits
+            total_cost = 0
+            mask = solution_mask
+            while mask:
+                lsb = mask & -mask
+                idx = lsb.bit_length() - 1
+                u = nodes_list[idx]
+                total_cost += node_weight_map[u]
+                mask ^= lsb
+
+            if total_cost < best_cost:
+                best_cost = total_cost
+                best_solution_mask = solution_mask
+
+        best_solution = set()
+        mask = best_solution_mask
+        while mask:
+            lsb = mask & -mask
+            idx = lsb.bit_length() - 1
+            u = nodes_list[idx]
+            best_solution.add(u)
+            mask ^= lsb
+
+        if best_solution:
+            logger.debug(
+                f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
+            )
+            logger.debug(
+                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
+            )
+
+        return best_solution
+
+    def pre_solve_with_scipstp_super(self):
+        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
+        logger.trace("solve_with_scipstp...")
+
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
+        # so we need to pass in the adjacency map and node weights
+        adj_map = {u: sorted(self.reduction_neighbors(u)) for u in self.graph.node_indices()}
+        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        terminal_keys = list(set(self.terminal_sets.keys()) - {self.super_root_index})
+        root_bit = {r: 1 << i for i, r in enumerate(terminal_keys)}
+
+        # 1. Partition filtering...
+        logger.trace("    generating valid partition blocks...")
+
+        valid_blocks = set()
+
+        # Root reachability for component generation...
+        logger.trace("      building reachability matrix...")
+        reachable = {r: {r} for r in terminal_keys}
+        for i, u in enumerate(terminal_keys):
+            for v in terminal_keys[i + 1 :]:
+                if rx.has_path(self.graph, u, v):
+                    reachable[u].add(v)
+                    reachable[v].add(u)
+
+        # Connected root components generation...
+        components = []
+        remaining_roots = set(terminal_keys)
+        while remaining_roots:
+            root = next(iter(remaining_roots))
+            component = sorted(reachable[root])
+            components.append(component)
+            remaining_roots -= reachable[root]
+
+        logger.trace(
+            f"      identified {len(components)} reachability component(s): {[len(c) for c in components]}"
+        )
+
+        # Since the partition DP reconstructs the optimal partitioning, we only need
+        # to generate the valid blocks. Any valid block must be wholly contained
+        # within a single reachability component.
+        for component in components:
+            logger.trace(f"      generating blocks for component size={len(component)}...")
+            k = len(component)
+            for mask in range(1, 1 << k):
+                block = tuple(component[i] for i in range(k) if mask & (1 << i))
+                valid_blocks.add(block)
+
+        block_results = {}
+        block_costs = {}
+
+        num_roots = len(terminal_keys)
+
+        # For index masking...
+        nodes_list = list(self.graph.node_indices())
+        node_index = {u: i for i, u in enumerate(nodes_list)}
+
+        # DIMACS node ids are 1-based, contiguous
+        dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
+        inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
+
+        # Determine if parallel block solving is warranted
+        if num_roots >= SCIPSTP_PAR_ROOTS_THRESHOLD:
+            # Map unique blocks to their full, flattened terminal sets for the solver
+            logger.warning(f"    concurrently solving {len(valid_blocks)} unique valid blocks...")
+
+            worker_tasks = []
+            for block_key in valid_blocks:
+                terminals = set()
+                for k in block_key:
+                    terminals.add(k)
+                    terminals.update(self.terminal_sets[k])
+                terminals = sorted(terminals)
+
+                worker_tasks.append((block_key, terminals))
+
+            self.solved_trees += len(worker_tasks)
+
+            with ProcessPoolExecutor() as executor:
+                futures = [
+                    executor.submit(
+                        _worker_solve_single_block_scipstp,
+                        self.instance_id,
+                        task[0],
+                        task[1],
+                        adj_map,
+                        node_weight_map,
+                        node_index,
+                        dimacs_id,
+                        inv_dimacs_id,
+                        enable_super_root_index=0,
+                        do_debug=self.do_debug,
+                    )
+                    for task in worker_tasks
+                ]
+
+                for f in as_completed(futures):
+                    block_key, cost, mask = f.result()
+                    block_results[block_key] = mask
+                    block_costs[block_key] = cost
+
+        else:
+            # Fallback to sequential block solving if below threshold
+            # Since we still need to have a temporary file for each unique block and call the executable
+            # we'll use the same helper functions as the concurrent version...
+            logger.warning(f"    sequentially solving {len(valid_blocks)} unique valid blocks...")
+
+            for block_key in valid_blocks:
+                terminals = set()
+                for k in block_key:
+                    terminals.add(k)
+                    terminals.update(self.terminal_sets[k])
+                terminals_list = sorted(terminals)
+
+                logger.trace(f"    solving block {block_key}...")
+
+                self.solved_trees += 1
+
+                cost, solution_nodes = _solve_single_block_scipstp_seq(
+                    self.instance_id,
+                    block_key,
+                    terminals_list,
+                    adj_map,
+                    node_weight_map,
+                    node_index,
+                    dimacs_id,
+                    inv_dimacs_id,
+                    enable_super_root_index=0,
+                    do_debug=self.do_debug,
+                )
+
+                logger.trace(
+                    f"    solved block {block_key} containing {len(terminals_list)} terminals with cost {cost}"
+                )
+                logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
+
+                mask = 0
+                for u in solution_nodes:
+                    mask |= 1 << node_index[u]
+
+                block_results[block_key] = mask
+                block_costs[block_key] = cost
+
+        # Phase 1: Build block mask tables
+        logger.trace("    building block mask table...")
+
+        block_mask_costs = {}
+        block_mask_solutions = {}
+
+        for block_key, solution_mask in block_results.items():
+            block_mask = 0
+
+            for r in block_key:
+                block_mask |= root_bit[r]
+
+            block_mask_costs[block_mask] = block_costs[block_key]
+            block_mask_solutions[block_mask] = solution_mask
+
+        # Phase 2: Sequential realization of partitions using memoized blocks
+        logger.trace("    solving partition DP...")
+
+        full_mask = (1 << len(terminal_keys)) - 1
+
+        dp = [float("inf")] * (full_mask + 1)
+        choice = [None] * (full_mask + 1)
+
+        dp[0] = 0
+
+        for state in range(full_mask + 1):
+            if dp[state] == float("inf"):
+                continue
+
+            remaining = full_mask ^ state
+            sub = remaining
+
+            while sub:
+                if sub in block_mask_costs:
+                    new_cost = dp[state] + block_mask_costs[sub]
+
+                    next_state = state | sub
+
+                    if new_cost < dp[next_state]:
+                        dp[next_state] = new_cost
+                        choice[next_state] = (state, sub)
+
+                sub = (sub - 1) & remaining
+
+        best_cost = dp[full_mask]
+        best_solution_mask = 0
+
+        if best_cost == float("inf") or choice[full_mask] is None:
+            logger.error("    no valid partition solution found")
+            return set(), {}, {}
+
+        state = full_mask
+
+        while state:
+            prev_choice = choice[state]
+
+            if prev_choice is None:
+                logger.error(f"    broken DP reconstruction at state {state}")
+                break
+
+            prev_state, block_mask = prev_choice
+
+            best_solution_mask |= block_mask_solutions[block_mask]
+
+            state = prev_state
+
+        # Phase 3: Extract solution
+        logger.trace("    extracting solution...")
+
+        best_solution = set()
+        mask = best_solution_mask
+        while mask:
+            lsb = mask & -mask
+            idx = lsb.bit_length() - 1
+            u = nodes_list[idx]
+            best_solution.add(u)
+            mask ^= lsb
+
+        if best_solution:
+            logger.debug(
+                f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
+            )
+            logger.debug(
+                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
+            )
+
+        return best_solution, block_results, block_costs
+
+    def solve_with_scipstp_super(
+        self,
+        candidate_roots: dict[int, set[int]],
+        presolve_block_results: dict[tuple[int, ...], int],
+        presolve_block_costs: dict[tuple[int, ...], int],
+    ):
+        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
+        logger.trace("solve_with_scipstp_super...")
+
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        assert self.super_root_index is not None, "super root index must be set"
+
+        # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
+        # so we need to pass in the adjacency map and node weights
+        adj_map = {u: sorted(self.reduction_neighbors(u)) for u in self.graph.node_indices()}
+        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        roots = list(set(self.terminal_sets.keys()) - {self.super_root_index})
+        surviving_sts = sorted(candidate_roots.keys())
+        coverage_entities = roots + surviving_sts
+        coverage_bit = {u: 1 << i for i, u in enumerate(coverage_entities)}
+
+        # Partition filtering...
+        logger.trace("    generating valid partition blocks...")
+
+        valid_blocks = set()
+
+        # Root reachability for component generation...
+        logger.trace("      building reachability matrix...")
+        reachable = {r: {r} for r in coverage_entities}
+        for i, u in enumerate(coverage_entities):
+            for v in coverage_entities[i + 1 :]:
+                if rx.has_path(self.graph, u, v):
+                    reachable[u].add(v)
+                    reachable[v].add(u)
+
+        # Connected root components generation...
+        components = []
+        remaining_roots = set(coverage_entities)
+        while remaining_roots:
+            root = next(iter(remaining_roots))
+            component = sorted(reachable[root])
+            components.append(component)
+            remaining_roots -= reachable[root]
+
+        logger.trace(
+            f"      identified {len(components)} reachability component(s): {[len(c) for c in components]}"
+        )
+
+        # Since the partition DP reconstructs the optimal partitioning, we only need
+        # to generate the valid blocks. Any valid block must be wholly contained
+        # within a single reachability component.
+        for component in components:
+            logger.trace(f"      generating blocks for component size={len(component)}...")
+            k = len(component)
+            for mask in range(1, 1 << k):
+                block = tuple(component[i] for i in range(k) if mask & (1 << i))
+                valid_blocks.add(block)
+
+        block_results = dict(presolve_block_results)
+        block_costs = dict(presolve_block_costs)
+
+        unsolved_blocks = []
+        for block_key in valid_blocks:
+            if block_key in block_results:
+                continue
+            unsolved_blocks.append(block_key)
+
+        num_roots = len(coverage_entities)
+
+        # For index masking...
+        nodes_list = list(self.graph.node_indices())
+        node_index = {u: i for i, u in enumerate(nodes_list)}
+
+        # DIMACS node ids are 1-based, contiguous
+        dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
+        inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
+
+        # Determine if parallel block solving is warranted
+        if num_roots >= SCIPSTP_PAR_ROOTS_THRESHOLD:
+            # Map unique blocks to their full, flattened terminal sets for the solver
+            logger.warning(f"    concurrently solving {len(valid_blocks)} unique valid blocks...")
+
+            worker_tasks = []
+            for block_key in unsolved_blocks:
+                terminals = set()
+
+                # A super terminal behaves as a terminal in the presence of another root,
+                # yet it behaves as a root with a single terminal (the super root) when
+                # there are no other roots. This enforces potential root transit when the
+                # super terminals are considered in isolation.
+                sr_index = 0  # disabled
+                if all(i in surviving_sts for i in block_key):
+                    terminals.add(self.super_root_index)
+                    sr_index = self.super_root_index
+
+                for k in block_key:
+                    terminals.add(k)
+                    if k not in surviving_sts:
+                        terminals.update(self.terminal_sets[k])
+
+                terminals = sorted(terminals)
+
+                worker_tasks.append((block_key, terminals, sr_index))
+
+            self.solved_trees += len(worker_tasks)
+
+            with ProcessPoolExecutor() as executor:
+                futures = [
+                    executor.submit(
+                        _worker_solve_single_block_scipstp,
+                        self.instance_id,
+                        task[0],
+                        task[1],
+                        adj_map,
+                        node_weight_map,
+                        node_index,
+                        dimacs_id,
+                        inv_dimacs_id,
+                        enable_super_root_index=task[2],
+                        do_debug=self.do_debug,
+                    )
+                    for task in worker_tasks
+                ]
+
+                for f in as_completed(futures):
+                    block_key, cost, mask = f.result()
+                    block_results[block_key] = mask
+                    block_costs[block_key] = cost
+
+        else:
+            # Fallback to sequential block solving if below threshold
+            # Since we still need to have a temporary file for each unique block and call the executable
+            # we'll use the same helper functions as the concurrent version...
+            logger.warning(f"    sequentially solving {len(valid_blocks)} unique valid blocks...")
+
+            num_blocks = len(unsolved_blocks)
+
+            for block_n, block_key in enumerate(unsolved_blocks):
+                terminals = set()
+
+                # A super terminal behaves as a terminal in the presence of another root,
+                # yet it behaves as a root with a single terminal (the super root) when
+                # there are no other roots. The enforces potential root transit when the
+                # super terminals are considered in isolation.
+                sr_index = 0  # disabled
+                if all(i in surviving_sts for i in block_key):
+                    terminals.add(self.super_root_index)
+                    sr_index = self.super_root_index
+
+                for k in block_key:
+                    terminals.add(k)
+                    if k not in surviving_sts:
+                        terminals.update(self.terminal_sets[k])
+
+                terminals_list = sorted(terminals)
+
+                logger.trace(f"    solving ({block_n} of {num_blocks}) block {block_key}...")
+
+                self.solved_trees += 1
+
+                cost, solution_nodes = _solve_single_block_scipstp_seq(
+                    self.instance_id,
+                    block_key,
+                    terminals_list,
+                    adj_map,
+                    node_weight_map,
+                    node_index,
+                    dimacs_id,
+                    inv_dimacs_id,
+                    enable_super_root_index=sr_index,
+                    do_debug=self.do_debug,
+                )
+
+                logger.trace(
+                    f"    solved ({block_n} of {num_blocks}) block {block_key} containing {len(terminals_list)} terminals with cost {cost}"
+                )
+
+                mask = 0
+                for u in solution_nodes:
+                    mask |= 1 << node_index[u]
+
+                block_results[block_key] = mask
+                block_costs[block_key] = cost
+
+        # Build block mask tables
+        logger.trace("    building block mask table...")
+
+        block_mask_costs = {}
+        block_mask_solutions = {}
+
+        for block_key, solution_mask in block_results.items():
+            block_mask = 0
+
+            for r in block_key:
+                block_mask |= coverage_bit[r]
+
+            block_mask_costs[block_mask] = block_costs[block_key]
+            block_mask_solutions[block_mask] = solution_mask
+
+        # Sequential realization of partitions using memoized blocks
+        logger.trace("    solving partition DP...")
+
+        full_mask = (1 << len(coverage_entities)) - 1
+
+        dp = [float("inf")] * (full_mask + 1)
+        choice = [None] * (full_mask + 1)
+
+        dp[0] = 0
+
+        for state in range(full_mask + 1):
+            if dp[state] == float("inf"):
+                continue
+
+            remaining = full_mask ^ state
+            sub = remaining
+
+            while sub:
+                if sub in block_mask_costs:
+                    new_cost = dp[state] + block_mask_costs[sub]
+
+                    next_state = state | sub
+
+                    if new_cost < dp[next_state]:
+                        dp[next_state] = new_cost
+                        choice[next_state] = (state, sub)
+
+                sub = (sub - 1) & remaining
+
+        best_cost = dp[full_mask]
+        best_solution_mask = 0
+
+        if best_cost == float("inf") or choice[full_mask] is None:
+            logger.error("    no valid partition solution found")
+            return set()
+
+        state = full_mask
+
+        while state:
+            prev_choice = choice[state]
+
+            if prev_choice is None:
+                logger.error(f"    broken DP reconstruction at state {state}")
+                break
+
+            prev_state, block_mask = prev_choice
+
+            best_solution_mask |= block_mask_solutions[block_mask]
+
+            state = prev_state
+
+        # Phase 3: Extract solution
+        logger.trace("    solve_with_scipstp_super: extracting solution...")
+
+        best_solution = set()
+        mask = best_solution_mask
+        while mask:
+            lsb = mask & -mask
+            idx = lsb.bit_length() - 1
+            u = nodes_list[idx]
+            mask ^= lsb
+            best_solution.add(u)
+
+        if best_solution:
+            logger.debug(
+                f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
+            )
+            logger.debug(
+                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
+            )
+
+        return best_solution
+
+    def solve_with_scipstp(self):
+        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
+        logger.trace("solve_with_scipstp...")
+
+        from concurrent.futures import ProcessPoolExecutor
+
+        from sfpgre_cch import get_interactivity_edges
+
+        self.dump_graph("solve_with_scipstp: pre-solve")
+
+        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        terminal_keys = list(self.terminal_sets.keys())
+        root_bit = {r: 1 << i for i, r in enumerate(terminal_keys)}
+
+        # --- Component Level Data Mapping ---
+        # Since scipstp has issues with graphs containing multiple components,
+        # we need to partition the graph into connected components and handle
+        # the adj mapping and weights for each component separately.
+        # NOTE: Since we have no super-root WCC is fine here.
+        logger.trace("      building component level data...")
+
+        node_weights = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
+        self.set_edge_weights()
+        arbor_all_shortest_path_unions = {r: set() for r in terminal_keys}
+        for r, terminals in self.terminal_sets.items():
+            for t in terminals:
+                paths = rx.all_shortest_paths(self.graph, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
+                arbor_all_shortest_path_unions[r].update(*paths)
+
+        interactivity_edges = get_interactivity_edges(
+            self.graph, self.terminal_sets, node_weights, arbor_all_shortest_path_unions
+        )
+
+        interactivity_graph = subgraph_stable(self.graph, terminal_keys)
+        interactivity_graph.remove_edges_from(interactivity_graph.edges())
+        interactivity_graph.add_edges_from(interactivity_edges)
+
+        # print(f"      interactivity_graph.num_nodes = {interactivity_graph.num_nodes()}")
+        # print(
+        #     f"      map: { {i: (n, self.get_node_key(n)) for i, n in enumerate(interactivity_graph.node_indices())} }"
+        # )
+        # adj_matrix = rx.adjacency_matrix(interactivity_graph)
+        # print(f"      adj_matrix.shape =\n{adj_matrix}")
+
+        wcc = rx.weakly_connected_components(self.graph)
+
+        component_data = {}
+        root_component_map = {}
+        reachable = {r: {r} for r in terminal_keys}
+        terminal_keys_set = set(terminal_keys)
+
+        for cc_i, cc in enumerate(wcc):
+            # Root reachability for component generation...
+            cc_reachable = cc & terminal_keys_set
+            if not cc_reachable:
+                continue
+
+            for r in cc_reachable:
+                reachable[r].update(cc_reachable)
+                root_component_map[r] = cc_i
+
+            # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
+            # so we need to pass in the adjacency map and node weights
+            adj_map = {}
+            for u in cc:
+                adj_map[u] = sorted(self.reduction_neighbors(u))
+
+            # For index masking...
+            nodes_list = list(self.graph.node_indices())
+            node_index = {u: i for i, u in enumerate(nodes_list)}
+
+            # DIMACS node ids are 1-based, contiguous
+            dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
+            inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
+
+            component_data[cc_i] = {
+                "component": cc,
+                "reachable": cc_reachable,
+                "adj_map": adj_map,
+                "nodes_list": nodes_list,
+                "node_index": node_index,
+                "dimacs_id": dimacs_id,
+                "inv_dimacs_id": inv_dimacs_id,
+            }
+
+        logger.warning(
+            f"      identified {len(component_data)} reachability component(s): {[len(cc_data.get('reachable')) for cc_data in component_data.values()]}"
+        )
+
+        # Partition block filtering...
+        logger.trace("    generating valid partition blocks...")
+
+        valid_blocks: dict[int, set[tuple]] = defaultdict(set)
+        num_blocks = 0
+        num_candidate_blocks = 0
+
+        # Since the partition DP reconstructs the optimal partitioning, we only need
+        # to generate the valid blocks. Any valid block must be wholly contained
+        # within a single reachability component.
+        for cc_i, cc_data in component_data.items():
+            reachable = sorted(cc_data.get("reachable"))
+            k = len(reachable)
+            for mask in range(1, 1 << k):
+                block = tuple(reachable[i] for i in range(k) if mask & (1 << i))
+                num_candidate_blocks += 1
+                subIG = interactivity_graph.subgraph(block)
+                if not rx.is_strongly_connected(subIG):
+                    logger.trace(
+                        f"      skipping invalid block {[self.get_node_key(n) for n in block]} (not strongly connected)"
+                    )
+                    continue
+                valid_blocks[cc_i].add(block)
+                num_blocks += 1
+
+        # Partition block solving...
+        block_results = {}
+        block_costs = {}
+
+        if num_blocks >= 256:
+            logger.warning(
+                f"    concurrently solving {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
+            )
+
+            # Map unique blocks to their full, flattened terminal sets for the solver
+            worker_tasks = []
+            for cc_i, cc_valid_blocks in valid_blocks.items():
+                # NOTE: Terminals are translated within the worker process
+                for block_key in cc_valid_blocks:
+                    terminals = set()
+                    for k in block_key:
+                        terminals.add(k)
+                        terminals.update(self.terminal_sets[k])
+                    terminals = sorted(terminals)
+
+                    worker_tasks.append((cc_i, block_key, terminals))
+
+            self.solved_trees += len(worker_tasks)
+
+            try:
+                with ProcessPoolExecutor(max_workers=14) as executor:
+                    chunksize = max(1, min(256, len(worker_tasks) // 16))
+                    logger.warning(f"    chunksize: {chunksize}")
+
+                    task_generator = (
+                        (self.instance_id, task, component_data, node_weight_map) for task in worker_tasks
+                    )
+                    results = executor.map(_worker_wrapper, task_generator, chunksize=chunksize)
+
+                    for completed_count, (block_key, cost, mask) in enumerate(results, start=1):
+                        if completed_count % 1_000 == 0:
+                            logger.warning(
+                                f"    solved ({completed_count}/{num_blocks}) {completed_count / num_blocks:.2%}..."
+                            )
+                        block_results[block_key] = mask
+                        block_costs[block_key] = cost
+
+            except BrokenProcessPool as e:
+                logger.critical(f"Instance failed: Worker process died violently (OOM or Segfault). {e}")
+                print(e)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Instance failed: Python exception bubbled up from worker: {e}")
+                print(e, file=sys.stderr)
+
+        else:
+            # Fallback to sequential block solving if below threshold
+            # Since we still need to have a temporary file for each unique block and call the executable
+            # we'll use the same helper functions as the concurrent version...
+            logger.warning(
+                f"    sequentially solving {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
+            )
+
+            block_n = 0
+
+            for cc_i, cc_valid_blocks in valid_blocks.items():
+                for block_key in cc_valid_blocks:
+                    terminals = set()
+                    for k in block_key:
+                        terminals.add(k)
+                        terminals.update(self.terminal_sets[k])
+                    terminals = sorted(terminals)
+
+                    cc_data = component_data[cc_i]
+
+                    block_n += 1
+                    logger.trace(f"    solving ({block_n}/{num_blocks}) block {block_key}...")
+
+                    self.solved_trees += 1
+                    cost, solution_nodes = _solve_single_block_scipstp_seq(
+                        self.instance_id,
+                        block_key,
+                        terminals,
+                        cc_data["adj_map"],
+                        node_weight_map,
+                        cc_data["node_index"],
+                        cc_data["dimacs_id"],
+                        cc_data["inv_dimacs_id"],
+                        enable_super_root_index=0,
+                        do_debug=self.do_debug,
+                        use_mip=True,
+                    )
+
+                    logger.trace(
+                        f"    solved ({block_n}/{num_blocks}) block {block_key} containing {len(terminals)} terminals with cost {cost}"
+                    )
+                    # logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
+
+                    mask = 0
+                    node_index = cc_data["node_index"]
+                    for u in solution_nodes:
+                        mask |= 1 << node_index[u]
+
+                    block_results[block_key] = mask
+                    block_costs[block_key] = cost
+
+        # Phase 1: Build block mask tables
+        logger.trace("    building block mask table...")
+
+        block_mask_costs = {}
+        block_mask_solutions = {}
+
+        for block_key, solution_mask in block_results.items():
+            block_mask = 0
+
+            for r in block_key:
+                block_mask |= root_bit[r]
+
+            block_mask_costs[block_mask] = block_costs[block_key]
+            block_mask_solutions[block_mask] = solution_mask
+
+        # Phase 2: Sequential realization of partitions using memoized blocks (Sparse Loop)
+        logger.trace("    solving partition DP...")
+        start_time = time()
+
+        full_mask = (1 << len(terminal_keys)) - 1
+
+        dp = [float("inf")] * (full_mask + 1)
+        choice = [None] * (full_mask + 1)
+
+        dp[0] = 0
+
+        for state in range(full_mask + 1):
+            if dp[state] == float("inf"):
+                continue
+
+            remaining = full_mask ^ state
+            sub = remaining
+
+            while sub:
+                if sub in block_mask_costs:
+                    new_cost = dp[state] + block_mask_costs[sub]
+
+                    next_state = state | sub
+
+                    if new_cost < dp[next_state]:
+                        dp[next_state] = new_cost
+                        choice[next_state] = (state, sub)
+
+                sub = (sub - 1) & remaining
+
+        logger.trace(f"    solved in {time() - start_time:.2f}s")
+
+        best_cost = dp[full_mask]
+        best_solution_mask = 0
+
+        if best_cost == float("inf") or choice[full_mask] is None:
+            logger.error("    no valid partition solution found")
+            return set()
+
+        state = full_mask
+
+        while state:
+            prev_choice = choice[state]
+
+            if prev_choice is None:
+                logger.error(f"    broken DP reconstruction at state {state}")
+                break
+
+            prev_state, block_mask = prev_choice
+
+            best_solution_mask |= block_mask_solutions[block_mask]
+
+            state = prev_state
+
+        # Phase 3: Extract solution
+        logger.trace("    extracting solution...")
+
+        best_solution = set()
+        mask = best_solution_mask
+        while mask:
+            lsb = mask & -mask
+            idx = lsb.bit_length() - 1
+            u = nodes_list[idx]
+            best_solution.add(u)
+            mask ^= lsb
+
+        if best_solution:
+            logger.debug(
+                f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
+            )
+            logger.debug(
+                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
+            )
+
+        return best_solution
 
     # MARK: Main Loop
 
@@ -2236,9 +4350,17 @@ class SFGraphReductionEngine:
         num_terminal_roots_start = len(self.terminal_sets)
         num_terminals_start = sum(len(ts) for ts in self.terminal_sets.values()) + num_terminal_roots_start
 
+        self.set_edge_weights()
+        self._maximum_rt_distance = self.get_maximum_rt_distance()
+        logger.info(f"  maximum RT distance: {self._maximum_rt_distance}")
+
         tmp_num_nodes = self.graph.num_nodes() + 1
         iteration = 0
         while (num_nodes := self.graph.num_nodes()) != tmp_num_nodes:
+            # Update self.do_debug flag when log level is externally modified
+            active_severity = logger._core.min_level  # ty:ignore[unresolved-attribute]
+            self.do_debug = active_severity <= 10
+
             tmp_num_nodes = num_nodes
             iteration += 1
             logger.info(f"--- Iteration {iteration} ---")
@@ -2246,10 +4368,11 @@ class SFGraphReductionEngine:
             # Isolates in the graph are always safe to directly remove
             if isolates := rx.isolates(self.graph):
                 self.graph.remove_nodes_from(isolates)
-                if self.do_debug:
-                    logger.info(f"  removed {len(isolates)} isolates...")
+                logger.info(f"  removed {len(isolates)} isolates...")
+                logger.trace(f"    {sorted(self.get_node_key(n) for n in isolates)}")
 
-            # Reduce degree1 demand roots - this is a terminal set consolidation only
+            # Reduce demand roots - this is a terminal set consolidation only
+            self.reduce_roots_via_articulation_points()
             self.reduce_demand_roots()
 
             # Reduce adjacent terminals - this is a terminal reduction by consume with terminal set consolidation
@@ -2265,7 +4388,15 @@ class SFGraphReductionEngine:
             self.reduce_degree1_roots()
 
             if num_nodes != self.graph.num_nodes():
-                logger.debug("  repeating simple reductions...")
+                logger.info("  repeating simple reductions...")
+                continue
+
+            if not self.terminal_sets:
+                logger.success("  no terminal sets left. All demands are satisfied!")
+                break
+
+            # Reduce roots by distance - this is a terminal set consumption and Steiner node removal reduction
+            if self.reduce_roots_by_distance():
                 continue
 
             # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
@@ -2283,32 +4414,52 @@ class SFGraphReductionEngine:
             # Reduce k-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
             self.reduce_degreek_steiner_dominance()
 
-            # # Reduce steiner bridges - this is a Steiner node graph reduction by `consume` only
+            # Reduce steiner bridges - this is a Steiner node graph reduction by `consume` only
             self.reduce_steiner_bridges()
+
+            # Reduce Steiner nodes by distance - this is a Steiner node graph reduction by `remove` only
+            self.reduce_steiner_nodes_by_distance()
 
             # Reduce degreek enclosed steiner - this is a Steiner node graph reduction by `consume` only
             self.reduce_degreek_enclosed_steiner()
-
-            # NOTE: Definitely need better clustering setup to make this more powerful...
-            # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
-            if num_nodes == self.graph.num_nodes():
-                self.reduce_enclosed_steiner_clusters()
 
             # Reduce blocked roots - this is a terminal set consolidation only
             if num_nodes != self.graph.num_nodes() and self.reduce_blocked_roots() > 0:
                 # Force a reduction pass if blocked roots were merged.
                 tmp_num_nodes = 0
+                continue
 
-            # NOTE: Definitely need better clustering setup to make this more powerful...
-            # TODO: Handle super terminals
-            # Reduce enclosed terminal clusters - this is a Steiner node graph reduction by `remove` only
-            if num_nodes == self.graph.num_nodes() and self.super_root_index is None:
-                self.reduce_enclosed_terminal_clusters()
-
-            # TODO: Handle super terminals
-            # Reduce degree2 outer face steiners - this is a Steiner node graph reduction by `remove` only
+            # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
             if num_nodes == self.graph.num_nodes():
-                self.reduce_degree2_outer_face_steiners()
+                self.reduce_enclosed_steiner_clusters()
+
+            # # Solve as tree for super root
+            # if (
+            #     num_nodes == self.graph.num_nodes()
+            #     and self.super_root_index is not None
+            #     and self.terminal_sets
+            # ):
+            #     self.dump_reduction_results(
+            #         "pre: solve_as_tree_super",
+            #         num_edges_start,
+            #         num_nodes_start,
+            #         num_terminal_roots_start,
+            #         num_terminals_start,
+            #     )
+            #     if self.solve_as_tree_super() > 0:
+            #         tmp_num_nodes = 0
+            #         continue
+
+            # Solve as tree for non super root
+            if num_nodes == self.graph.num_nodes() and self.super_root_index is None and self.terminal_sets:
+                self.dump_reduction_results(
+                    "pre: solve_as_tree",
+                    num_edges_start,
+                    num_nodes_start,
+                    num_terminal_roots_start,
+                    num_terminals_start,
+                )
+                self.solve_as_tree()
 
         # Rebuild pairs
         fixed_nodes_wp = {self.get_node_key(n) for n in self.fixed_nodes}
@@ -2318,101 +4469,17 @@ class SFGraphReductionEngine:
                 reduced_root_pairs_wp[self.get_node_key(t)] = self.get_node_key(r)
 
         if self.do_debug:
-            print("=== Post final reduction ===")
-            logger.debug(f"  {self.graph.num_nodes()} nodes, {self.graph.num_edges()} edges")
-            logger.debug(f"  {len(reduced_root_pairs_wp)} pairs")
-            logger.trace(f"  {reduced_root_pairs_wp=}")
-            logger.trace(f"  {fixed_nodes_wp=}")
-            logger.trace(f"  num components: {rx.number_strongly_connected_components(self.graph)}")
+            self.dump_final_report(
+                reduced_root_pairs_wp,
+                fixed_nodes_wp,
+            )
 
-            node_weights = [n[PAYLOAD_WEIGHT_KEY] for n in self.graph.nodes()]
-            nodes_by_weight = Counter(node_weights)
-            nodes_by_weight = sorted(nodes_by_weight.items())
-            logger.debug(f"  nodes by weight: {nodes_by_weight}")
-
-            node_degrees = [self.graph.out_degree(n) for n in self.graph.node_indices()]
-            nodes_by_degree = Counter(node_degrees)
-            nodes_by_degree = sorted(nodes_by_degree.items())
-            logger.debug(f"  nodes by degree: {nodes_by_degree}")
-
-            # Breakdown by degree into fixed, basetown, and steiner
-            towns = get_exploration_data().towns
-            for d, c in nodes_by_degree:
-                sub_counter = Counter()
-                for i in self.graph.node_indices():
-                    is_town = self.get_node_key(i) in towns
-                    if self.graph.out_degree(i) == d:
-                        if i in self.fixed_nodes:
-                            sub_counter["fixed"] += 1
-                        if is_town:
-                            sub_counter["basetown"] += 1
-                        if i not in self.fixed_nodes and not is_town:
-                            sub_counter["steiner"] += 1
-                logger.trace(f"    {d}: {sub_counter}")
-
-            logger.trace("=== PATHS ===")
-            reduced_root_pairs: dict[int, int] = {}
-            for r, comp in self.terminal_sets.items():
-                for t in comp:
-                    reduced_root_pairs[t] = r
-            for u, v in reduced_root_pairs.items():
-                has_u = self.graph.has_node(u)
-                has_v = self.graph.has_node(v)
-                has_path = rx.has_path(self.graph, u, v) if has_u and has_v else False
-                logger.trace(
-                    f"  {self.get_node_key(u)} ({has_u}) -> {self.get_node_key(v)} ({has_v}) => {has_path}"
-                )
-
-            logger.debug("\n=== REDUCTIONS ===")
-            assert self.call_counts
-            logger.debug(f"Total reduction trigger count: {sum(self.call_counts.values())}")
-            logger.debug("Trigger counts per reduction step:")
-            for msg, count in sorted(self.call_counts.items()):
-                logger.debug(f"  {msg}: {count}")
-
-            logger.debug("=== STEINERS ===")
-            nodes = set(self.graph.node_indices())
-            non_steiner_nodes = set(self.non_steiner_nodes())
-            steiner_nodes = nodes - non_steiner_nodes
-            logger.debug(f"  {len(steiner_nodes)} steiner nodes")
-
-            critical_steiner_nodes = self.critical_steiner_nodes()
-            if critical_steiner_nodes:
-                logger.warning(f"  {len(critical_steiner_nodes)} critical steiner nodes")
-                logger.warning(f"  {critical_steiner_nodes=}")
-
-        # Reduction percentages
-        num_edges_end = self.graph.num_edges()
-        num_nodes_end = self.graph.num_nodes()
-        num_terminal_roots_end = len(self.terminal_sets)
-        num_terminals_end = sum(len(ts) for ts in self.terminal_sets.values()) + num_terminal_roots_end
-        per_edges = (num_edges_end - num_edges_start) / num_edges_start
-        per_nodes = (num_nodes_end - num_nodes_start) / num_nodes_start
-        per_terminals = (num_terminals_end - num_terminals_start) / num_terminals_start
-        per_roots = (num_terminal_roots_end - num_terminal_roots_start) / num_terminal_roots_start
-        print(
-            f"  Reduction Percentages: Edges: {per_edges * 100:.2f}%, Nodes: {per_nodes * 100:.2f}%, Terminals: {per_terminals * 100:.2f}%, Roots: {per_roots * 100:.2f}%"
+        self.dump_reduction_results(
+            "final",
+            num_edges_start,
+            num_nodes_start,
+            num_terminal_roots_start,
+            num_terminals_start,
         )
 
         return fixed_nodes_wp, reduced_root_pairs_wp
-
-    def critical_steiner_nodes(self):
-        """Identifies all Steiner nodes that are critical to the graph."""
-        nodes = set(self.graph.node_indices())
-        non_steiner_nodes = set(self.non_steiner_nodes())
-        steiner_nodes = nodes - non_steiner_nodes
-        critical_nodes = set()
-        for steiner_node in steiner_nodes:
-            # Demand separation test
-            tmp = self.graph.copy()
-            tmp.remove_node(steiner_node)
-            violates_demand = any(
-                # Traverse from terminal to root to ensure super terminal reachability
-                not rx.has_path(tmp, t, r)
-                for r, terminals in self.terminal_sets.items()
-                for t in terminals
-            )
-            if violates_demand:
-                critical_nodes.add(steiner_node)
-        critical_nodes = {self.get_node_key(n) for n in critical_nodes}
-        return critical_nodes

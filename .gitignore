@@ -72,3 +72,4 @@ docs/_build/
 # Pyenv
 .python-version
 python/noderouter/data/exploration.json.sha256
+scipstp_errors/

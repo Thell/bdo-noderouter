@@ -29,10 +29,11 @@ dependencies = [
     "nwst-dw",
     "polars>=1.39.3",
     "psutil>=7.2.2",
-    "pyarrow>=23.0.1",
+    "pyarrow>=24.0.0",
     "pyvis>=0.3.2",
     "rustworkx>=0.17.1",
     "seaborn>=0.13.2",
+    "sfpgre-cch",
     "shapely>=2.1.2",
     "ty>=0.0.29",
 ]
@@ -56,3 +57,4 @@ extraPaths = ["python/noderouter"]
 
 [tool.uv.sources]
 nwst-dw = { path = "../../Rust/nwst_dw" }
+sfpgre-cch = { path = "../../Rust/sfpgre_cch" }
