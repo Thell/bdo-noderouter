@@ -28,11 +28,10 @@ from rustworkx import PyDiGraph
 import api_data_store as ds
 from api_common import PAYLOAD_WEIGHT_KEY, set_logger
 from api_exploration_data import SUPER_ROOT, get_exploration_data
-from api_highs_solver import create_model, extract_solution, get_highs
+from api_highs_solver import SolverController, create_model, extract_solution, get_highs, solve
 from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
 from orchestrator import Solution
 from orchestrator_terminal_pairs import PairingStrategy
-from solver_highspy import SolverController, solve
 
 
 # Protect against stuck threads:
@@ -441,20 +440,20 @@ if __name__ == "__main__":
 
     if config.get("actions", {}).get("scaling_tests", False):
         total_time_start = time.perf_counter()
-        for budget in range(550, 555, 5):
-            if budget >= 400:
-                config["solver"]["log_via_callback"] = True
+        for budget in range(5, 555, 50):
+            # if budget >= 400:
+            #     config["solver"]["log_via_callback"] = True
             print(f"Test: optimal terminals budget: {budget}")
             _ = execute_plan(make_plan(budget, False, strat_optimized, 0), config)
             # _ = execute_plan(make_plan(budget, True, strat_optimized, 0), config)
 
-        # for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
-        for percent in [20]:
-            if percent >= 5:
-                config["solver"]["log_via_callback"] = True
-            print(f"Test: random terminals coverage percent: {percent}")
-            _ = execute_plan(make_plan(0, False, strat_random_town, percent), config)
-            # _ = execute_plan(make_plan(0, True, strat_random_town, percent), config)
+        # # for percent in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100]:
+        # for percent in [20]:
+        #     if percent >= 5:
+        #         config["solver"]["log_via_callback"] = True
+        #     print(f"Test: random terminals coverage percent: {percent}")
+        #     _ = execute_plan(make_plan(0, False, strat_random_town, percent), config)
+        #     # _ = execute_plan(make_plan(0, True, strat_random_town, percent), config)
 
         print(f"Cumulative testing runtime: {time.perf_counter() - total_time_start:.2f}s")
 
