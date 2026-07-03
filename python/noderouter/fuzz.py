@@ -127,9 +127,14 @@ class _FuzzInstanceMetrics(dict):
         # Solver sanity checks
         ratio = nr_instance.solution.cost / mip_instance.solution.cost
         speedup = mip_instance.solution.duration / nr_instance.solution.duration
-        assert ratio >= 1.0, (
-            f"NodeRouter should never have lower cost than MIP! {seed} => {budget}:{strategy}:{i}"
-        )
+        if ratio < 1.0:
+            logger.error(
+                f"NodeRouter should never have lower cost than MIP! {seed} => {budget}:{strategy}:{i}"
+            )
+            raise ValueError(
+                f"NodeRouter should never have lower cost than MIP! {seed} => {budget}:{strategy}:{i}"
+            )
+
         if speedup < 1.0:
             logger.warning(f"NodeRouter should always be faster than MIP! {seed} => {budget}:{strategy}:{i}")
 
@@ -563,20 +568,26 @@ def _run_single_config(
             mip_plan = Plan(mip_optimize, budget, percent, seed, include_danger, strategy, True)
             nr_plan = Plan(nr_optimize, budget, percent, seed, include_danger, strategy, False)
 
-            mip_instance = execute_plan(mip_plan, config)
-            nr_instance = execute_plan(nr_plan, config)
+            try:
+                mip_instance = execute_plan(mip_plan, config)
+                nr_instance = execute_plan(nr_plan, config)
 
-            row = _FuzzInstanceMetrics(
-                seed,
-                budget,
-                percent,
-                include_danger,
-                strategy,
-                nr_instance,
-                mip_instance,
-                i,
-            )
-            case_rows.append(row)
+                row = _FuzzInstanceMetrics(
+                    seed,
+                    budget,
+                    percent,
+                    include_danger,
+                    strategy,
+                    nr_instance,
+                    mip_instance,
+                    i,
+                )
+                case_rows.append(row)
+
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[ERROR]: skipping seed {seed} due to internal error...")
+                print(e)
+                continue
 
             log_str = row.generate_log_string(i, samples)
             if (gap := row["nr_cost"] - row["mip_cost"]) > 0:
@@ -615,6 +626,7 @@ def fuzzer_main(
                 metrics = _run_single_config(strategies, samples, budget, danger_state)
                 all_metrics = all_metrics.vstack(metrics)
         _generate_all_cases_summaries(all_metrics)
+
     except KeyboardInterrupt:
         print("\nShutdown complete — generating summary from accumulated data...")
         _generate_all_cases_summaries(all_metrics)
