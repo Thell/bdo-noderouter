@@ -63,7 +63,7 @@ if __name__ == "__main__":
         percent: int,
     ) -> Plan:
         return Plan(
-            lambda _a, _b: Solution(0.0, 0, 0, 0, 0, []),
+            lambda _a, _b, _c: Solution(0.0, 0, 0, 0, 0, []),
             budget,
             percent,
             0,

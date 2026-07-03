@@ -41,7 +41,7 @@ def _optimize_with_terminals(nr: NodeRouter, terminals: dict[int, int]) -> Solut
     )
 
 
-def optimize_with_terminals(terminals: dict[int, int], _config: dict) -> Solution:
+def optimize_with_terminals(seed: str, terminals: dict[int, int], _config: dict) -> Solution:
     """Primary optimization entry point using a long-lived NodeRouter instance.
 
     The NodeRouter instance is constructed once and reused across calls to avoid
@@ -59,7 +59,7 @@ def optimize_with_terminals(terminals: dict[int, int], _config: dict) -> Solutio
     return _optimize_with_terminals(_NODEROUTER, terminals)
 
 
-def optimize_with_terminals_single(terminals: dict[int, int], _config: dict) -> Solution:
+def optimize_with_terminals_single(seed: str, terminals: dict[int, int], _config: dict) -> Solution:
     """One-off optimization creating a fresh NodeRouter instance each call.
 
     Constructs and immediately destroys the NodeRouter within the same thread,

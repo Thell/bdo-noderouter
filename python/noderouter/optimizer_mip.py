@@ -51,7 +51,6 @@ atexit.register(shutdown_barrier)
 
 type LeafMap = dict[int, tuple[int, int, list[int]]]
 
-PAYLOAD_WEIGHT_KEY: str = "need_exploration_point"
 DO_DEBUG: bool = ds.get_config("config")["logger"]["level"] in ["DEBUG", "TRACE"]
 
 _fp_cache: dict[bool, fp.PyFastGraph] = {}
@@ -172,7 +171,7 @@ def transform_pairs_to_reduced_pairs(
 
 
 def transform_terminal_pairs(
-    graph: PyDiGraph, fp_graph: fp.PyFastGraph, mappings: dict, terminals: dict
+    seed: str, graph: PyDiGraph, fp_graph: fp.PyFastGraph, mappings: dict, terminals: dict
 ) -> tuple[set[int], dict[int, int]]:
     """Transforms the terminals dict using the reduced graph.
 
@@ -222,6 +221,7 @@ def transform_terminal_pairs(
             graph[node][PAYLOAD_WEIGHT_KEY] = 0
 
     reduction_engine = SFGraphReductionEngine(
+        seed,
         graph,
         graph.attrs["node_key_by_index"],
         super_root_index,
@@ -267,7 +267,7 @@ def validate_solution(graph: PyDiGraph, terminals: dict):
     assert has_all_paths
 
 
-def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
+def optimize_with_terminals(seed: str, terminals: dict, config: dict) -> Solution:
     """Optimization entry point using the HiGHS MIP solver."""
     # NOTE: `terminals` is a dict of {terminal waypoint: root waypoint}
     logger.debug(f"Optimizing with terminals: {terminals}")
@@ -296,7 +296,7 @@ def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
 
     # NOTE: exploration_graph_reduced gets modified in-place during reduce_terminals
     fixed_nodes, reduced_terminals = transform_terminal_pairs(
-        exploration_graph_reduced, fp_graph, mappings, terminals
+        seed, exploration_graph_reduced, fp_graph, mappings, terminals
     )
 
     if config["logger"]["level"] == "TRACE":

@@ -130,7 +130,7 @@ def baselines(
     start_time = time.perf_counter()
     all_pass = True
     for test_name, terminals, expected_value in test_cases:
-        result = optimization_fn(terminals, config)
+        result = optimization_fn("", terminals, config)
         all_pass &= _validate_baselines(test_name, result, expected_value, config)
 
     logger.info(f"Total testing time: {(time.perf_counter() - start_time):.6f}s")

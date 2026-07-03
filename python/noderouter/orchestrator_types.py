@@ -21,7 +21,7 @@ class Solution:
     waypoints: list[int]
 
 
-OptimizationFn = Callable[[dict[int, int], dict], Solution]
+OptimizationFn = Callable[[str, dict[int, int], dict], Solution]
 
 
 @dataclass
@@ -57,7 +57,7 @@ class Instance:
     solution: Solution | None = None
 
     def __post_init__(self):
-        result = self.plan.optimization_fn(self.terminals.terminals, self.config)
+        result = self.plan.optimization_fn(str(self.plan.seed), self.terminals.terminals, self.config)
         self.solution = result
         logger.info(f"Terminals: {self.terminals.terminals}")
         logger.info(f"Solution: {result.waypoints}")
