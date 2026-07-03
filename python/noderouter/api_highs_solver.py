@@ -6,6 +6,7 @@ import rustworkx as rx
 from highspy import Highs, HighsModelStatus, ObjSense
 from loguru import logger
 
+from api_common import PAYLOAD_WEIGHT_KEY
 from api_exploration_data import SUPER_ROOT
 from api_rx_pydigraph import subgraph_stable
 
@@ -70,7 +71,7 @@ def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
 
     # Objective: Minimize total node weight
     model.setObjective(
-        model.qsum(G[i]["need_exploration_point"] * x[i] for i in G.node_indices()),
+        model.qsum(G[i][PAYLOAD_WEIGHT_KEY] * x[i] for i in G.node_indices()),
         sense=ObjSense.kMinimize,
     )
 
@@ -163,7 +164,7 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
 
     # Isolated node removal
     isolates = list(rx.isolates(solution_graph))
-    isolate_cost = sum(solution_graph[i]["need_exploration_point"] for i in isolates)
+    isolate_cost = sum(solution_graph[i][PAYLOAD_WEIGHT_KEY] for i in isolates)
     # Sanity check
     if isolate_cost > 0:
         logger.error(f"  isolates cost: {isolate_cost}")
@@ -222,10 +223,10 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
                     raise ValueError(f"Super Terminal {t_key} not connected to any base town!")
 
     unused_nodes = list(set(solution_graph.node_indices()) - used_nodes)
-    unused_nodes_with_cost = [i for i in unused_nodes if solution_graph[i]["need_exploration_point"] > 0]
+    unused_nodes_with_cost = [i for i in unused_nodes if solution_graph[i][PAYLOAD_WEIGHT_KEY] > 0]
     unused_cost = 0
     for node in unused_nodes_with_cost:
-        cost = solution_graph[node]["need_exploration_point"]
+        cost = solution_graph[node][PAYLOAD_WEIGHT_KEY]
         unused_cost += cost
         logger.warning(f"  removing node {node_key_by_index[node]} with cost {cost}")
     if unused_cost > 0:

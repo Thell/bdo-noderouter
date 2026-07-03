@@ -11,6 +11,8 @@ memory = Memory(location=".cache", verbose=0)
 # in the data store from the EmpireOptimizer.
 MAX_BUDGET = 550
 
+PAYLOAD_WEIGHT_KEY: str = "need_exploration_point"
+
 
 def set_logger(config: dict):
     """Sets logger accoring to the config dict's 'logger' options.

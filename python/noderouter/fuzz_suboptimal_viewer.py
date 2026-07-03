@@ -23,7 +23,7 @@ from loguru import logger
 from rustworkx import PyDiGraph
 
 import api_data_store as ds
-from api_common import MAX_BUDGET, set_logger
+from api_common import MAX_BUDGET, PAYLOAD_WEIGHT_KEY, set_logger
 from api_data_store import get_config
 from api_exploration_data import SUPER_ROOT, get_exploration_data, prune_NTD1
 from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
@@ -146,7 +146,7 @@ def _add_node_markers_from_graph(fg: FeatureGroup, G: PyDiGraph):
     for node_idx in G.node_indices():
         node = G[node_idx]
         key = node["waypoint_key"]
-        cost = node["need_exploration_point"]
+        cost = node[PAYLOAD_WEIGHT_KEY]
 
         popup_text = f"Node Key: {key}, Cost: {cost}"
         node_color = graph_type.node_color
@@ -214,12 +214,12 @@ def _add_terminal_sets_markers(m: Map, G: PyDiGraph, root_color: _RootColor) -> 
         active_background_color = root_color.terminal_color(root_idx)
         active_border_color = "black" if is_suboptimal else "white"
 
-        cost = G[root_idx]["need_exploration_point"]
+        cost = G[root_idx][PAYLOAD_WEIGHT_KEY]
         location = coords.as_geographic(root_idx)
         add_marker("Root", location, root_key, cost, fg_terminal_set)
 
         for terminal in terminal_set:
-            cost = G[terminal]["need_exploration_point"]
+            cost = G[terminal][PAYLOAD_WEIGHT_KEY]
             key = G[terminal]["waypoint_key"]
             location = coords.as_geographic(terminal)
             add_marker("Terminal", location, key, cost, fg_terminal_set)

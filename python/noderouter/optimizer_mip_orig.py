@@ -19,7 +19,7 @@ import rustworkx as rx
 from loguru import logger
 
 import api_data_store as ds
-from api_common import set_logger
+from api_common import PAYLOAD_WEIGHT_KEY, set_logger
 from api_exploration_data import SUPER_ROOT, get_exploration_data
 from api_highs_solver import create_model, extract_solution, get_highs
 from api_rx_pydigraph import set_graph_terminal_sets_attribute
@@ -53,7 +53,7 @@ def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
     duration = time.perf_counter() - start_time
 
     solution_graph = extract_solution(model, vars, exploration_graph, config)
-    calculated_cost = sum(n["need_exploration_point"] for n in solution_graph.nodes())
+    calculated_cost = sum(n[PAYLOAD_WEIGHT_KEY] for n in solution_graph.nodes())
 
     objective_value = model.getObjectiveValue()
     objective_value = round(objective_value) if objective_value else 0

@@ -13,12 +13,13 @@ from loguru import logger
 from networkx import PlanarEmbedding
 from rustworkx import PyDiGraph
 
+from api_common import PAYLOAD_WEIGHT_KEY
 from api_exploration_data import get_exploration_data
 from api_rx_pydigraph import subgraph_stable
 
-PAYLOAD_WEIGHT_KEY = "need_exploration_point"
 HYPERNODE_CONTENTS_KEY = "collapsed_nodes"
-MAX_ENCLOSED_STEINER_INTERFACES = 4
+MAX_ENCLOSED_STEINER_INTERFACES = 6
+
 
 r"""
 # Steiner Forest Reduction Grammar (v1.0)

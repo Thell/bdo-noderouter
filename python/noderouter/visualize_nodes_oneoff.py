@@ -24,9 +24,9 @@ from folium.plugins import BeautifyIcon, FeatureGroupSubGroup, GroupedLayerContr
 
 import api_data_store as ds
 
-# from api_common import get_clean_exploration_data
 # from api_exploration_graph import get_exploration_graph
 # from api_rx_pydigraph import inject_super_root, set_graph_terminal_sets_attribute
+from api_common import PAYLOAD_WEIGHT_KEY
 from api_exploration_data import get_exploration_data
 from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
 from tree_decomp import BDONiceTreeManager
@@ -128,7 +128,7 @@ def add_node_markers_from_graph(
         fill_color = color
         fill_opacity = 1.0
         node_key = node["waypoint_key"]
-        cost = node["need_exploration_point"]
+        cost = node[PAYLOAD_WEIGHT_KEY]
         node_is_bottleneck = node_key in bottleneck_keys if DISPLAY_BOTTLENECKS else False
 
         lng = node["position"]["x"] / TILE_SCALE  # Scaled coordinates
@@ -488,25 +488,25 @@ if __name__ == "__main__":
         if not highlight_graph.has_node(i):
             print(f"Waypoint {wp} at index {i} not in highlight graph")
             continue
-        highlight_graph[i]["need_exploration_point"] = w
+        highlight_graph[i][PAYLOAD_WEIGHT_KEY] = w
 
     for edge in actual_edges:
         highlight_graph.add_edge(
             waypoint_to_index[edge[0]],
             waypoint_to_index[edge[1]],
-            {"weight": highlight_graph[waypoint_to_index[edge[1]]]["need_exploration_point"]},
+            {"weight": highlight_graph[waypoint_to_index[edge[1]]][PAYLOAD_WEIGHT_KEY]},
         )
 
     # Cost of highlighted nodes
-    cost = sum(node["need_exploration_point"] for node in highlight_graph.nodes())
+    cost = sum(node[PAYLOAD_WEIGHT_KEY] for node in highlight_graph.nodes())
     print(f"Cost of highlighted nodes: {cost}")
 
     # Cost per connected component
     from rustworkx import strongly_connected_components
 
     for component in strongly_connected_components(highlight_graph):
-        costs = [(G[node]["waypoint_key"], G[node]["need_exploration_point"]) for node in component]
-        cost = sum(G[node]["need_exploration_point"] for node in component)
+        costs = [(G[node]["waypoint_key"], G[node][PAYLOAD_WEIGHT_KEY]) for node in component]
+        cost = sum(G[node][PAYLOAD_WEIGHT_KEY] for node in component)
         print(f"Component: {costs}")
         print(f"Cost of component: {cost}")
 

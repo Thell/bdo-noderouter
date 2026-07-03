@@ -12,7 +12,7 @@ from loguru import logger
 from rustworkx import PyDiGraph
 from shapely.geometry import MultiPoint, Point
 
-from api_common import memory
+from api_common import PAYLOAD_WEIGHT_KEY, memory
 
 # Constants
 GREAT_OCEAN_TERRITORY = 5
@@ -373,7 +373,7 @@ def _get_exploration_graph(data: dict[int, dict]) -> PyDiGraph:
     for i in graph.node_indices():
         neighbors = graph[i]["link_list"]
         for j in (node_key_by_index.inv[n] for n in neighbors):
-            graph.add_edge(i, j, {"weight": graph[j]["need_exploration_point"]})
+            graph.add_edge(i, j, {"weight": graph[j][PAYLOAD_WEIGHT_KEY]})
 
     graph.attrs = {"node_key_by_index": node_key_by_index}
 
@@ -409,7 +409,7 @@ def _get_all_pairs_path_lengths(graph: PyDiGraph) -> dict[tuple[int, int], int]:
 
     shortest_paths = _get_all_pairs_shortest_paths(graph)
     shortest_paths = {
-        key: sum(graph[w]["need_exploration_point"] for w in path) for key, path in shortest_paths.items()
+        key: sum(graph[w][PAYLOAD_WEIGHT_KEY] for w in path) for key, path in shortest_paths.items()
     }
     shortest_paths.update({(n, n): 0 for n in graph.node_indices()})
 

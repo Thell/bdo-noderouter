@@ -28,7 +28,7 @@ from loguru import logger
 from rustworkx import PyDiGraph
 
 import api_data_store as ds
-from api_common import set_logger
+from api_common import PAYLOAD_WEIGHT_KEY, set_logger
 from api_exploration_data import SUPER_ROOT, get_exploration_data
 from api_highs_solver import create_model, extract_solution, get_highs
 from api_rx_pydigraph import set_graph_terminal_sets_attribute, subgraph_stable
@@ -1215,7 +1215,7 @@ def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
         mip_solution_graph = extract_solution(model, vars, exploration_graph_reduced, config)
 
         # MIP Validation
-        calculated_cost = sum(n["need_exploration_point"] for n in mip_solution_graph.nodes())
+        calculated_cost = sum(n[PAYLOAD_WEIGHT_KEY] for n in mip_solution_graph.nodes())
         objective_value = model.getObjectiveValue()
         objective_value = round(objective_value) if objective_value else 0
         assert calculated_cost == objective_value, (
@@ -1245,7 +1245,7 @@ def optimize_with_terminals(terminals: dict, config: dict) -> Solution:
     solution_graph = subgraph_stable(exploration_graph, solution_nodes)
     set_graph_terminal_sets_attribute(solution_graph, terminals)
 
-    objective_value = sum(n["need_exploration_point"] for n in solution_graph.nodes())
+    objective_value = sum(n[PAYLOAD_WEIGHT_KEY] for n in solution_graph.nodes())
     objective_value = round(objective_value) if objective_value else 0
 
     num_components = len(rx.strongly_connected_components(solution_graph))
