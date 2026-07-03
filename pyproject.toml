@@ -19,7 +19,7 @@ dependencies = [
     "fast-paths>=0.1.0",
     "flet[all]>=0.84.0",
     "folium>=0.20.0",
-    "highspy==1.14.0",
+    "highspy==1.15.0",
     "joblib>=1.5.3",
     "loguru>=0.7.3",
     "matplotlib>=3.10.8",
