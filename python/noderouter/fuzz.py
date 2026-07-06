@@ -26,15 +26,6 @@ WORST_SUBOPTIMAL_REPORTING_COUNT = 50
 _shutdown_requested = False
 
 
-# '9247e1d' is from the random_n_nearest_town_in_territory strategy at 45 budget test #4 and results in suboptimal result; MIP is fine
-# '3c55f6a' is from the cheapest_town_in_territory strategy at 55 budget test #10 and results in reachability failure by ommitting a terminal with a clear path; MIP is fine
-# '99dcc3f' is from the nearest_town strategy at 70 budget test #9 and results in a no response from sicpstp; MIP is fine
-# 'bd4cb2a' is from the cheapest_town strategy at 80 budget test #10 and results in an error; MIP is fine and stp/reduction=0 or 1 is fine
-# '0e031bb' is from the nearest_town strategy at 85 budget test #13 and result in a hang when reduction=2 is used; mip is fine, stp/reduction 1 is fine; stp/reduction 0 is suboptimal result
-# SKIPPED_SEEDS_HEX = {"9247e1d", "3c55f6a", "99dcc3f", "bd4cb2a"}
-
-# Using the stp/reduction=1 the following are skipped...
-# SKIPPED_SEEDS_HEX = {"46f48d8", "39203d1", "c28cc52", "0dac936", "cb9815e", "e285371", "5518770", "018018e"}
 SKIPPED_SEEDS_HEX = {}
 
 
@@ -621,6 +612,10 @@ def _run_single_config(
                 break
 
         case_df = pl.DataFrame(case_rows)
+
+        if case_df.shape[0] == 0:
+            continue
+
         all_cases_df = all_cases_df.vstack(case_df)
 
         case_summary = _generate_single_case_summary(case_df)
