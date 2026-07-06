@@ -2,16 +2,12 @@ from __future__ import annotations
 
 import heapq
 import random
-import shutil
-import subprocess
 import sys
-import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from itertools import combinations
-from pathlib import Path
 from time import time
 
 import networkx as nx
@@ -23,10 +19,10 @@ from more_itertools import set_partitions
 from networkx import PlanarEmbedding
 from rustworkx import PyDiGraph
 
-import api_data_store as ds
 from api_common import PAYLOAD_WEIGHT_KEY
-from api_dimacs_stp import solve_dimacs_as_highs_mcf_mip
 from api_exploration_data import get_exploration_data
+from api_nwstp_problem import TreeProblem
+from api_nwstp_solver import solve_tree, solve_tree_using_scipstp
 from api_rx_pydigraph import subgraph_stable
 
 HYPERNODE_CONTENTS_KEY = "collapsed_nodes"
@@ -143,366 +139,6 @@ active demand sets as denoted by 𝓐𐞪 excluding any super root.
 
 > Ⓡ ≔ ⓥ ∈ { 𝓡 ∖ 𝕊 }
 """
-
-# MARK: Parallel Worker Functions
-
-
-def _worker_solve_single_block_dw(block_key, terminals_tuple, adj_map, node_weight_map, node_index):
-    import nwst_dw
-
-    terminals_list = list(terminals_tuple)
-    cost, _, solution_nodes = nwst_dw.solve_nwst(adj_map, node_weight_map, terminals_list, terminals_list[0])
-    if cost == 18446744073709551615:
-        raise RuntimeError(f"Unsolvable Steiner tree for block {block_key}!")
-
-    mask = 0
-    for u in solution_nodes:
-        mask |= 1 << node_index[u]
-
-    return block_key, mask
-
-
-def _solve_single_block_scipstp_seq(
-    instance_id: str,
-    block_key: tuple,
-    terminals_list: list[int],
-    adj_map: dict[int, list[int]],
-    node_weight_map: dict[int, int],
-    node_index: dict[int, int],
-    dimacs_id: dict[int, int],
-    inv_dimacs_id: dict[int, int],
-    enable_super_root_index: int = 0,
-    do_debug: bool = False,
-    use_mip: bool = False,
-):
-    """Sequential version of the SCIPSTP block solver."""
-    logger.trace(f"  processing block {block_key}...", flush=True)
-
-    with tempfile.NamedTemporaryFile(suffix=".stp", delete=False) as tmp:
-        filename = tmp.name
-        tmp.close()  # IMPORTANT: unlock file for external process
-    sol_filename = filename + "log"
-
-    try:
-        if do_debug:
-            logger.trace(f"      Creating DIMACS file: {filename} for block {block_key}...")
-
-        _create_DIMACS_NWST_problem_file(
-            filename,
-            adj_map,
-            node_weight_map,
-            terminals_list,
-            node_index,
-            dimacs_id,
-            enable_super_root_index=enable_super_root_index,
-            do_debug=do_debug,
-        )
-
-        if do_debug:
-            logger.trace(f"      Solving DIMACS_NWST problem file: {filename} for block {block_key}...")
-
-        _solve_DIMACS_NWST_with_scipstp(filename, do_debug)
-
-        if do_debug:
-            logger.trace(f"      Reading DIMACS_NWST solution file: {filename} for block {block_key}...")
-
-        scip_solution = _read_DIMACS_NWST_solution_file(filename, inv_dimacs_id)
-        scip_nodes = [inv_dimacs_id[u] for u in scip_solution]
-        scip_cost = sum(node_weight_map[u] for u in scip_nodes)
-
-        if use_mip:
-            mip_cost, mip_nodes = solve_dimacs_as_highs_mcf_mip(
-                filename, scip_cost=scip_cost, scip_solution=scip_solution
-            )
-            mip_nodes = {inv_dimacs_id[u] for u in mip_nodes}
-
-            # MIP cost of -1 indicates scip nodes are invalid
-            if mip_cost == -1:
-                logger.error(f"  Reachability error: scip nodes are invalid for block {block_key}...")
-                outfile = f"scipstp_errors/{block_key}_mip_cost_{mip_cost}_scip_cost_{scip_cost}.stp"
-                shutil.copyfile(filename, outfile)
-                raise RuntimeError(f"scipstp unsolvable Steiner tree for block {block_key}!")
-
-            # Otherwise scip was optimal!
-            elif mip_cost == 0:
-                logger.success(f"  MIP solution matches scipstp solution for block {block_key}...")
-
-            # MIP cost greater than 0 indicates scip nodes are suboptimal
-            else:
-                logger.error(
-                    f"  Suboptimal result error: MIP cost {mip_cost} lower than scip cost {scip_cost} for block {block_key}..."
-                )
-                outfile = f"scipstp_errors/{block_key}_mip_cost_{mip_cost}_scip_cost_{scip_cost}.stp"
-                shutil.copyfile(filename, outfile)
-                raise RuntimeError(f"scipstp suboptimal Steiner tree for block {block_key}!")
-
-    except Exception as err:
-        logger.error(f"  Error processing {instance_id} block {block_key}... saving file for debugging...")
-        outfile = f"scipstp_errors/{instance_id}_{block_key}_mip_cost_99999_scip_cost_{scip_cost}.stp"
-        shutil.copyfile(filename, outfile)
-        print(err, file=sys.stderr)
-        raise
-
-    finally:
-        for p in (filename, sol_filename):
-            try:
-                Path(p).unlink()
-            except FileNotFoundError:
-                pass
-
-    return scip_cost, scip_nodes
-
-
-def _worker_wrapper(args):
-    (
-        instance_id,
-        task,
-        component_data,
-        node_weight_map,
-    ) = args
-
-    cc_i, block_key, terminals = task
-
-    return _worker_solve_single_block_scipstp(
-        instance_id,
-        block_key,
-        terminals,
-        component_data[cc_i]["adj_map"],
-        node_weight_map,
-        component_data[cc_i]["node_index"],
-        component_data[cc_i]["dimacs_id"],
-        component_data[cc_i]["inv_dimacs_id"],
-        enable_super_root_index=0,
-        do_debug=False,
-        use_mip=False,
-    )
-
-
-def _worker_solve_single_block_scipstp(
-    instance_id: str,
-    block_key: tuple,
-    terminals_list: list[int],
-    adj_map: dict[int, list[int]],
-    node_weight_map: dict[int, int],
-    node_index: dict[int, int],
-    dimacs_id: dict[int, int],
-    inv_dimacs_id: dict[int, int],
-    enable_super_root_index: int = 0,
-    do_debug: bool = False,
-    use_mip: bool = False,
-):
-    """Executes scipstp.exe to solve a single Steiner block."""
-
-    with tempfile.NamedTemporaryFile(suffix=".stp", delete=False) as tmp:
-        filename = tmp.name
-    sol_filename = filename + "log"
-
-    try:
-        if do_debug:
-            print(f"      Creating DIMACS_NWST problem file: {filename} for block {block_key}...", flush=True)
-
-        _create_DIMACS_NWST_problem_file(
-            filename,
-            adj_map,
-            node_weight_map,
-            terminals_list,
-            node_index,
-            dimacs_id,
-            enable_super_root_index=enable_super_root_index,
-            do_debug=do_debug,
-        )
-
-        if do_debug:
-            print(f"      Solving DIMACS_NWST problem file: {filename} for block {block_key}...", flush=True)
-
-        _solve_DIMACS_NWST_with_scipstp(filename)
-
-        if do_debug:
-            print(f"      Reading DIMACS_NWST solution file: {filename} for block {block_key}...", flush=True)
-
-        scip_solution = _read_DIMACS_NWST_solution_file(filename, inv_dimacs_id)
-        scip_nodes = {inv_dimacs_id[u] for u in scip_solution}
-        scip_cost = sum(node_weight_map[u] for u in scip_nodes)
-
-        if use_mip:
-            # NOTE: Don't oversubscribe cores...
-            mip_cost, mip_nodes = solve_dimacs_as_highs_mcf_mip(
-                filename, parallel="off", scip_cost=scip_cost, scip_nodes=[dimacs_id[u] for u in scip_nodes]
-            )
-            mip_nodes = {inv_dimacs_id[u] for u in mip_nodes}
-
-            # MIP cost of -1 indicates scip nodes are invalid
-            if mip_cost == -1:
-                logger.error(f"  Reachability error: scip nodes are invalid for block {block_key}...")
-                outfile = f"scipstp_errors/{block_key}_mip_cost_{mip_cost}_scip_cost_{scip_cost}.stp"
-                shutil.copyfile(filename, outfile)
-                raise RuntimeError(f"scipstp unsolvable Steiner tree for block {block_key}!")
-
-            # Otherwise scip was optimal!
-            elif mip_cost == 0:
-                logger.success(f"  MIP solution matches scipstp solution for block {block_key}...")
-
-            # MIP cost greater than 0 indicates scip nodes are suboptimal
-            else:
-                logger.error(
-                    f"  Suboptimal result error: MIP cost {mip_cost} lower than scip cost {scip_cost} for block {block_key}..."
-                )
-                outfile = f"scipstp_errors/{block_key}_mip_cost_{mip_cost}_scip_cost_{scip_cost}.stp"
-                shutil.copyfile(filename, outfile)
-                raise RuntimeError(f"scipstp suboptimal Steiner tree for block {block_key}!")
-
-    except Exception:
-        logger.error(f"  Error processing {instance_id} block {block_key}, saving stp file for debugging...")
-        outfile = f"scipstp_errors/{instance_id}_{block_key}_mip_cost_99999_scip_cost_{scip_cost}.stp"
-        shutil.copyfile(filename, outfile)
-        raise
-
-    finally:
-        for p in (filename, sol_filename):
-            try:
-                Path(p).unlink()
-            except FileNotFoundError:
-                pass
-
-    # Convert to mask
-    mask = 0
-    for u in scip_nodes:
-        mask |= 1 << node_index[u]
-
-    return block_key, scip_cost, mask
-
-
-def _create_DIMACS_NWST_problem_file(
-    filename: str,
-    adj_map: dict[int, list[int]],
-    node_weight_map: dict[int, int],
-    terminals_list: list[int],
-    nodes_map: dict[int, int],
-    dimacs_id: dict[int, int],
-    enable_super_root_index: int = 0,
-    do_debug: bool = False,
-):
-    path = Path(filename)
-
-    edges = []
-    # This naturally disables super-root since super-root is the last index
-    # and only has incoming edges, thus u is always > v
-    for u, nbrs in adj_map.items():
-        for v in nbrs:
-            if u < v:
-                edges.append((u, v))
-
-    if enable_super_root_index > 0:
-        logger.warning(f"  Enabling super-root node {enable_super_root_index}...")
-        for nbr in adj_map[enable_super_root_index]:
-            edges.append((nbr, enable_super_root_index))
-
-    # There is a bug in scipstp requiring the edges to be sorted in some cases...
-    edges = sorted(edges)
-
-    with path.open("w", encoding="utf-8") as f:
-        f.write("33D32945 STP File, STP Format Version 1.0\n")
-        f.write("SECTION Comment\n")
-        f.write(f'Name    "{filename}"\n')
-        f.write('Creator "Thell Fowler"\n')
-        f.write('Remark  "NWSTP - partition block for composite"\n')
-        f.write("END\n")
-
-        f.write("SECTION Graph\n")
-        f.write(f"Nodes {len(nodes_map)}\n")
-        f.write(f"Edges {len(edges)}\n")
-        for u, v in edges:
-            f.write(f"E {dimacs_id[u]} {dimacs_id[v]} 0\n")
-        f.write("END\n")
-
-        f.write("SECTION Terminals\n")
-        f.write(f"Terminals {len(terminals_list)}\n")
-        for t in terminals_list:
-            f.write(f"T {dimacs_id[t]}\n")
-        f.write("END\n")
-
-        f.write("SECTION NodeWeights\n")
-        for u in nodes_map:
-            f.write(f"NW {node_weight_map[u]}\n")
-        f.write("END\n")
-
-        f.write("EOF\n")
-
-
-def _solve_DIMACS_NWST_with_scipstp(filename: str, do_debug: bool = False):
-    """
-    Calls scipstp.exe on the given DIMACS file.
-    Produces <filename>.sol as output.
-    """
-    path = Path(filename)
-    sol_path = path.with_suffix(path.suffix + "log")
-
-    # Remove stale .sol if present
-    if sol_path.exists():
-        sol_path.unlink()
-
-    if not ds.is_file("scipstp.set"):
-        logger.error("SCIPSTP settings file not found")
-        raise FileNotFoundError
-    settings_file = ds.path().joinpath("scipstp.set")
-
-    result = subprocess.run(
-        ["scipstp.exe", "-f", path.name, "-s", str(settings_file.resolve())],
-        cwd=str(path.parent),
-        capture_output=True,
-        text=False,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"SCIPSTP failed on {filename}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-
-    if not sol_path.exists():
-        raise RuntimeError(f"SCIPSTP did not produce a solution file: {sol_path}")
-
-
-def _read_DIMACS_NWST_solution_file(
-    filename: str,
-    inv_dimacs_id: dict[int, int],
-):
-    # Since the Primal is not really the objective value and the objective value is
-    # not always available, we will have to recalculate the solution cost after
-    # extracting the solution.
-    solution_nodes: set[int] = set()
-
-    sol_path = Path(filename).with_suffix(Path(filename).suffix + "log")
-    with sol_path.open("r", encoding="utf-8") as f:
-        mode = None
-
-        for line in f:
-            parts = line.split()
-            if not parts:
-                continue
-
-            if parts[0] == "SECTION":
-                mode = parts[1] if len(parts) > 1 else None
-                continue
-
-            if mode == "Finalsolution":
-                if parts[0] == "V":
-                    dimacs_idx = int(parts[1])
-                    solution_nodes.add(dimacs_idx)
-                continue
-
-            # I don't believe this is really needed but since we don't have a spec
-            # for the .sol file, we'll just assume it is.
-            if mode == "Solutions":
-                if parts[0] in ("V", "S"):
-                    dimacs_idx = int(parts[1])
-                    solution_nodes.add(dimacs_idx)
-                continue
-
-    if not solution_nodes:
-        raise RuntimeError("No solution nodes found (Finalsolution/Solutions missing)")
-
-    return solution_nodes
 
 
 @dataclass
@@ -3160,24 +2796,11 @@ class SFGraphReductionEngine:
             f"    remaining complexity: {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |n|: {num_nodes}"
         )
 
-        use_dw = (
-            self.terminal_sets
-            and num_roots + num_terminals <= DW_MAX_TREE_TERMINALS
-            and complexity <= DW_MAX_TREE_COMPLEXITY
-        )
-
-        use_scip = not use_dw and self.terminal_sets and (num_nodes > 110 or num_roots < 6)
-        # use_scip = (
-        #     not use_dw and self.terminal_sets and ((num_nodes > 110 and num_roots <= 10) or num_roots < 6)
-        # )
-
+        # Exludes the MIP 'sweet spot'
+        use_scip = self.terminal_sets and (num_nodes > 110 or num_roots < 6)
         start_time = time()
-        if use_dw:
-            logger.warning("      solving as tree composite using Dreyfus-Wagner solver")
-            solution = self.solve_with_dw()
-
-        elif use_scip:
-            logger.warning("      solving as tree composite using SCIP-Jack solver")
+        if use_scip:
+            logger.warning("      solving as tree composite")
             solution = self.solve_with_scipstp()
 
         else:
@@ -3239,158 +2862,6 @@ class SFGraphReductionEngine:
             logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
 
         return solution_nodes
-
-    def solve_with_dw(self):
-        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
-        logger.trace("solve_as_dw...")
-
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-
-        adj_map = {u: set(self.graph.neighbors(u)) for u in self.graph.node_indices()}
-        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
-
-        terminal_keys = list(self.terminal_sets.keys())
-        partitions = set_partitions(terminal_keys)
-
-        valid_blocks = set()
-        valid_partitions = []
-
-        # Partition filtering
-        for partition in partitions:
-            is_valid = True
-            for block in partition:
-                block_key = tuple(sorted(block))
-                if len(block) < 2 or block_key in valid_blocks:
-                    continue
-                block_reachable = True
-                for i in range(len(block)):
-                    for j in range(i + 1, len(block)):
-                        if not rx.has_path(self.graph, block[i], block[j]):
-                            block_reachable = False
-                            break
-                    if not block_reachable:
-                        break
-                if block_reachable:
-                    valid_blocks.add(block_key)
-                else:
-                    is_valid = False
-                    break
-            if is_valid:
-                valid_partitions.append(partition)
-
-        # 2. Collect all unique blocks that actually exist within valid partitions
-        unique_valid_blocks = set()
-        for partition in valid_partitions:
-            for block in partition:
-                unique_valid_blocks.add(tuple(sorted(block)))
-
-        block_results = {}
-
-        num_roots = len(terminal_keys)
-        num_terminals = len(set().union(*self.terminal_sets.values()))
-
-        # For index masking...
-        nodes_list = list(self.graph.node_indices())
-        node_index = {u: i for i, u in enumerate(nodes_list)}
-
-        # Determine if parallel block solving is warranted
-        if num_roots + num_terminals > DW_SOLVE_PAR_THRESHOLD:
-            # Map unique blocks to their full, flattened terminal sets for the solver
-            logger.trace(f"  Concurrently solving {len(unique_valid_blocks)} unique valid blocks...")
-
-            worker_tasks = []
-            for block_key in unique_valid_blocks:
-                terminals = set()
-                for k in block_key:
-                    terminals.add(k)
-                    terminals.update(self.terminal_sets[k])
-                worker_tasks.append((block_key, tuple(terminals)))
-
-            self.solved_trees += len(worker_tasks)
-            with ProcessPoolExecutor() as executor:
-                futures = [
-                    executor.submit(
-                        _worker_solve_single_block_dw, task[0], task[1], adj_map, node_weight_map, node_index
-                    )
-                    for task in worker_tasks
-                ]
-                for f in as_completed(futures):
-                    block_key, mask = f.result()
-                    block_results[block_key] = mask
-        else:
-            # Fallback to sequential block solving if below threshold
-            import nwst_dw
-
-            logger.trace(f"  Sequentially solving {len(unique_valid_blocks)} unique valid blocks...")
-            solver = nwst_dw.Solver(adj_map, node_weight_map)
-
-            for block_key in unique_valid_blocks:
-                terminals = set()
-                for k in block_key:
-                    terminals.add(k)
-                    terminals.update(self.terminal_sets[k])
-                terminals_list = list(terminals)
-
-                logger.trace(f"    solving block {block_key}...")
-
-                self.solved_trees += 1
-                cost, _, solution_nodes = solver.solve(terminals_list, terminals_list[0])
-                if cost == 18446744073709551615:
-                    raise RuntimeError("Unsolvable Steiner tree!")
-
-                logger.trace(
-                    f"    solved block {block_key} containing {len(terminals_list)} terminals with cost {cost}"
-                )
-                logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
-
-                mask = 0
-                for u in solution_nodes:
-                    mask |= 1 << node_index[u]
-
-                block_results[block_key] = mask
-
-        # Phase 2: Sequential realization of partitions using memoized blocks
-        best_cost = float("inf")
-        best_solution_mask = 0
-
-        for partition in valid_partitions:
-            solution_mask = 0
-            for block in partition:
-                block_key = tuple(sorted(block))
-                solution_mask |= block_results[block_key]
-
-            # sum weights over bits
-            total_cost = 0
-            mask = solution_mask
-            while mask:
-                lsb = mask & -mask
-                idx = lsb.bit_length() - 1
-                u = nodes_list[idx]
-                total_cost += node_weight_map[u]
-                mask ^= lsb
-
-            if total_cost < best_cost:
-                best_cost = total_cost
-                best_solution_mask = solution_mask
-
-        best_solution = set()
-        mask = best_solution_mask
-        while mask:
-            lsb = mask & -mask
-            idx = lsb.bit_length() - 1
-            u = nodes_list[idx]
-            best_solution.add(u)
-            mask ^= lsb
-
-        if best_solution:
-            logger.debug(
-                f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
-            )
-            logger.debug(
-                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
-            )
-
-        return best_solution
 
     def solve_root_with_scipstp(self, root: int):
         """Solves a single root from the remaining reduced state graph."""
@@ -3456,28 +2927,25 @@ class SFGraphReductionEngine:
             logger.trace(f"    solving block {block_key}...")
 
             self.solved_trees += 1
-            cost, solution_nodes = _solve_single_block_scipstp_seq(
-                self.instance_id,
-                block_key,
-                terminals_list,
-                adj_map,
-                node_weight_map,
-                node_index,
-                dimacs_id,
-                inv_dimacs_id,
-                enable_super_root_index=0,
-                do_debug=self.do_debug,
+            block_key, cost, mask = solve_tree_using_scipstp(
+                TreeProblem(
+                    instance_id=self.instance_id,
+                    block_key=block_key,
+                    terminals=terminals_list,
+                    adj_map=adj_map,
+                    node_weight_map=node_weight_map,
+                    node_index_map=node_index,
+                    dimacs_id_map=dimacs_id,
+                    inv_dimacs_id_map=inv_dimacs_id,
+                    enable_super_root_index=0,
+                    do_debug=self.do_debug,
+                    mip_validation=False,
+                )
             )
 
             logger.trace(
                 f"    solved block {block_key} containing {len(terminals_list)} terminals with cost {cost}"
             )
-            logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
-
-            mask = 0
-            for u in solution_nodes:
-                mask |= 1 << node_index[u]
-
             block_results[block_key] = mask
 
         # Phase 2: Sequential realization of partitions using memoized blocks
@@ -4078,13 +3546,12 @@ class SFGraphReductionEngine:
         # adj_matrix = rx.adjacency_matrix(interactivity_graph)
         # print(f"      adj_matrix.shape =\n{adj_matrix}")
 
-        wcc = rx.weakly_connected_components(self.graph)
-
         component_data = {}
         root_component_map = {}
         reachable = {r: {r} for r in terminal_keys}
         terminal_keys_set = set(terminal_keys)
 
+        wcc = rx.weakly_connected_components(self.graph)
         for cc_i, cc in enumerate(wcc):
             # Root reachability for component generation...
             cc_reachable = cc & terminal_keys_set
@@ -4099,7 +3566,7 @@ class SFGraphReductionEngine:
             # so we need to pass in the adjacency map and node weights
             adj_map = {}
             for u in cc:
-                adj_map[u] = sorted(self.reduction_neighbors(u))
+                adj_map[u] = self.reduction_neighbors(u)
 
             # For index masking...
             nodes_list = list(self.graph.node_indices())
@@ -4114,9 +3581,9 @@ class SFGraphReductionEngine:
                 "reachable": cc_reachable,
                 "adj_map": adj_map,
                 "nodes_list": nodes_list,
-                "node_index": node_index,
-                "dimacs_id": dimacs_id,
-                "inv_dimacs_id": inv_dimacs_id,
+                "node_index_map": node_index,
+                "dimacs_id_map": dimacs_id,
+                "inv_dimacs_id_map": inv_dimacs_id,
             }
 
         logger.warning(
@@ -4148,45 +3615,63 @@ class SFGraphReductionEngine:
                 valid_blocks[cc_i].add(block)
                 num_blocks += 1
 
+        # Map unique blocks to their full, flattened terminal sets for the solver
+        worker_tasks = []
+        for cc_i, cc_valid_blocks in valid_blocks.items():
+            # NOTE: Terminals are translated within the worker process
+            for block_key in cc_valid_blocks:
+                terminals = set()
+                for k in block_key:
+                    terminals.add(k)
+                    terminals.update(self.terminal_sets[k])
+
+                worker_tasks.append((cc_i, block_key, sorted(terminals)))
+
+        self.solved_trees += len(worker_tasks)
+
+        problem_generator = (
+            TreeProblem(
+                instance_id=self.instance_id,
+                block_key=task[1],
+                terminals=task[2],
+                adj_map=component_data[task[0]]["adj_map"],
+                node_weight_map=node_weight_map,
+                node_index_map=component_data[task[0]]["node_index_map"],
+                dimacs_id_map=component_data[task[0]]["dimacs_id_map"],
+                inv_dimacs_id_map=component_data[task[0]]["inv_dimacs_id_map"],
+                enable_super_root_index=0,
+                do_debug=self.do_debug,
+                mip_validation=self.do_debug,
+            )
+            for task in worker_tasks
+        )
+
         # Partition block solving...
         block_results = {}
         block_costs = {}
 
-        if num_blocks >= 256:
+        if num_blocks >= 42:
             logger.warning(
                 f"    concurrently solving {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
             )
-
-            # Map unique blocks to their full, flattened terminal sets for the solver
-            worker_tasks = []
-            for cc_i, cc_valid_blocks in valid_blocks.items():
-                # NOTE: Terminals are translated within the worker process
-                for block_key in cc_valid_blocks:
-                    terminals = set()
-                    for k in block_key:
-                        terminals.add(k)
-                        terminals.update(self.terminal_sets[k])
-                    terminals = sorted(terminals)
-
-                    worker_tasks.append((cc_i, block_key, terminals))
-
-            self.solved_trees += len(worker_tasks)
 
             try:
                 with ProcessPoolExecutor(max_workers=14) as executor:
                     chunksize = max(1, min(256, len(worker_tasks) // 16))
                     logger.warning(f"    chunksize: {chunksize}")
 
-                    task_generator = (
-                        (self.instance_id, task, component_data, node_weight_map) for task in worker_tasks
+                    results = executor.map(
+                        solve_tree,
+                        problem_generator,
+                        chunksize=chunksize,
                     )
-                    results = executor.map(_worker_wrapper, task_generator, chunksize=chunksize)
 
                     for completed_count, (block_key, cost, mask) in enumerate(results, start=1):
                         if completed_count % 1_000 == 0:
                             logger.warning(
                                 f"    solved ({completed_count}/{num_blocks}) {completed_count / num_blocks:.2%}..."
                             )
+
                         block_results[block_key] = mask
                         block_costs[block_key] = cost
 
@@ -4198,55 +3683,21 @@ class SFGraphReductionEngine:
                 print(e, file=sys.stderr)
 
         else:
-            # Fallback to sequential block solving if below threshold
-            # Since we still need to have a temporary file for each unique block and call the executable
-            # we'll use the same helper functions as the concurrent version...
             logger.warning(
                 f"    sequentially solving {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
             )
 
-            block_n = 0
+            for block_n, problem in enumerate(problem_generator, start=1):
+                logger.trace(f"    solving ({block_n}/{num_blocks}) block {problem.block_key}...")
 
-            for cc_i, cc_valid_blocks in valid_blocks.items():
-                for block_key in cc_valid_blocks:
-                    terminals = set()
-                    for k in block_key:
-                        terminals.add(k)
-                        terminals.update(self.terminal_sets[k])
-                    terminals = sorted(terminals)
+                block_key, cost, mask = solve_tree(problem)
 
-                    cc_data = component_data[cc_i]
+                logger.trace(
+                    f"    solved ({block_n}/{num_blocks}) block {block_key} containing {len(problem.terminals)} terminals with cost {cost}"
+                )
 
-                    block_n += 1
-                    logger.trace(f"    solving ({block_n}/{num_blocks}) block {block_key}...")
-
-                    self.solved_trees += 1
-                    cost, solution_nodes = _solve_single_block_scipstp_seq(
-                        self.instance_id,
-                        block_key,
-                        terminals,
-                        cc_data["adj_map"],
-                        node_weight_map,
-                        cc_data["node_index"],
-                        cc_data["dimacs_id"],
-                        cc_data["inv_dimacs_id"],
-                        enable_super_root_index=0,
-                        do_debug=self.do_debug,
-                        use_mip=True,
-                    )
-
-                    logger.trace(
-                        f"    solved ({block_n}/{num_blocks}) block {block_key} containing {len(terminals)} terminals with cost {cost}"
-                    )
-                    # logger.trace(f"    solution: {sorted(self.get_node_key(n) for n in solution_nodes)}")
-
-                    mask = 0
-                    node_index = cc_data["node_index"]
-                    for u in solution_nodes:
-                        mask |= 1 << node_index[u]
-
-                    block_results[block_key] = mask
-                    block_costs[block_key] = cost
+                block_results[block_key] = mask
+                block_costs[block_key] = cost
 
         # Phase 1: Build block mask tables
         logger.trace("    building block mask table...")

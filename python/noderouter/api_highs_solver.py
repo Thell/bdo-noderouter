@@ -5,12 +5,14 @@ from math import inf
 from threading import Event, Thread
 
 import rustworkx as rx
-from highspy import Highs, HighsModelStatus, ObjSense
+from highspy import Highs, HighsModelStatus, ObjSense, highs_var
 from loguru import logger
 
 from api_common import PAYLOAD_WEIGHT_KEY
 from api_exploration_data import SUPER_ROOT
 from api_rx_pydigraph import subgraph_stable
+
+type HiGHSVarMap = dict[int, highs_var]
 
 
 class SolverController:
@@ -65,7 +67,7 @@ def get_highs(config: dict) -> Highs:
     return highs
 
 
-def create_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
+def create_model(model: Highs, **kwargs) -> tuple[Highs, dict[str, HiGHSVarMap]]:
     """Populates HiGHS model using the graph in kwargs['graph'].
 
     Requires:
