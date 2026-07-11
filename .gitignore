@@ -74,3 +74,7 @@ docs/_build/
 python/noderouter/data/exploration.json.sha256
 scipstp_errors/
 windows_defender_excluded/
+scip_lp_samples/
+extended_run_no_super.txt
+long_run_log_no_super.txt
+mip full reductions reference.txt
