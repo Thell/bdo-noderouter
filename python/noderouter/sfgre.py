@@ -167,7 +167,7 @@ class SFGraphReductionEngine:
     _seen_nonreducible_steiner_face_clusters: set[tuple[int, ...]] = field(default_factory=set)
 
     # Global maximum distance between a root and its' furthest terminal
-    _maximum_rt_distance: float = float("inf")
+    _global_min_max_drt: float = float("inf")
 
     do_debug: bool = False
     call_counts: Counter = field(default_factory=Counter)
@@ -2320,12 +2320,10 @@ class SFGraphReductionEngine:
         logger.trace("solve_isolated_roots_as_trees...")
 
         self.set_edge_weights()
-        max_rt_distance = min(self._maximum_rt_distance, self.get_maximum_rt_distance())
-        if max_rt_distance != self._maximum_rt_distance and max_rt_distance > 0:
-            logger.trace(
-                f"  => max_rt_distance changed from {self._maximum_rt_distance} to {max_rt_distance}"
-            )
-            self._maximum_rt_distance = int(max_rt_distance)
+        max_rt_distance = min(self._global_min_max_drt, self.get_maximum_rt_distance())
+        if max_rt_distance != self._global_min_max_drt and max_rt_distance > 0:
+            logger.trace(f"  => max_rt_distance changed from {self._global_min_max_drt} to {max_rt_distance}")
+            self._global_min_max_drt = int(max_rt_distance)
         logger.trace(f"  => max_rt_distance: {max_rt_distance}")
 
         all_consumed = set()
@@ -2368,7 +2366,7 @@ class SFGraphReductionEngine:
             if root == sr_index:
                 continue
 
-            if 1 + self.terminal_sets[root] <= DW_MAX_TREE_TERMINALS:
+            if 1 + len(self.terminal_sets[root]) <= DW_MAX_TREE_TERMINALS:
                 witnessed_nodes = self.solve_root_with_dw(root)
             else:
                 witnessed_nodes = self.solve_root_as_tree(root)
@@ -2430,12 +2428,10 @@ class SFGraphReductionEngine:
         self.set_edge_weights()
         non_steiner_nodes = self.non_steiner_nodes()
 
-        max_rt_distance = min(self._maximum_rt_distance, self.get_maximum_rt_distance())
-        if max_rt_distance != self._maximum_rt_distance and max_rt_distance > 0:
-            logger.trace(
-                f"  => max_rt_distance changed from {self._maximum_rt_distance} to {max_rt_distance}"
-            )
-            self._maximum_rt_distance = int(max_rt_distance)
+        max_rt_distance = min(self._global_min_max_drt, self.get_maximum_rt_distance())
+        if max_rt_distance != self._global_min_max_drt and max_rt_distance > 0:
+            logger.trace(f"  => max_rt_distance changed from {self._global_min_max_drt} to {max_rt_distance}")
+            self._global_min_max_drt = int(max_rt_distance)
         logger.trace(f"  => max_rt_distance: {max_rt_distance}")
 
         removables = []
@@ -4029,8 +4025,8 @@ class SFGraphReductionEngine:
         num_terminals_start = sum(len(ts) for ts in self.terminal_sets.values()) + num_terminal_roots_start
 
         self.set_edge_weights()
-        self._maximum_rt_distance = self.get_maximum_rt_distance()
-        logger.info(f"  maximum RT distance: {self._maximum_rt_distance}")
+        self._global_min_max_drt = self.get_maximum_rt_distance()
+        logger.info(f"  maximum RT distance: {self._global_min_max_drt}")
 
         tmp_num_nodes = self.graph.num_nodes() + 1
         iteration = 0
