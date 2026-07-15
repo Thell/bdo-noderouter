@@ -79,3 +79,5 @@ extended_run_no_super.txt
 long_run_log_no_super.txt
 mip full reductions reference.txt
 FixedGapThresholdDefaultReduction1Extend.txt
+PrototypeFinalNonSuper.txt
+PrototypeFinalNonSuperCachedRun.txt
