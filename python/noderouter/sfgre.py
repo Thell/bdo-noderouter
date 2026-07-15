@@ -1252,13 +1252,17 @@ class SFGraphReductionEngine:
     def reduce_degreek_steiner_dominance(self, max_degree: int = 4) -> int:
         """
         Removes Steiner nodes of small degree k that are dominated by alternate paths.
+        Strict dominance is used in the presence of fixed nodes.
 
         Reduction Rule:
         ```
         Ⓢ : N(Ⓢ) = {○₁, ○₂, …, ○ₖ}, 2 < k ≤ K
         ∧ ∀ {○ᵢ, ○ⱼ} ⊆ N(Ⓢ):
             (○ᵢ ↠∣Ⓢ∣↠ ○ⱼ) exists
-            ∧ 𝔀(○ᵢ ↠∣Ⓢ∣↠ ○ⱼ) ≤ 𝔀(○ᵢ 🡒 Ⓢ 🡒 ○ⱼ)
+            if N(Ⓢ) ∩ 𝓢:
+                ∧ 𝔀(○ᵢ ↠∣Ⓢ∣↠ ○ⱼ) < 𝔀(○ᵢ 🡒 Ⓢ 🡒 ○ⱼ)
+            else:
+                ∧ 𝔀(○ᵢ ↠∣Ⓢ∣↠ ○ⱼ) ≤ 𝔀(○ᵢ 🡒 Ⓢ 🡒 ○ⱼ)
 
         ⭆  𝐆 ≔ 𝐆 ∖ Ⓢ
         ```
@@ -1310,6 +1314,7 @@ class SFGraphReductionEngine:
                     continue
 
                 dominated = True
+                has_fixed_neighbor = set(neighbors) & self.fixed_nodes
 
                 for i in range(len(neighbors)):
                     if not dominated:
@@ -1336,7 +1341,9 @@ class SFGraphReductionEngine:
                             dominated = False
                             break
 
-                        if dist_avoid[v] > dist_full[v]:
+                        if dist_avoid[v] > dist_full[v] or (
+                            dist_avoid[v] == dist_full[v] and has_fixed_neighbor
+                        ):
                             dominated = False
                             break
 
