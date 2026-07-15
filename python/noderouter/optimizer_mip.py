@@ -480,3 +480,40 @@ if __name__ == "__main__":
     # result = optimize_with_terminals(terminals, config)
     # print(result.waypoints)
     # print(result.cost)
+
+    from api_common import MAX_BUDGET
+
+    # # Example: Run one-off for
+    # # 95faa43 nearest_captial  Budget: 150
+    budget = 150
+    percent = round(budget / MAX_BUDGET * 100)
+    seed = "95faa43"
+    mip_plan = Plan(
+        optimize_with_terminals,
+        budget,
+        percent,
+        seed,
+        False,
+        PairingStrategy.nearest_capital,
+        False,
+    )
+    print(mip_plan)
+    execute_plan(mip_plan, config)
+
+    # # Example: Run one-off for
+    # # 55e1b9d random_n_cheapest_town_in_territory  Budget: 215
+    # # CONFIRMED SUBOPTIMAL SCIPSTP result using reduciton 2
+    # budget = 215
+    # percent = round(budget / MAX_BUDGET * 100)
+    # seed = "55e1b9d"
+    # mip_plan = Plan(
+    #     optimize_with_terminals,
+    #     budget,
+    #     percent,
+    #     seed,
+    #     False,
+    #     PairingStrategy.random_n_cheapest_town_in_territory,
+    #     False,
+    # )
+    # print(mip_plan)
+    # execute_plan(mip_plan, config)
