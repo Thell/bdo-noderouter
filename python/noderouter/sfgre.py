@@ -18,6 +18,7 @@ from loguru import logger
 from more_itertools import set_partitions
 from networkx import PlanarEmbedding
 from rustworkx import PyDiGraph
+from sfpgre_cch import get_interactivity_edges
 
 from api_common import PAYLOAD_WEIGHT_KEY
 from api_exploration_data import get_exploration_data
@@ -2301,7 +2302,7 @@ class SFGraphReductionEngine:
 
         return best_left_graph, best_right_graph, best_cut_left_endpoints, best_cut_right_endpoints
 
-    def reduce_roots_by_distance(self) -> int:
+    def solve_isolated_roots_as_trees(self) -> int:
         """
         Root arbor reduction by distance.
 
@@ -2317,7 +2318,7 @@ class SFGraphReductionEngine:
 
         Returns number of collapsed nodes.
         """
-        logger.trace("reduce_steiner_nodes_by_distance...")
+        logger.trace("solve_isolated_roots_as_trees...")
 
         self.set_edge_weights()
         max_rt_distance = min(self._maximum_rt_distance, self.get_maximum_rt_distance())
@@ -2330,47 +2331,51 @@ class SFGraphReductionEngine:
 
         all_consumed = set()
 
-        # Test in reverse order by size of terminal set...
+        # --- Component Level Data Mapping ---
+        # Since scipstp has issues with graphs containing multiple components,
+        # we need to partition the graph into connected components and handle
+        # the adj mapping and weights for each component separately.
+        logger.trace("      building component level data...")
+
+        terminal_keys = list(self.terminal_sets.keys())
+        node_weights = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+
+        # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
+        self.set_edge_weights()
+        arbor_rt_all_shortest_path_unions = {r: set() for r in terminal_keys}
+        for r, terminals in self.terminal_sets.items():
+            for t in terminals:
+                paths = rx.all_shortest_paths(self.graph, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
+                arbor_rt_all_shortest_path_unions[r].update(*paths)
+
+        # TODO: check how the interactivity edges handle the presence of super root...
+        interactivity_edges = get_interactivity_edges(
+            self.graph, self.terminal_sets, node_weights, arbor_rt_all_shortest_path_unions
+        )
+
+        interactivity_graph = subgraph_stable(self.graph, terminal_keys)
+        interactivity_graph.remove_edges_from(interactivity_graph.edges())
+        interactivity_graph.add_edges_from(interactivity_edges)
+
+        isolates = rx.isolates(interactivity_graph)
+        if isolates:
+            logger.warning(f"      solving {len(isolates)} isolated trees...")
+
+        # NOTE: super terminals can not be handled as isolates,
+        #       but they can be part of an isolates solution...
         sr_index = self.super_root_index
-        for root in sorted(self.terminal_sets.keys(), key=lambda r: len(self.terminal_sets[r]), reverse=True):
+
+        for root in isolates:
             if root == sr_index:
                 continue
 
-            # We now need the minimum gap for this particular cluster set (terminals|{root}) to any other terminal/root
-            # not in this cluster...
-            cluster = self.terminal_sets[root] | {root}
-
-            gap = float("inf")
-            self.set_edge_weights()
-
-            all_others = set().union(*self.terminal_sets.values()) | set(self.terminal_sets.keys())
-            all_others -= cluster
-            all_others.discard(self.super_root_index)
-
-            # When all_others is empty it means cluster is the sole remaining terminal cluster
-            # and gap would be infinite so we can skip calcuting it.
-            # NOTE: We can do this more efficiently by using a BFS after prototyping...
-            if all_others:
-                for u in cluster:
-                    for v in all_others:
-                        gap = min(gap, self.shortest_path_length(u, v))
-
-            if gap <= max_rt_distance:
-                continue
-
-            logger.debug(
-                f"  => identified isolated terminal cluster for root {self.get_node_key(root)} with {len(cluster)} terminals (gap: {gap})..."
-            )
-
-            consumed = set()
-
-            # Then we'll solve the tree to get the witnessed solution nodes...
-            if len(cluster) <= DW_MAX_TREE_TERMINALS:
+            if 1 + self.terminal_sets[root] <= DW_MAX_TREE_TERMINALS:
                 witnessed_nodes = self.solve_root_with_dw(root)
             else:
                 witnessed_nodes = self.solve_root_with_scipstp(root)
 
-            # Now consume all witnessed nodes, from the root outward; leaving the root node in the graph.
+            # Consume all witnessed nodes, from the root outward; leaving the root node in the graph.
+            consumed = set()
             witnessed_to_remove = set(witnessed_nodes)
             while len(witnessed_to_remove) > 0:
                 neighbors = self.reduction_neighbors(root)
@@ -2379,7 +2384,6 @@ class SFGraphReductionEngine:
                 if len(neighbors) == 0:
                     break
 
-                # Places the consumed node and hyper node contents into the fixed solution set
                 for n in neighbors:
                     self.consume(n, root)
                     consumed.add(n)
@@ -2387,7 +2391,8 @@ class SFGraphReductionEngine:
 
             all_consumed.update(consumed)
 
-            logger.trace(f"    witnessed: {sorted(self.get_node_key(n) for n in witnessed_nodes)}")
+            if self.do_debug:
+                logger.trace(f"    witnessed: {sorted(self.get_node_key(n) for n in witnessed_nodes)}")
 
             # Handle any settled super-root terminals
             if self.super_root_index is not None:
@@ -2407,7 +2412,7 @@ class SFGraphReductionEngine:
             logger.debug(f"  => consumed {len(all_consumed)} witnessed nodes")
             if self.do_debug:
                 logger.trace(f"    consumed: {sorted(self.get_node_key(n) for n in all_consumed)}")
-                self.dump_state("reduce_roots_by_distance", len(all_consumed))
+                self.dump_state("solve_isolated_roots_as_trees", len(all_consumed))
                 self.validate_reachability()
 
         return len(all_consumed)
