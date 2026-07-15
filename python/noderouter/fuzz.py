@@ -693,20 +693,21 @@ if __name__ == "__main__":
 
     # NOTE: For testing purposes we can use a subset of strategies
     # strategies = [PairingStrategy.optimized, PairingStrategy.random_town]
+    # strategies = [PairingStrategy.nearest_town]
 
     # NOTE: For full fuzzing we should use a subset of budgets since the MIP
     # solver takes a long time and is executed for each strategy within each budget
     # times the number of samples.
-    # budgets = range(5, 46, 5)
+    budgets = range(5, 555, 5)
 
     # NOTE: For testing purposes or limited subsets the range can be increased
     # to include all possible budgets.
     # NOTE: MIP optimal solutions are available for (5, 555, 5).
-    budgets = range(300, 305, 10)
+    # budgets = range(5, 555, 5)
 
     # NOTE: For normal fuzzing or testing purposes the sample count can be adjusted
     # as desired. The default is 20 to allow for a diverse random selection of pairs.
-    samples = 10
+    samples = 20
 
     # # Settings for running the optimized strategy purely to populate the MIP cache
     # strategies = [PairingStrategy.cheapest_town]
@@ -715,6 +716,6 @@ if __name__ == "__main__":
 
     # # For normal fuzzing use [False, True]
     # include_danger = [False, True]
-    danger_states = [True]
+    danger_states = [False]
 
     fuzzer_main(strategies, samples, budgets, danger_states)
