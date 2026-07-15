@@ -15,7 +15,6 @@ import nwst_dw
 import rustworkx as rx
 from bidict import bidict
 from loguru import logger
-from more_itertools import set_partitions
 from networkx import PlanarEmbedding
 from rustworkx import PyDiGraph
 from sfpgre_cch import get_interactivity_edges
@@ -23,7 +22,7 @@ from sfpgre_cch import get_interactivity_edges
 from api_common import PAYLOAD_WEIGHT_KEY
 from api_exploration_data import get_exploration_data
 from api_nwstp_problem import TreeProblem
-from api_nwstp_solver import solve_tree, solve_tree_using_scipstp
+from api_nwstp_solver import solve_tree
 from api_rx_pydigraph import subgraph_stable
 
 HYPERNODE_CONTENTS_KEY = "collapsed_nodes"
