@@ -13,7 +13,7 @@ from typing import Self, cast
 
 import rustworkx as rx
 from bidict import bidict
-from highspy import Highs, HighsModelStatus, highs_var
+from highspy import Highs, HighsModelStatus, HighsStatus, HighsVarType, ObjSense, highs_var, kHighsInf
 from loguru import logger
 
 import api_data_store as ds
@@ -22,6 +22,8 @@ from api_highs_solver import HiGHSVarMap, create_model, get_highs
 from api_rx_pydigraph import subgraph_stable
 
 MAGIC_HEADER = "33D32945 STP File, STP Format Version 1.0"
+
+EXCLUDED_DIR = r"C:\Users\thell\Workspaces\bdo\bdo-noderouter\windows_defender_excluded"
 
 
 @dataclass(slots=True)
@@ -369,36 +371,90 @@ class DimacsNWSTPProblem:
         return True
 
     def solve_using_scipstp(self):
-        """Solves the DIMACS problem using scipstp (scip-jack)."""
+        """Solves the DIMACS problem using scipstp (scip-jack) with retries and timeout."""
         stp_path = self.ensure_stp_filepath()
-
         sol_path = self.sol_path
+
         if sol_path.exists():
             sol_path.unlink()
 
         if not ds.is_file("scipstp.set"):
             logger.error("SCIPSTP settings file not found")
-            raise FileNotFoundError
-        settings_path = ds.path().joinpath("scipstp.set")
+            raise FileNotFoundError("SCIPSTP settings file not found")
 
-        result = subprocess.run(
-            ["scipstp.exe", "-f", stp_path.name, "-s", str(settings_path.resolve())],
-            cwd=str(stp_path.parent),
-            capture_output=True,
-            text=False,
-            check=False,
-        )
+        base_settings_path = ds.path().joinpath("scipstp.set")
 
-        if result.returncode != 0:
-            logger.error(f"SCIPSTP failed on {stp_path}")
-            print(result.stdout)
-            print(result.stderr, file=sys.stderr)
-            raise RuntimeError("SCIPSTP solve failed")
+        # Reduction levels to try, from most aggressive to least
+        # solving our small problems is fast, normal under 0.2 seconds
+        reduction_levels = [(1, 4.0), (2, 4.0), (0, 8.0)]
 
-        if not sol_path.exists():
-            raise RuntimeError(f"SCIPSTP did not produce a solution file: {sol_path}")
+        for reduction, timeout_seconds in reduction_levels:
+            settings_path = base_settings_path
 
-        self.load_scip_solution()
+            if reduction != 2:  # only create temp file on first try to lower
+                settings_path = self._create_temp_settings(base_settings_path, reduction)
+
+            try:
+                result = subprocess.run(
+                    ["scipstp.exe", "-f", stp_path.name, "-s", str(settings_path.resolve())],
+                    cwd=str(stp_path.parent),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+
+                # Success - let's get out of here!
+                if result.returncode == 0 and sol_path.exists():
+                    self.load_scip_solution()
+                    return
+
+                if result.returncode != 0:
+                    logger.warning(
+                        f"SCIPSTP {self.name} {self.remark} failed (code {result.returncode}) with reduction {reduction}\n"
+                    )
+                else:
+                    logger.error(
+                        f"SCIPSTP {self.name} {self.remark} returned success code but no solution file (reduction {reduction})"
+                    )
+
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    f"SCIPSTP {self.name} {self.remark} timeout/hang detected at reduction level {reduction}, trying next lower..."
+                )
+            except Exception as e:  # noqa: BLE001
+                print(e, file=sys.stderr)
+                logger.error(
+                    f"SCIPSTP {self.name} {self.remark} unexpected error at reduction {reduction}, trying next lower..."
+                )
+            finally:
+                if settings_path != base_settings_path:
+                    try:
+                        settings_path.unlink(missing_ok=True)
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+
+        # All reduction levels failed
+        logger.error(f"SCIPSTP {self.name} {self.remark} failed on all reduction levels for {stp_path}")
+        raise RuntimeError(f"SCIPSTP {self.name} {self.remark} failed on all reduction levels for {stp_path}")
+
+    def _create_temp_settings(self, base_path: Path, reduction: int) -> Path:
+        """Create temp settings file with only the reduction level changed."""
+        with tempfile.NamedTemporaryFile(dir=EXCLUDED_DIR, mode="w", suffix=".set", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            lowered = False
+            with base_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().lower().startswith("stp/reduction"):
+                        tmp.write(f"stp/reduction = {reduction}\n")
+                        lowered = True
+                    else:
+                        tmp.write(line)
+
+            if not lowered:
+                tmp.write(f"stp/reduction = {reduction}\n")
+
+        return tmp_path
 
     def solve_using_mip(self, **kwargs):
         """The problem is solved using MIP and the solution attributes are populated."""
@@ -426,6 +482,10 @@ class DimacsNWSTPProblem:
         if not self.validate_solution_reachability():
             return -1
 
+        logger.trace(
+            f" Validating scip cost of {scip_cost} with {self.num_terminals} terminals and max weight of {max(self.node_weights.values())}..."
+        )
+
         model, vars = self.as_mip_model(**kwargs)
 
         graph = self.as_pydigraph()
@@ -435,11 +495,16 @@ class DimacsNWSTPProblem:
             )
             <= scip_cost - 1
         )
+
+        # We also need to disable HiGHS internal parallel processing since tree solving is called
+        # using multiprocessing from the reduction engine.
+        model.setOptionValue("parallel", "off")
         model.optimize()
 
         # Validate optimality...
         # If the model is infeasible, then the scip solution is optimal
         if model.getModelStatus() == HighsModelStatus.kInfeasible:
+            logger.trace("    scipstp solution is optimal...")
             return 0
 
         # Otherwise, the solution is suboptimal
@@ -451,12 +516,14 @@ class DimacsNWSTPProblem:
     def write_stp_file(self):
         if self.stp_filepath is None:
             with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", delete=False, suffix=".stp"
+                dir=EXCLUDED_DIR, mode="w", encoding="utf-8", delete=False, suffix=".stp"
             ) as filepath:
                 self.stp_filepath = Path(filepath.name)
                 filepath.close()
 
         path = self.stp_filepath
+
+        logger.trace(f"    Writing STP file: {path}")
 
         with path.open("w", encoding="utf-8") as f:
             f.write(f"{MAGIC_HEADER}\n")
@@ -497,8 +564,10 @@ class DimacsNWSTPProblem:
         highs = get_highs(config)
         if kwargs.get("parallel"):
             highs.setOptionValue("parallel", kwargs["parallel"])
-        model, vars = create_model(highs, graph=graph, **kwargs)
-
+        # model, vars = create_model(highs, graph=graph, **kwargs)
+        model, vars = create_da_tree_model(highs, graph=graph, **kwargs)
+        model.writeModel(f"{self.name}_{self.remark}_highs.lp")
+        self.export_scip_lp_formulation()
         return model, vars
 
     def as_pydigraph(self) -> rx.PyDiGraph:
@@ -539,3 +608,169 @@ class DimacsNWSTPProblem:
 
         self.solution_graph = graph
         return graph
+
+    def export_scip_lp_formulation(self) -> None:
+        """
+        Loads the DIMACS problem into scipstp, completely disables reduction
+        and cut-separation plugins, and dumps the raw initial LP formulation.
+        """
+        import subprocess
+        from pathlib import Path
+
+        stp_path = Path(self.ensure_stp_filepath())
+        if not stp_path.exists():
+            raise FileNotFoundError(f"Source file not found at: {stp_path}")
+
+        output_path = ds.path()
+        output_lp_filename = f"{self.name}_{self.remark}_scip.lp"
+        # Output to the ds.path()'s ../.. parent
+        output_filepath = output_path.parent.parent.parent.joinpath(output_lp_filename)
+        logger.trace(f"[SCIP Export] Exporting to: {output_filepath}")
+
+        # Absolute paths prevent the shell from changing sub-directories!
+        scip_commands = (
+            f"set stp reduction 0\nread {stp_path.name}\nwrite problem '{output_filepath}'\nquit\n"
+        )
+
+        try:
+            subprocess.run(
+                ["scipstp.exe"],
+                cwd=str(stp_path.parent),
+                input=scip_commands,
+                capture_output=False,
+                text=True,
+                check=True,
+            )
+
+            if Path(output_filepath).exists():
+                print(f"[SCIP Export] Natively generated: {output_filepath}")
+            else:
+                print(f"[SCIP Export] Shell finished, but could not locate {output_filepath}")
+
+        except subprocess.CalledProcessError:
+            print("[SCIP Export] Subprocess failed.")
+            raise
+
+
+def create_da_tree_model(model: Highs, **kwargs) -> tuple[Highs, dict]:
+    """
+    Populates a HiGHS model mathematically aligned with SCIPSTP's tree model structure
+    using a synchronized combinatorial Dual Ascent algorithm on a rustworkx graph.
+    """
+    logger.debug("Creating mathematically strong Dual Ascent model optimized for SCIP...")
+    import time
+
+    if "graph" not in kwargs:
+        raise LookupError("'graph' must be in kwargs!")
+    G = kwargs["graph"]
+    if not isinstance(G, rx.PyDiGraph):
+        raise TypeError("'graph' must be a rustworkx.PyDiGraph!")
+    if "terminal_sets" not in G.attrs or "terminals" not in G.attrs:
+        raise LookupError("Graph must have 'terminal_sets' and 'terminals' attributes!")
+
+    terminal_sets = G.attrs.get("terminal_sets", {})
+    all_terminals = terminal_sets.keys() | set().union(*terminal_sets.values())
+
+    # Identify the absolute root node of the arborescence
+    root = G.attrs.get("root", next(iter(all_terminals)))
+    start_time = time.time()
+
+    # Calculate Max Weight dynamically from edge target node payloads
+    max_weight = max(float(G[v][PAYLOAD_WEIGHT_KEY]) for u, v in G.edge_list())
+    targets = [t for t in all_terminals if t != root]
+
+    # 1. Variables & Symbolic Objective Configuration
+    var_coeffs = {
+        f"x_{u}_{v}": float(G[v][PAYLOAD_WEIGHT_KEY]) if float(G[v][PAYLOAD_WEIGHT_KEY]) > 0 else max_weight
+        for u, v in G.edge_list()
+    }
+
+    # Instantiate the binary arc variables using highspy high-level symbols
+    vars_dict = model.addBinaries(list(var_coeffs.keys()), names=list(var_coeffs.keys()))
+
+    # Inject the structural constant offset tracking variable matching SCIP's offset layout
+    offset_name = "offset_value"
+    vars_dict[offset_name] = model.addIntegral(lb=1, ub=1, name=offset_name)
+    var_coeffs[offset_name] = -1.0 * (len(all_terminals) - 1) * max_weight
+
+    # Explicitly ensure names are set (important for writeModel validation match)
+    for name, var_obj in vars_dict.items():
+        col_idx = var_obj.index
+        model.passColName(col_idx, name)
+
+    # Compile the complete algebraic objective function natively
+    model.setObjective(model.qsum(var_coeffs[u] * vars_dict[u] for u in vars_dict))
+    model.changeObjectiveSense(ObjSense.kMinimize)
+
+    # 2. Dual Ascent Setup
+    reduced_costs = {(u, v): var_coeffs[f"x_{u}_{v}"] for u, v in G.edge_list()}
+    edge_vars = {(u, v): vars_dict[f"x_{u}_{v}"].index for u, v in G.edge_list()}
+    constraint_counter = 0
+    added_fingerprints = set()
+
+    # =========================================================================
+    # 3. Synchronized Phased Dual Ascent Loop (Aligned with dualascent.c)
+    # =========================================================================
+    while True:
+        active_cuts = {}
+
+        # Identify backward components for all disconnected targets simultaneously
+        for t in sorted(targets, key=lambda n: str(n)):
+            S = {t}
+            queue = [t]
+            while queue:
+                curr = queue.pop(0)
+                for u in G.predecessor_indices(curr):
+                    if u not in S and reduced_costs.get((u, curr), -1) <= 1e-9:
+                        S.add(u)
+                        queue.append(u)
+
+            # If the component reaches the root, it is satisfied for this phase
+            if root in S:
+                continue
+
+            # Collect the directed cut boundary entering S
+            cut_arcs = [(u, v) for v in S for u in G.predecessor_indices(v) if u not in S]
+            if cut_arcs:
+                active_cuts[t] = cut_arcs
+
+        # If no active cuts remain, the dual ascent phase is complete
+        if not active_cuts:
+            break
+
+        # Find the single global minimum delta across all currently active cuts
+        # This protects the matrix spacing from sequential slack destruction
+        global_delta = min(min(reduced_costs[arc] for arc in cut_arcs) for cut_arcs in active_cuts.values())
+        if global_delta <= 0:
+            break
+
+        # Commit the valid cuts and update global reduced costs uniformly
+        for t, cut_arcs in active_cuts.items():
+            row_indices = sorted([edge_vars[arc] for arc in cut_arcs])
+            fingerprint = tuple(row_indices)
+
+            if fingerprint not in added_fingerprints:
+                row_coefficients = [1.0] * len(row_indices)
+                model.addRow(1.0, kHighsInf, len(row_indices), row_indices, row_coefficients)
+                constraint_counter += 1
+                added_fingerprints.add(fingerprint)
+
+            for arc in cut_arcs:
+                reduced_costs[arc] -= global_delta
+
+    # =========================================================================
+    # 4. Inject Terminal Star-Cuts (Static Boundary Conditions)
+    # =========================================================================
+    for t in targets:
+        star_indices = sorted([edge_vars[(u, v)] for u, v in G.edge_list() if v == t])
+        if star_indices and tuple(star_indices) not in added_fingerprints:
+            model.addRow(1.0, kHighsInf, len(star_indices), star_indices, [1.0] * len(star_indices))
+            added_fingerprints.add(tuple(star_indices))
+            constraint_counter += 1
+
+    logger.debug(
+        f"Dual Ascent configuration complete. Added {constraint_counter} 'da' cuts "
+        f"across {len(vars_dict)} variables in {time.time() - start_time:.4f} seconds."
+    )
+
+    return model, edge_vars

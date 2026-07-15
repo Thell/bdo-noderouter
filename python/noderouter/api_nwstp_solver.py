@@ -5,6 +5,7 @@ from pathlib import Path
 import nwst_dw
 from loguru import logger
 
+from api_common import set_logger
 from api_nwstp_problem import DimacsNWSTPProblem, TreeProblem
 
 type TreeSolveResult = tuple[tuple[int, ...], int, int]
@@ -39,9 +40,12 @@ def solve_tree(problem: TreeProblem, solver: str = "choose") -> TreeSolveResult:
 def solve_tree_using_dw(problem: TreeProblem) -> TreeSolveResult:
     logger.trace("solve_tree_using_dw...")
 
+    # solve_nwst requires neighbors to be a set (for now)
+    adj_map = {k: set(v) for k, v in problem.adj_map.items()}
+
     try:
         cost, _, solution_nodes = nwst_dw.solve_nwst(
-            problem.adj_map,
+            adj_map,
             problem.node_weight_map,
             problem.terminals,
             problem.terminals[0],
@@ -166,7 +170,7 @@ if __name__ == "__main__":
     import api_data_store as ds
     from api_common import set_logger
 
-    set_logger(ds.get_config("config"))
+    set_logger({"logger": {"level": "TRACE", "format": "<level>{message}</level>"}})
 
     parser = argparse.ArgumentParser()
     parser.add_argument("filename", help="DIMACS STP file")
@@ -176,7 +180,9 @@ if __name__ == "__main__":
     # filename = r"C:\Users\thell\Workspaces\bdo\bdo-noderouter\845487e_(152, 388, 612, 655)_mip_cost_99999_scip_cost_99999.stp"
 
     problem = DimacsNWSTPProblem.from_filename(filename)
-    problem.solve_using_mip()
+
+    lp_filename = f"{filename}.lp"
+    problem.solve_using_mip(save_lp=lp_filename)
 
     print(f"solution: {problem.solution_nodes}")
     print(f"cost: {problem.objective_value}")
