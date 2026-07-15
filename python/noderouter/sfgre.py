@@ -2371,7 +2371,7 @@ class SFGraphReductionEngine:
             if 1 + self.terminal_sets[root] <= DW_MAX_TREE_TERMINALS:
                 witnessed_nodes = self.solve_root_with_dw(root)
             else:
-                witnessed_nodes = self.solve_root_with_scipstp(root)
+                witnessed_nodes = self.solve_root_as_tree(root)
 
             # Consume all witnessed nodes, from the root outward; leaving the root node in the graph.
             consumed = set()
@@ -2869,130 +2869,69 @@ class SFGraphReductionEngine:
 
         return solution_nodes
 
-    def solve_root_with_scipstp(self, root: int):
-        """Solves a single root from the remaining reduced state graph."""
+    def solve_root_as_tree(self, root: int):
+        """Solves a single isolated root from the remaining reduced state graph.
+
+        NOTE: An isolated root (per the interactivity-graph isolation check) has
+        no possible interaction with any other root, so there is no partition
+        or decomposition question to answer here -- unlike solve_as_tree_composite,
+        this is always exactly one block: the root's own flattened terminal set,
+        solved as a single tree.
+        """
         logger.trace("solve_root_with_scipstp...")
 
-        # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
-        # so we need to pass in the adjacency map and node weights
         adj_map = {u: sorted(self.reduction_neighbors(u)) for u in self.graph.node_indices()}
         node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
 
-        terminal_keys = [root]
-        partitions = set_partitions(terminal_keys)
-
-        valid_blocks = set()
-        valid_partitions = []
-
-        # 1. Sequential partition filtering loop
-        for partition in partitions:
-            is_valid = True
-            for block in partition:
-                block_key = tuple(sorted(block))
-                if len(block) < 2 or block_key in valid_blocks:
-                    continue
-                block_reachable = True
-                for i in range(len(block)):
-                    for j in range(i + 1, len(block)):
-                        if not rx.has_path(self.graph, block[i], block[j]):
-                            block_reachable = False
-                            break
-                    if not block_reachable:
-                        break
-                if block_reachable:
-                    valid_blocks.add(block_key)
-                else:
-                    is_valid = False
-                    break
-            if is_valid:
-                valid_partitions.append(partition)
-
-        # 2. Collect all unique blocks that actually exist within valid partitions
-        unique_valid_blocks = set()
-        for partition in valid_partitions:
-            for block in partition:
-                unique_valid_blocks.add(tuple(sorted(block)))
-
-        block_results = {}
-
-        # For index masking...
         nodes_list = list(self.graph.node_indices())
         node_index = {u: i for i, u in enumerate(nodes_list)}
-
-        # DIMACS node ids are 1-based, contiguous
         dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
         inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
 
-        for block_key in unique_valid_blocks:
-            terminals = set()
-            for k in block_key:
-                terminals.add(k)
-                terminals.update(self.terminal_sets[k])
-            terminals_list = list(terminals)
+        terminals = {root}
+        terminals.update(self.terminal_sets[root])
+        terminals_list = sorted(terminals)
 
-            logger.trace(f"    solving block {block_key}...")
+        logger.trace(f"    solving isolated root {root} with {len(terminals_list)} terminals...")
 
-            self.solved_trees += 1
-            block_key, cost, mask = solve_tree_using_scipstp(
-                TreeProblem(
-                    instance_id=self.instance_id,
-                    block_key=block_key,
-                    terminals=terminals_list,
-                    adj_map=adj_map,
-                    node_weight_map=node_weight_map,
-                    node_index_map=node_index,
-                    dimacs_id_map=dimacs_id,
-                    inv_dimacs_id_map=inv_dimacs_id,
-                    enable_super_root_index=0,
-                    do_debug=self.do_debug,
-                    mip_validation=False,
-                )
+        self.solved_trees += 1
+
+        # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity,
+        # matching solve_as_tree_composite's dispatch behavior.
+        _, cost, mask = solve_tree(
+            TreeProblem(
+                instance_id=self.instance_id,
+                block_key=(root,),
+                terminals=terminals_list,
+                adj_map=adj_map,
+                node_weight_map=node_weight_map,
+                node_index_map=node_index,
+                dimacs_id_map=dimacs_id,
+                inv_dimacs_id_map=inv_dimacs_id,
+                enable_super_root_index=0,
+                do_debug=self.do_debug,
+                mip_validation=False,
             )
+        )
 
-            logger.trace(
-                f"    solved block {block_key} containing {len(terminals_list)} terminals with cost {cost}"
-            )
-            block_results[block_key] = mask
-
-        # Phase 2: Sequential realization of partitions using memoized blocks
-        best_cost = float("inf")
-        best_solution_mask = 0
-
-        for partition in valid_partitions:
-            solution_mask = 0
-            for block in partition:
-                block_key = tuple(sorted(block))
-                solution_mask |= block_results[block_key]
-
-            # sum weights over bits
-            total_cost = 0
-            mask = solution_mask
-            while mask:
-                lsb = mask & -mask
-                idx = lsb.bit_length() - 1
-                u = nodes_list[idx]
-                total_cost += node_weight_map[u]
-                mask ^= lsb
-
-            if total_cost < best_cost:
-                best_cost = total_cost
-                best_solution_mask = solution_mask
+        logger.trace(f"    solved isolated root {root} with cost {cost}")
 
         best_solution = set()
-        mask = best_solution_mask
-        while mask:
-            lsb = mask & -mask
+        mask_bits = mask
+        while mask_bits:
+            lsb = mask_bits & -mask_bits
             idx = lsb.bit_length() - 1
             u = nodes_list[idx]
             best_solution.add(u)
-            mask ^= lsb
+            mask_bits ^= lsb
 
         if best_solution:
             logger.debug(
-                f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
+                f"    solved for terminals: {self.get_node_key(root)}: "
+                f"{ {self.get_node_key(n) for n in self.terminal_sets[root]} }"
             )
             logger.debug(
-                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
+                f"    found best solution (cost: {cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
             )
 
         return best_solution
@@ -3505,7 +3444,7 @@ class SFGraphReductionEngine:
 
         return best_solution
 
-    def solve_with_scipstp(self):
+    def solve_as_tree_composite(self):
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
         logger.trace("solve_with_scipstp...")
 
@@ -3524,39 +3463,56 @@ class SFGraphReductionEngine:
         # Since scipstp has issues with graphs containing multiple components,
         # we need to partition the graph into connected components and handle
         # the adj mapping and weights for each component separately.
-        # NOTE: Since we have no super-root WCC is fine here.
         logger.trace("      building component level data...")
 
         node_weights = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
 
         # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
         self.set_edge_weights()
-        arbor_all_shortest_path_unions = {r: set() for r in terminal_keys}
+        arbor_rt_all_shortest_path_unions = {r: set() for r in terminal_keys}
         for r, terminals in self.terminal_sets.items():
             for t in terminals:
                 paths = rx.all_shortest_paths(self.graph, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
-                arbor_all_shortest_path_unions[r].update(*paths)
+                arbor_rt_all_shortest_path_unions[r].update(*paths)
 
         interactivity_edges = get_interactivity_edges(
-            self.graph, self.terminal_sets, node_weights, arbor_all_shortest_path_unions
+            self.graph, self.terminal_sets, node_weights, arbor_rt_all_shortest_path_unions
         )
 
         interactivity_graph = subgraph_stable(self.graph, terminal_keys)
         interactivity_graph.remove_edges_from(interactivity_graph.edges())
         interactivity_graph.add_edges_from(interactivity_edges)
 
-        # print(f"      interactivity_graph.num_nodes = {interactivity_graph.num_nodes()}")
-        # print(
-        #     f"      map: { {i: (n, self.get_node_key(n)) for i, n in enumerate(interactivity_graph.node_indices())} }"
-        # )
-        # adj_matrix = rx.adjacency_matrix(interactivity_graph)
-        # print(f"      adj_matrix.shape =\n{adj_matrix}")
+        # if self.do_debug:
+        #     tmp_map = {i: (n, self.get_node_key(n)) for i, n in enumerate(interactivity_graph.node_indices())}
+        #     print(f"      interactivity_graph.num_nodes = {interactivity_graph.num_nodes()}")
+        #     print(f"      interactivity_graph.num_edges = {interactivity_graph.num_edges()}")
+        #     print("      interactivity_graph.map:")
+        #     for k, v in tmp_map.items():
+        #         print(f"        {k}: {v}")
+
+        #     adj_matrix = rx.adjacency_matrix(interactivity_graph)
+
+        #     interactive_roots: dict[int, list[int]] = {}
+        #     for root_i, row in enumerate(adj_matrix):
+        #         root = tmp_map[root_i][0]
+        #         root_wp = tmp_map[root_i][1]
+        #         interactive_roots[root_wp] = []
+        #         for col_i, weight in enumerate(row):
+        #             if weight:
+        #                 col_wp = tmp_map[col_i][1]
+        #                 interactive_roots[root_wp].append(col_wp)
+
+        #     print("      interactive_roots:")
+        #     for root, cols in interactive_roots.items():
+        #         print(f"        {root}: {cols}")
 
         component_data = {}
         root_component_map = {}
         reachable = {r: {r} for r in terminal_keys}
         terminal_keys_set = set(terminal_keys)
 
+        # NOTE: Since we have no super-root WCC is fine here.
         wcc = rx.weakly_connected_components(self.graph)
         for cc_i, cc in enumerate(wcc):
             # Root reachability for component generation...
@@ -3572,7 +3528,7 @@ class SFGraphReductionEngine:
             # so we need to pass in the adjacency map and node weights
             adj_map = {}
             for u in cc:
-                adj_map[u] = self.reduction_neighbors(u)
+                adj_map[u] = sorted(self.reduction_neighbors(u))
 
             # For index masking...
             nodes_list = list(self.graph.node_indices())
@@ -3603,37 +3559,105 @@ class SFGraphReductionEngine:
         num_blocks = 0
         num_candidate_blocks = 0
 
-        # Since the partition DP reconstructs the optimal partitioning, we only need
-        # to generate the valid blocks. Any valid block must be wholly contained
-        # within a single reachability component.
+        # Phase 1 - generate structurally valid blocks (unchanged)
         for cc_i, cc_data in component_data.items():
             reachable = sorted(cc_data.get("reachable"))
             k = len(reachable)
             for mask in range(1, 1 << k):
                 block = tuple(reachable[i] for i in range(k) if mask & (1 << i))
                 num_candidate_blocks += 1
+
                 subIG = interactivity_graph.subgraph(block)
                 if not rx.is_strongly_connected(subIG):
                     logger.trace(
                         f"      skipping invalid block {[self.get_node_key(n) for n in block]} (not strongly connected)"
                     )
                     continue
+
                 valid_blocks[cc_i].add(block)
                 num_blocks += 1
 
-        # Map unique blocks to their full, flattened terminal sets for the solver
-        worker_tasks = []
-        for cc_i, cc_valid_blocks in valid_blocks.items():
-            # NOTE: Terminals are translated within the worker process
-            for block_key in cc_valid_blocks:
+        logger.warning(
+            f"    generated {num_blocks} structurally valid blocks of {num_candidate_blocks} candidates..."
+        )
+
+        # Phase 2 - pairwise terminal distances (feeds interactivity edges AND the MST bound)
+        terminal_to_terminal_distances = {}
+        all_terminals = sorted(set(terminal_keys).union(*self.terminal_sets.values()))
+        for i, ti in enumerate(all_terminals):
+            for tj in all_terminals[i + 1 :]:
+                d = self.shortest_path_length(ti, tj)
+                terminal_to_terminal_distances[(ti, tj)] = d
+                terminal_to_terminal_distances[(tj, ti)] = d
+
+        def steiner_lower_bound(mst_weight, num_terminals):
+            """
+            OPT >= w(MST) / (2 - 2/l), where l = # leaves of OPT.
+            Since every leaf of an optimal Steiner tree is a terminal, l <= num_terminals,
+            and (2 - 2/l) is increasing in l, so substituting num_terminals for the
+            unknown true l only loosens (never invalidates) the bound.
+            """
+            if num_terminals <= 1:
+                return 0.0
+            ratio = 2 - (2 / num_terminals)
+            return mst_weight / ratio
+
+        def metric_closure_mst_weight(terminals):
+            """Kruskal over the complete graph implied by pairwise terminal distances."""
+            terminals = sorted(terminals)
+            if len(terminals) <= 1:
+                return 0.0
+
+            edges = sorted(
+                (
+                    (terminal_to_terminal_distances[(ti, tj)], ti, tj)
+                    for i, ti in enumerate(terminals)
+                    for tj in terminals[i + 1 :]
+                ),
+                key=lambda e: e[0],
+            )
+
+            parent = {t: t for t in terminals}
+
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            weight, joined = 0.0, 0
+            for w, ti, tj in edges:
+                ri, rj = find(ti), find(tj)
+                if ri != rj:
+                    parent[ri] = rj
+                    weight += w
+                    joined += 1
+                    if joined == len(terminals) - 1:
+                        break
+            return weight
+
+        # Flatten terminals once per block, reused by both waves.
+        block_terminals = {}
+        for cc_i, blocks in valid_blocks.items():
+            for block_key in blocks:
                 terminals = set()
-                for k in block_key:
-                    terminals.add(k)
-                    terminals.update(self.terminal_sets[k])
+                for r in block_key:
+                    terminals.add(r)
+                    terminals.update(self.terminal_sets[r])
+                block_terminals[(cc_i, block_key)] = sorted(terminals)
 
-                worker_tasks.append((cc_i, block_key, sorted(terminals)))
+        # --- Wave 1: singletons. These are the atoms of every decomposition --
+        # there's nothing to prune them against, so they always get solved.
+        singleton_tasks = [
+            (cc_i, block_key, block_terminals[(cc_i, block_key)])
+            for cc_i, blocks in valid_blocks.items()
+            for block_key in blocks
+            if len(block_key) == 1
+        ]
 
-        self.solved_trees += len(worker_tasks)
+        logger.warning(
+            f"    sequentially solving {len(singleton_tasks)} singleton blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
+        )
 
         problem_generator = (
             TreeProblem(
@@ -3647,25 +3671,112 @@ class SFGraphReductionEngine:
                 inv_dimacs_id_map=component_data[task[0]]["inv_dimacs_id_map"],
                 enable_super_root_index=0,
                 do_debug=self.do_debug,
-                mip_validation=self.do_debug,
+                mip_validation=False,
             )
-            for task in worker_tasks
+            for task in singleton_tasks
         )
 
-        # Partition block solving...
+        # NOTE: Long lived collections throughout the solving phases
         block_results = {}
         block_costs = {}
 
-        if num_blocks >= 42:
+        # Sequentially solve all singletons for usage in composite block filtering (Wave 2)
+        for block_n, problem in enumerate(problem_generator, start=1):
+            logger.trace(f"    solving ({block_n}/{num_blocks}) block {problem.block_key}...")
+
+            # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
+            block_key, cost, mask = solve_tree(problem)
+
+            logger.trace(
+                f"    solved ({block_n}/{num_blocks}) block {block_key} containing {len(problem.terminals)} terminals with cost {cost}"
+            )
+
+            block_results[block_key] = mask
+            block_costs[block_key] = cost
+
+        self.solved_trees += len(singleton_tasks)
+
+        # --- Wave 2 gate: pre-solve pruning via max-distance and MST bounds ---
+        # OPT >= W_MST / (2 - 2/k) (KMB). If that lower bound already exceeds the
+        # cheapest decomposition we can prove right now (singleton sum), no
+        # joint solve can beat it. Strict '>' only -- ties fall through to the
+        # solver, same as the existing post-solve dominance check below, since
+        # a tying composite may still share more structure with the rest of
+        # the eventual forest than any decomposition would.
+        surviving_tasks = []
+        num_dist_pruned = 0
+        num_mst_pruned = 0
+
+        for cc_i, blocks in valid_blocks.items():
+            for block_key in blocks:
+                if len(block_key) == 1:
+                    continue
+
+                terminals = block_terminals[(cc_i, block_key)]
+                singleton_sum = sum(block_costs[(r,)] for r in block_key)
+
+                max_dist = max(
+                    terminal_to_terminal_distances[(ti, tj)]
+                    for i, ti in enumerate(terminals)
+                    for tj in terminals[i + 1 :]
+                )
+                logger.trace(f"(max t-> t dist {max_dist:.2f}, singleton-sum {singleton_sum:.2f})")
+                if max_dist > singleton_sum:
+                    num_dist_pruned += 1
+                    logger.info(
+                        f"      pruning block {[self.get_node_key(n) for n in block_key]} via t->t distance"
+                    )
+                    continue
+
+                mst_weight = metric_closure_mst_weight(terminals)
+                lower_bound = steiner_lower_bound(mst_weight, len(terminals))
+                logger.trace(f"(MST lower bound {lower_bound:.2f}, singleton-sum {singleton_sum:.2f})")
+                if lower_bound > singleton_sum:
+                    num_mst_pruned += 1
+                    logger.info(f"      pruning block {[self.get_node_key(n) for n in block_key]} via MST")
+                    continue
+
+                surviving_tasks.append((cc_i, block_key, terminals))
+
+        num_bound_pruned = num_dist_pruned + num_mst_pruned
+        num_composite_blocks = sum(1 for blocks in valid_blocks.values() for bk in blocks if len(bk) > 1)
+        logger.warning(
+            f"    pre-solve bound pruned {num_bound_pruned} of {num_composite_blocks} composite blocks "
+            f"({num_dist_pruned} via max-dist, {num_mst_pruned} via MST, "
+            f"{num_bound_pruned / max(1, num_composite_blocks):.2%})"
+        )
+        self.solved_trees += len(surviving_tasks)
+
+        problem_generator = (
+            TreeProblem(
+                instance_id=self.instance_id,
+                block_key=task[1],
+                terminals=task[2],
+                adj_map=component_data[task[0]]["adj_map"],
+                node_weight_map=node_weight_map,
+                node_index_map=component_data[task[0]]["node_index_map"],
+                dimacs_id_map=component_data[task[0]]["dimacs_id_map"],
+                inv_dimacs_id_map=component_data[task[0]]["inv_dimacs_id_map"],
+                enable_super_root_index=0,
+                do_debug=self.do_debug,
+                mip_validation=False,
+            )
+            for task in surviving_tasks
+        )
+
+        # Surviving valid block solving...
+        num_surviving_tasks = len(surviving_tasks)
+        if num_surviving_tasks >= 42:
             logger.warning(
-                f"    concurrently solving {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
+                f"    concurrently solving {num_surviving_tasks} surviving of {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
             )
 
             try:
                 with ProcessPoolExecutor(max_workers=14) as executor:
-                    chunksize = max(1, min(256, len(worker_tasks) // 16))
+                    chunksize = max(1, min(256, len(surviving_tasks) // 16))
                     logger.warning(f"    chunksize: {chunksize}")
 
+                    # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
                     results = executor.map(
                         solve_tree,
                         problem_generator,
@@ -3690,12 +3801,13 @@ class SFGraphReductionEngine:
 
         else:
             logger.warning(
-                f"    sequentially solving {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
+                f"    sequentially solving {num_surviving_tasks} surviving of {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
             )
 
             for block_n, problem in enumerate(problem_generator, start=1):
                 logger.trace(f"    solving ({block_n}/{num_blocks}) block {problem.block_key}...")
 
+                # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
                 block_key, cost, mask = solve_tree(problem)
 
                 logger.trace(
@@ -3705,8 +3817,28 @@ class SFGraphReductionEngine:
                 block_results[block_key] = mask
                 block_costs[block_key] = cost
 
+        logger.warning(
+            f"    solved {len(block_results)} unique valid blocks of {num_candidate_blocks} ({len(block_results) / num_candidate_blocks:.2%})"
+        )
+
+        # Remove dominated blocks
+        logger.warning(f"    removing dominated blocks... ({len(block_results)})")
+
+        dominant_blocks = {}
+        dominant_costs = {}
+
+        for block_key, block_cost in block_costs.items():
+            if sum(block_costs[(comp,)] for comp in block_key) < block_cost:
+                continue
+
+            dominant_blocks[block_key] = block_results[block_key]
+            dominant_costs[block_key] = block_cost
+
+        block_results = dominant_blocks
+        block_costs = dominant_costs
+
         # Phase 1: Build block mask tables
-        logger.trace("    building block mask table...")
+        logger.warning(f"    building block mask table... ({len(block_results)})")
 
         block_mask_costs = {}
         block_mask_solutions = {}
@@ -3720,8 +3852,43 @@ class SFGraphReductionEngine:
             block_mask_costs[block_mask] = block_costs[block_key]
             block_mask_solutions[block_mask] = solution_mask
 
-        # Phase 2: Sequential realization of partitions using memoized blocks (Sparse Loop)
-        logger.trace("    solving partition DP...")
+        # Phase 2: Composite dominance DP
+        logger.warning(f"    solving composite dominance DP... ({len(block_mask_costs)})")
+
+        dominant_costs = {}
+        dominant_solutions = {}
+
+        for block_mask in sorted(block_mask_costs, key=int.bit_count):
+            direct_cost = block_mask_costs[block_mask]
+
+            # Singletons are always primitive.
+            if block_mask.bit_count() == 1:
+                dominant_costs[block_mask] = direct_cost
+                dominant_solutions[block_mask] = block_mask_solutions[block_mask]
+                continue
+
+            best_decomposition = float("inf")
+
+            sub = (block_mask - 1) & block_mask
+            while sub:
+                other = block_mask ^ sub
+
+                if sub < other and sub in dominant_costs and other in dominant_costs:
+                    decomposition_cost = dominant_costs[sub] + dominant_costs[other]
+                    best_decomposition = min(best_decomposition, decomposition_cost)
+
+                sub = (sub - 1) & block_mask
+
+            # Keep only primitive realizations.
+            if best_decomposition >= direct_cost:
+                dominant_costs[block_mask] = direct_cost
+                dominant_solutions[block_mask] = block_mask_solutions[block_mask]
+
+        block_mask_costs = dominant_costs
+        block_mask_solutions = dominant_solutions
+
+        # Phase 3: Sequential realization of partitions using memoized blocks
+        logger.warning(f"    solving partition DP... ({len(block_mask_costs)})")
         start_time = time()
 
         full_mask = (1 << len(terminal_keys)) - 1
@@ -3731,26 +3898,80 @@ class SFGraphReductionEngine:
 
         dp[0] = 0
 
-        for state in range(full_mask + 1):
-            if dp[state] == float("inf"):
-                continue
+        # Two traversal strategies for the same subset-sum DP, with very different cost
+        # profiles depending on how many blocks survived Phase 2's dominance filter:
+        #
+        #   - submask enumeration: Theta(3^n) total candidate_submasks iterations,
+        #                          independent of |block_mask_costs|.
+        #     Cheap when block_mask_costs is dense (most submasks are real hits).
+        #   - block iteration:     Theta(2^n * |block_mask_costs|) total iterations.
+        #     Cheap when block_mask_costs is sparse relative to the full state space.
+        #
+        # Crossover: 2^n * B == 3^n  =>  B == (3/2)^n. Pick whichever side is smaller
+        # instead of assuming one regime; the dominance filter's yield varies a lot
+        # across instances and can't be assumed sparse from a handful of samples.
+        n = len(terminal_keys)
+        num_blocks = len(block_mask_costs)
+        crossover = 1.5**n
 
-            remaining = full_mask ^ state
-            sub = remaining
+        use_block_iteration = num_blocks < crossover
 
-            while sub:
-                if sub in block_mask_costs:
-                    new_cost = dp[state] + block_mask_costs[sub]
+        logger.warning(
+            f"    n={n}, |block_mask_costs|={num_blocks}, crossover={crossover:.1f} "
+            f"-> using {'block-iteration' if use_block_iteration else 'submask-enumeration'} pathway"
+        )
 
-                    next_state = state | sub
+        state_transitions = 0
+        candidate_checks = 0
+
+        if use_block_iteration:
+            block_items = list(block_mask_costs.items())
+
+            for state in range(full_mask + 1):
+                if dp[state] == float("inf"):
+                    continue
+
+                for block_mask, block_cost in block_items:
+                    candidate_checks += 1
+                    if block_mask & state:
+                        continue
+
+                    next_state = state | block_mask
+                    new_cost = dp[state] + block_cost
+                    state_transitions += 1
 
                     if new_cost < dp[next_state]:
                         dp[next_state] = new_cost
-                        choice[next_state] = (state, sub)
+                        choice[next_state] = (state, block_mask)
 
-                sub = (sub - 1) & remaining
+        else:
+            for state in range(full_mask + 1):
+                if dp[state] == float("inf"):
+                    continue
 
-        logger.trace(f"    solved in {time() - start_time:.2f}s")
+                remaining = full_mask ^ state
+                sub = remaining
+
+                while sub:
+                    candidate_checks += 1
+                    if sub in block_mask_costs:
+                        new_cost = dp[state] + block_mask_costs[sub]
+
+                        next_state = state | sub
+                        state_transitions += 1
+
+                        if new_cost < dp[next_state]:
+                            dp[next_state] = new_cost
+                            choice[next_state] = (state, sub)
+
+                    sub = (sub - 1) & remaining
+
+        logger.warning(
+            f"    solved {candidate_checks} canidate checks of {state_transitions} state transitions in {time() - start_time:.2f}s"
+        )
+
+        # Phase 4: Extract best solution
+        logger.trace("    extracting best solution...")
 
         best_cost = dp[full_mask]
         best_solution_mask = 0
@@ -3774,7 +3995,7 @@ class SFGraphReductionEngine:
 
             state = prev_state
 
-        # Phase 3: Extract solution
+        # Phase 5: Extract solution
         logger.trace("    extracting solution...")
 
         best_solution = set()
@@ -3853,7 +4074,7 @@ class SFGraphReductionEngine:
                 break
 
             # Reduce roots by distance - this is a terminal set consumption and Steiner node removal reduction
-            if self.reduce_roots_by_distance():
+            if self.solve_isolated_roots_as_trees():
                 continue
 
             # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
