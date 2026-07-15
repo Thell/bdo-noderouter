@@ -1136,7 +1136,7 @@ class SFGraphReductionEngine:
 
     def reduce_steiner_bridges(self) -> int:
         """Bridge reduction for Steiner Forest."""
-        logger.trace("reduce_bridge_steiner_consumption...")
+        logger.trace("reduce_steiner_bridges...")
 
         non_steiners = self.non_steiner_nodes()
         non_steiners.discard(self.super_root_index)
@@ -1156,7 +1156,8 @@ class SFGraphReductionEngine:
         if not bridges:
             return 0
 
-        bridges = [(tmp_map[u], tmp_map[v]) for u, v in bridges]  # ty:ignore[invalid-assignment]
+        bridges = sorted((tmp_map[min(u, v)], tmp_map[max(u, v)]) for u, v in bridges)  # ty:ignore[invalid-assignment]
+        logger.trace(f"  {bridges=}")
 
         for u, v in bridges:
             if not (self.graph.has_node(u) and self.graph.has_node(v)):
