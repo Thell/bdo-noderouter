@@ -207,12 +207,6 @@ class SFGraphReductionEngine:
         sets_wp = {self.get_node_key(r): {self.get_node_key(t) for t in ts} for r, ts in sets.items()}
         logger.debug(f"  Demand sets: {sets_wp}")
 
-        # # NOTE: Debugging - capture removal reduction function
-        # # Translate from waypoint_key to graph node index out of band to use here.
-        # nodes_set = set(self.graph.node_indices())
-        # if any(i not in nodes_set for i in [393, 396, 421]):
-        #     logger.error(f"Missing node: {[i for i in [393, 396, 421] if i not in nodes_set]}")
-
     def dump_final_report(
         self,
         reduced_root_pairs_wp: dict[int, int],
