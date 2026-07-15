@@ -539,6 +539,35 @@ def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     return hashlib.sha256(f"{budget}:{strategy}:{i}".encode()).hexdigest()[:7]
 
 
+def find_and_remove_cache_by_seed(seed):
+    import shutil
+    from pathlib import Path
+
+    cache_dir = Path(".cache/joblib/orchestrator/_execute_plan_cached/")
+    folders_to_delete = []
+
+    for metadata_path in cache_dir.rglob("metadata.json"):
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                # Read as raw text instead of json...
+                content = f.read()
+                if seed in content:
+                    hash_folder = metadata_path.parent
+                    folders_to_delete.append(hash_folder)
+                    print(f" Found target seed in: {metadata_path}")
+                    print(f"Hash Folder: {hash_folder.name}")
+
+        except Exception as e:  # noqa: BLE001
+            print(f"Could not read {metadata_path}: {e}")
+
+    if folders_to_delete:
+        for hash_folder in folders_to_delete:
+            shutil.rmtree(hash_folder)
+            print(f" Successfully removed: {hash_folder}\n")
+    else:
+        print(f"No cache entries found matching seed '{seed}'.")
+
+
 def _run_single_config(
     strategies: list[PairingStrategy], samples: int, budget: int, include_danger: bool
 ) -> pl.DataFrame:
@@ -573,6 +602,13 @@ def _run_single_config(
             if seed in SKIPPED_SEEDS_HEX:
                 logger.error(f"\nSCIPSTP Error Avoidance: skipping seed {seed}\n")
                 continue
+
+            # # Debugging - one-offs
+            # target_seed = "95faa43"
+            # if seed != target_seed:
+            #     continue
+            # else:
+            #     find_and_remove_cache_by_seed(target_seed)
 
             logger.success(f"Processing seed: {seed}")
 
