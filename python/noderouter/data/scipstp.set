@@ -1,3 +1,3 @@
 display/verblevel = 1
 stp/logfile = "use_probname"
-stp/reduction = 2
+stp/reduction = 1
