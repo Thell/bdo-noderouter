@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self, cast
+from typing import Self, TypedDict, cast
 
 import rustworkx as rx
 from bidict import bidict
@@ -24,6 +24,16 @@ from api_rx_pydigraph import subgraph_stable
 MAGIC_HEADER = "33D32945 STP File, STP Format Version 1.0"
 
 EXCLUDED_DIR = r"C:\Users\thell\Workspaces\bdo\bdo-noderouter\windows_defender_excluded"
+
+
+class ConnectedComponentMappings(TypedDict):
+    component: set[int]
+    reachable: set[int]
+    adj_map: dict[int, list[int]]
+    nodes_list: list[int]
+    node_index_map: dict[int, int]
+    dimacs_id_map: dict[int, int]
+    inv_dimacs_id_map: dict[int, int]
 
 
 @dataclass(slots=True)

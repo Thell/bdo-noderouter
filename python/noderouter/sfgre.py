@@ -21,7 +21,7 @@ from sfpgre_cch import get_interactivity_edges
 
 from api_common import PAYLOAD_WEIGHT_KEY
 from api_exploration_data import get_exploration_data
-from api_nwstp_problem import TreeProblem
+from api_nwstp_problem import ConnectedComponentMappings, TreeProblem
 from api_nwstp_solver import solve_tree
 from api_rx_pydigraph import subgraph_stable
 
@@ -39,6 +39,7 @@ SCIPSTP_PAR_ROOTS_THRESHOLD = 8  # This will have 2^{n}-1 partition blocks to so
 SCIPSTP_MAX_PAR_ROOTS = 13  # This will have 2^{n}-1 partition blocks to solve
 SCIPSTP_MAX_ROOTS = 6  # Beyond this the problem will be sent to MIP
 SCIPSTP_NPERR_THRESHOLD = 15  # Beyond this the problem will be sent to MIP
+
 
 r"""
 # Steiner Forest Reduction Grammar (v1.0)
@@ -417,8 +418,8 @@ class SFGraphReductionEngine:
         length = path_lengths[target_node] if target_node in path_lengths else float("inf")
         return length
 
-    def get_maximum_rt_distance(self) -> float:
-        """Returns the maximum root to terminal distance."""
+    def _get_maximum_rt_distance(self) -> float:
+        """Calculates and returns the maximum root to terminal distance from shortest paths."""
         max_rt_distance = 1
         for r, terminals in self.terminal_sets.items():
             for t in terminals:
@@ -427,8 +428,27 @@ class SFGraphReductionEngine:
                     max_rt_distance = max(max_rt_distance, self.shortest_path_length(t, r))
                 else:
                     max_rt_distance = max(max_rt_distance, self.shortest_path_length(r, t))
+        return max_rt_distance
+
+    @property
+    def min_max_rt_distance(self) -> float:
+        """Updates and returns the maximum root to terminal distance."""
+        self.set_edge_weights()
+        max_rt_distance = min(self._global_min_max_drt, self._get_maximum_rt_distance())
+        if max_rt_distance != self._global_min_max_drt and max_rt_distance > 0:
+            logger.trace(f"  => max_rt_distance changed from {self._global_min_max_drt} to {max_rt_distance}")
+            self._global_min_max_drt = int(max_rt_distance)
+        logger.trace(f"  => max_rt_distance: {max_rt_distance}")
 
         return max_rt_distance
+
+    @property
+    def node_index_map(self) -> dict[int, int]:
+        return {u: i for i, u in enumerate(self.graph.node_indices())}
+
+    @property
+    def node_weight_map(self) -> dict[int, int]:
+        return {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
 
     # MARK: Primitive Terminal Set Actions
 
@@ -2303,7 +2323,7 @@ class SFGraphReductionEngine:
 
     def solve_isolated_roots_as_trees(self) -> int:
         """
-        Root arbor reduction by distance.
+        Singleton root arbor reduction by interactivity isolation.
 
         Following from the reduce_steiner_nodes_by_distance() method where:
         For each Steiner node v: if its weight is greater than the longest root -> terminal path,
@@ -2319,47 +2339,16 @@ class SFGraphReductionEngine:
         """
         logger.trace("solve_isolated_roots_as_trees...")
 
-        self.set_edge_weights()
-        max_rt_distance = min(self._global_min_max_drt, self.get_maximum_rt_distance())
-        if max_rt_distance != self._global_min_max_drt and max_rt_distance > 0:
-            logger.trace(f"  => max_rt_distance changed from {self._global_min_max_drt} to {max_rt_distance}")
-            self._global_min_max_drt = int(max_rt_distance)
-        logger.trace(f"  => max_rt_distance: {max_rt_distance}")
+        interactivity_graph = self._interactivity_graph()
+        isolates = rx.isolates(interactivity_graph)
+        if not isolates:
+            return 0
+        logger.warning(f"      solving {len(isolates)} isolated trees...")
 
         all_consumed = set()
+        root_component_index_map, component_data = self._connected_component_mappings()
 
-        # --- Component Level Data Mapping ---
-        # Since scipstp has issues with graphs containing multiple components,
-        # we need to partition the graph into connected components and handle
-        # the adj mapping and weights for each component separately.
-        logger.trace("      building component level data...")
-
-        terminal_keys = list(self.terminal_sets.keys())
-        node_weights = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
-
-        # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
-        self.set_edge_weights()
-        arbor_rt_all_shortest_path_unions = {r: set() for r in terminal_keys}
-        for r, terminals in self.terminal_sets.items():
-            for t in terminals:
-                paths = rx.all_shortest_paths(self.graph, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
-                arbor_rt_all_shortest_path_unions[r].update(*paths)
-
-        # TODO: check how the interactivity edges handle the presence of super root...
-        interactivity_edges = get_interactivity_edges(
-            self.graph, self.terminal_sets, node_weights, arbor_rt_all_shortest_path_unions
-        )
-
-        interactivity_graph = subgraph_stable(self.graph, terminal_keys)
-        interactivity_graph.remove_edges_from(interactivity_graph.edges())
-        interactivity_graph.add_edges_from(interactivity_edges)
-
-        isolates = rx.isolates(interactivity_graph)
-        if isolates:
-            logger.warning(f"      solving {len(isolates)} isolated trees...")
-
-        # NOTE: super terminals can not be handled as isolates,
-        #       but they can be part of an isolates solution...
+        # NOTE: super terminals can not be handled as isolates, but they can be part of an isolates solution...
         sr_index = self.super_root_index
 
         for root in isolates:
@@ -2369,22 +2358,23 @@ class SFGraphReductionEngine:
             if 1 + len(self.terminal_sets[root]) <= DW_MAX_TREE_TERMINALS:
                 witnessed_nodes = self.solve_root_with_dw(root)
             else:
-                witnessed_nodes = self.solve_root_as_tree(root)
+                component_mappings = component_data[root_component_index_map[root]]
+                witnessed_nodes = self.solve_root_as_tree(root, component_mappings)
 
             # Consume all witnessed nodes, from the root outward; leaving the root node in the graph.
             consumed = set()
-            witnessed_to_remove = set(witnessed_nodes)
-            while len(witnessed_to_remove) > 0:
+            witnessed_to_consume = set(witnessed_nodes)
+            while len(witnessed_to_consume) > 0:
                 neighbors = self.reduction_neighbors(root)
                 neighbors.discard(self.super_root_index)
-                neighbors = neighbors & witnessed_to_remove
+                neighbors = neighbors & witnessed_to_consume
                 if len(neighbors) == 0:
                     break
 
                 for n in neighbors:
                     self.consume(n, root)
                     consumed.add(n)
-                    witnessed_to_remove.discard(n)
+                    witnessed_to_consume.discard(n)
 
             all_consumed.update(consumed)
 
@@ -2427,12 +2417,7 @@ class SFGraphReductionEngine:
 
         self.set_edge_weights()
         non_steiner_nodes = self.non_steiner_nodes()
-
-        max_rt_distance = min(self._global_min_max_drt, self.get_maximum_rt_distance())
-        if max_rt_distance != self._global_min_max_drt and max_rt_distance > 0:
-            logger.trace(f"  => max_rt_distance changed from {self._global_min_max_drt} to {max_rt_distance}")
-            self._global_min_max_drt = int(max_rt_distance)
-        logger.trace(f"  => max_rt_distance: {max_rt_distance}")
+        min_max_drt = self.min_max_rt_distance
 
         removables = []
         removed_by_weight = 0
@@ -2442,18 +2427,18 @@ class SFGraphReductionEngine:
             if v in non_steiner_nodes or v == self.super_root_index:
                 continue
 
-            if self.graph[v][PAYLOAD_WEIGHT_KEY] > max_rt_distance:
+            if self.graph[v][PAYLOAD_WEIGHT_KEY] > min_max_drt:
                 logger.trace(f"  => removing Steiner node {self.get_node_key(v)} by weight")
                 removables.append(v)
                 removed_by_weight += 1
                 continue
 
-            min_rt_distance = float("inf")
+            min_drt = float("inf")
             for r, terminals in self.terminal_sets.items():
                 for t in terminals | {r}:
-                    min_rt_distance = min(min_rt_distance, self.shortest_path_length(v, t))
+                    min_drt = min(min_drt, self.shortest_path_length(v, t))
 
-            if min_rt_distance > max_rt_distance:
+            if min_drt > min_max_drt:
                 logger.trace(f"  => removing Steiner node {self.get_node_key(v)} by distance")
                 removables.append(v)
                 removed_by_distance += 1
@@ -2462,7 +2447,7 @@ class SFGraphReductionEngine:
         if removables:
             self.remove_nodes_from(removables)
             logger.info(
-                f"  => removed {len(removables)} Steiner nodes [({max_rt_distance}) by weight: {removed_by_weight}, by distance: {removed_by_distance}]"
+                f"  => removed {len(removables)} Steiner nodes [({min_max_drt}) by weight: {removed_by_weight}, by distance: {removed_by_distance}]"
             )
             if self.do_debug:
                 logger.trace(f"    {sorted(self.get_node_key(n) for n in removables)}")
@@ -2485,9 +2470,9 @@ class SFGraphReductionEngine:
         logger.trace("reduce_local_steiner_dominance_by_distance...")
         removals = []
 
-        node_weight_map = {node: self.graph[node][PAYLOAD_WEIGHT_KEY] for node in self.graph.node_indices()}
+        node_weight_map = self.node_weight_map
 
-        def dijkstra_avoiding(start: int, forbidden: int) -> dict[int, float]:
+        def dijkstra_avoiding(start: int, forbidden: int) -> dict[int, int]:
             """Node-weighted Dijkstra that forbids stepping on `forbidden`."""
             import heapq
 
@@ -2520,21 +2505,18 @@ class SFGraphReductionEngine:
         if not demand_nodes:
             return 0
 
-        # Precompute node weights for quick access
-        weight = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
-
         for v in list(self.graph.node_indices()):
             # Skip non-Steiner nodes
             if v in demand_nodes:
                 continue
 
             # 1) Collect local neighborhood around v up to node-weighted distance <= radius
-            U_v = self._collect_local_demand_neighborhood(v, demand_nodes, weight, radius)
+            U_v = self._collect_local_demand_neighborhood(v, demand_nodes, node_weight_map, radius)
             if len(U_v) < 2 or len(U_v) > max_demand:
                 continue  # too trivial or too large to bother
 
             # 2) Precompute distances from v (normal local Dijkstra)
-            d_from_v = self._local_dijkstra(v, radius, weight)
+            d_from_v = self._local_dijkstra(v, radius, node_weight_map)
 
             # 3) For each a in U_v, compute distances avoiding v
             d_without_v = {a: dijkstra_avoiding(a, v) for a in U_v}
@@ -2558,7 +2540,7 @@ class SFGraphReductionEngine:
                         continue
 
                     # Cost via v
-                    cost_v = d_from_v[a] + d_from_v[b] - weight[v]
+                    cost_v = d_from_v[a] + d_from_v[b] - node_weight_map[v]
 
                     # Cost without v
                     dist_a = d_without_v[a]
@@ -2847,7 +2829,7 @@ class SFGraphReductionEngine:
         logger.trace("solve_root_as_dw...")
 
         adj_map = {u: set(self.graph.neighbors(u)) for u in self.graph.node_indices()}
-        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+        node_weight_map = self.node_weight_map
 
         solver = nwst_dw.Solver(adj_map, node_weight_map)
         terminals_list = list(self.terminal_sets[root] | {root})
@@ -2865,7 +2847,7 @@ class SFGraphReductionEngine:
 
         return solution_nodes
 
-    def solve_root_as_tree(self, root: int):
+    def solve_root_as_tree(self, root: int, component_mappings: ConnectedComponentMappings) -> set[int]:
         """Solves a single isolated root from the remaining reduced state graph.
 
         NOTE: An isolated root (per the interactivity-graph isolation check) has
@@ -2874,36 +2856,25 @@ class SFGraphReductionEngine:
         this is always exactly one block: the root's own flattened terminal set,
         solved as a single tree.
         """
-        logger.trace("solve_root_with_scipstp...")
+        logger.trace("solve_root_as_tree...")
 
-        adj_map = {u: sorted(self.reduction_neighbors(u)) for u in self.graph.node_indices()}
-        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
-
-        nodes_list = list(self.graph.node_indices())
-        node_index = {u: i for i, u in enumerate(nodes_list)}
-        dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
-        inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
-
-        terminals = {root}
-        terminals.update(self.terminal_sets[root])
-        terminals_list = sorted(terminals)
-
+        terminals_list = sorted(self.terminal_sets[root] | {root})
         logger.trace(f"    solving isolated root {root} with {len(terminals_list)} terminals...")
 
         self.solved_trees += 1
 
         # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity,
-        # matching solve_as_tree_composite's dispatch behavior.
+        #       matching solve_as_tree_composite's dispatch behavior.
         _, cost, mask = solve_tree(
             TreeProblem(
                 instance_id=self.instance_id,
                 block_key=(root,),
                 terminals=terminals_list,
-                adj_map=adj_map,
-                node_weight_map=node_weight_map,
-                node_index_map=node_index,
-                dimacs_id_map=dimacs_id,
-                inv_dimacs_id_map=inv_dimacs_id,
+                adj_map=component_mappings["adj_map"],
+                node_weight_map=self.node_weight_map,
+                node_index_map=self.node_index_map,
+                dimacs_id_map=component_mappings["dimacs_id_map"],
+                inv_dimacs_id_map=component_mappings["inv_dimacs_id_map"],
                 enable_super_root_index=0,
                 do_debug=self.do_debug,
                 mip_validation=False,
@@ -2911,15 +2882,7 @@ class SFGraphReductionEngine:
         )
 
         logger.trace(f"    solved isolated root {root} with cost {cost}")
-
-        best_solution = set()
-        mask_bits = mask
-        while mask_bits:
-            lsb = mask_bits & -mask_bits
-            idx = lsb.bit_length() - 1
-            u = nodes_list[idx]
-            best_solution.add(u)
-            mask_bits ^= lsb
+        best_solution = self._unmask_solution(mask)
 
         if best_solution:
             logger.debug(
@@ -3446,107 +3409,12 @@ class SFGraphReductionEngine:
 
         from concurrent.futures import ProcessPoolExecutor
 
-        from sfpgre_cch import get_interactivity_edges
-
         self.dump_graph("solve_with_scipstp: pre-solve")
 
-        node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
+        _root_component_index_map, component_data = self._connected_component_mappings()
 
-        terminal_keys = list(self.terminal_sets.keys())
-        root_bit = {r: 1 << i for i, r in enumerate(terminal_keys)}
-
-        # --- Component Level Data Mapping ---
-        # Since scipstp has issues with graphs containing multiple components,
-        # we need to partition the graph into connected components and handle
-        # the adj mapping and weights for each component separately.
-        logger.trace("      building component level data...")
-
-        node_weights = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
-
-        # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
-        self.set_edge_weights()
-        arbor_rt_all_shortest_path_unions = {r: set() for r in terminal_keys}
-        for r, terminals in self.terminal_sets.items():
-            for t in terminals:
-                paths = rx.all_shortest_paths(self.graph, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
-                arbor_rt_all_shortest_path_unions[r].update(*paths)
-
-        interactivity_edges = get_interactivity_edges(
-            self.graph, self.terminal_sets, node_weights, arbor_rt_all_shortest_path_unions
-        )
-
-        interactivity_graph = subgraph_stable(self.graph, terminal_keys)
-        interactivity_graph.remove_edges_from(interactivity_graph.edges())
-        interactivity_graph.add_edges_from(interactivity_edges)
-
-        # if self.do_debug:
-        #     tmp_map = {i: (n, self.get_node_key(n)) for i, n in enumerate(interactivity_graph.node_indices())}
-        #     print(f"      interactivity_graph.num_nodes = {interactivity_graph.num_nodes()}")
-        #     print(f"      interactivity_graph.num_edges = {interactivity_graph.num_edges()}")
-        #     print("      interactivity_graph.map:")
-        #     for k, v in tmp_map.items():
-        #         print(f"        {k}: {v}")
-
-        #     adj_matrix = rx.adjacency_matrix(interactivity_graph)
-
-        #     interactive_roots: dict[int, list[int]] = {}
-        #     for root_i, row in enumerate(adj_matrix):
-        #         root = tmp_map[root_i][0]
-        #         root_wp = tmp_map[root_i][1]
-        #         interactive_roots[root_wp] = []
-        #         for col_i, weight in enumerate(row):
-        #             if weight:
-        #                 col_wp = tmp_map[col_i][1]
-        #                 interactive_roots[root_wp].append(col_wp)
-
-        #     print("      interactive_roots:")
-        #     for root, cols in interactive_roots.items():
-        #         print(f"        {root}: {cols}")
-
-        component_data = {}
-        root_component_map = {}
-        reachable = {r: {r} for r in terminal_keys}
-        terminal_keys_set = set(terminal_keys)
-
-        # NOTE: Since we have no super-root WCC is fine here.
-        wcc = rx.weakly_connected_components(self.graph)
-        for cc_i, cc in enumerate(wcc):
-            # Root reachability for component generation...
-            cc_reachable = cc & terminal_keys_set
-            if not cc_reachable:
-                continue
-
-            for r in cc_reachable:
-                reachable[r].update(cc_reachable)
-                root_component_map[r] = cc_i
-
-            # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
-            # so we need to pass in the adjacency map and node weights
-            adj_map = {}
-            for u in cc:
-                adj_map[u] = sorted(self.reduction_neighbors(u))
-
-            # For index masking...
-            nodes_list = list(self.graph.node_indices())
-            node_index = {u: i for i, u in enumerate(nodes_list)}
-
-            # DIMACS node ids are 1-based, contiguous
-            dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
-            inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
-
-            component_data[cc_i] = {
-                "component": cc,
-                "reachable": cc_reachable,
-                "adj_map": adj_map,
-                "nodes_list": nodes_list,
-                "node_index_map": node_index,
-                "dimacs_id_map": dimacs_id,
-                "inv_dimacs_id_map": inv_dimacs_id,
-            }
-
-        logger.warning(
-            f"      identified {len(component_data)} reachability component(s): {[len(cc_data.get('reachable')) for cc_data in component_data.values()]}"
-        )
+        node_weight_map = self.node_weight_map
+        interactivity_graph = self._interactivity_graph(node_weight_map)
 
         # Partition block filtering...
         logger.trace("    generating valid partition blocks...")
@@ -3579,7 +3447,7 @@ class SFGraphReductionEngine:
 
         # Phase 2 - pairwise terminal distances (feeds interactivity edges AND the MST bound)
         terminal_to_terminal_distances = {}
-        all_terminals = sorted(set(terminal_keys).union(*self.terminal_sets.values()))
+        all_terminals = sorted(set(self.terminal_sets.keys()).union(*self.terminal_sets.values()))
         for i, ti in enumerate(all_terminals):
             for tj in all_terminals[i + 1 :]:
                 d = self.shortest_path_length(ti, tj)
@@ -3823,6 +3691,9 @@ class SFGraphReductionEngine:
         dominant_blocks = {}
         dominant_costs = {}
 
+        terminal_keys = sorted(self.terminal_sets.keys())
+        root_bit = {r: 1 << i for i, r in enumerate(terminal_keys)}
+
         for block_key, block_cost in block_costs.items():
             if sum(block_costs[(comp,)] for comp in block_key) < block_cost:
                 continue
@@ -3992,16 +3863,7 @@ class SFGraphReductionEngine:
             state = prev_state
 
         # Phase 5: Extract solution
-        logger.trace("    extracting solution...")
-
-        best_solution = set()
-        mask = best_solution_mask
-        while mask:
-            lsb = mask & -mask
-            idx = lsb.bit_length() - 1
-            u = nodes_list[idx]
-            best_solution.add(u)
-            mask ^= lsb
+        best_solution = self._unmask_solution(best_solution_mask)
 
         if best_solution:
             logger.debug(
@@ -4012,6 +3874,130 @@ class SFGraphReductionEngine:
             )
 
         return best_solution
+
+    def _connected_component_mappings(self) -> tuple[dict[int, int], dict[int, ConnectedComponentMappings]]:
+        """Generates a set of mappings for each connected component of the graph for use in TreeProblems.
+
+        NOTE: Since scipstp has issues with graphs containing multiple components, we need to partition the graph
+              into connected components and handle the adj mapping and weights for each component separately.
+        """
+        logger.trace("    generating connected component mappings...")
+
+        terminal_keys = sorted(self.terminal_sets.keys())
+        component_data = {}
+        root_component_map = {}
+        reachable = {r: {r} for r in terminal_keys}
+        terminal_keys_set = set(terminal_keys)
+
+        # NOTE: Since we have no super-root WCC is fine here.
+        wcc = rx.weakly_connected_components(self.graph)
+        for cc_i, cc in enumerate(wcc):
+            # Root reachability for component generation...
+            cc_reachable = cc & terminal_keys_set
+            if not cc_reachable:
+                continue
+
+            for r in cc_reachable:
+                reachable[r].update(cc_reachable)
+                root_component_map[r] = cc_i
+
+            # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
+            # so we need to pass in the adjacency map and node weights
+            adj_map = {}
+            for u in cc:
+                adj_map[u] = sorted(self.reduction_neighbors(u))
+
+            # For index masking...
+            nodes_list = list(self.graph.node_indices())
+            node_index = {u: i for i, u in enumerate(nodes_list)}
+
+            # DIMACS node ids are 1-based, contiguous
+            dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
+            inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
+
+            component_data[cc_i] = {
+                "component": cc,
+                "reachable": cc_reachable,
+                "adj_map": adj_map,
+                "nodes_list": nodes_list,
+                "node_index_map": node_index,
+                "dimacs_id_map": dimacs_id,
+                "inv_dimacs_id_map": inv_dimacs_id,
+            }
+
+        logger.warning(
+            f"      identified {len(component_data)} reachability component(s): {[len(cc_data.get('reachable')) for cc_data in component_data.values()]}"
+        )
+
+        return root_component_map, component_data
+
+    def _interactivity_graph(self, node_weight_map: dict[int, int] | None = None) -> PyDiGraph:
+        """Creates the interactivity graph for the current reduced state graph."""
+        self.set_edge_weights()
+        terminal_keys = sorted(self.terminal_sets.keys())
+
+        if node_weight_map is None:
+            node_weights = self.node_weight_map
+        else:
+            node_weights = node_weight_map
+
+        # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
+        arbor_rt_all_shortest_path_unions = {r: set() for r in terminal_keys}
+        for r, terminals in self.terminal_sets.items():
+            for t in terminals:
+                paths = rx.all_shortest_paths(self.graph, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
+                arbor_rt_all_shortest_path_unions[r].update(*paths)
+
+        # TODO: check how the interactivity edges handle the presence of super root...
+        interactivity_edges = get_interactivity_edges(
+            self.graph, self.terminal_sets, node_weights, arbor_rt_all_shortest_path_unions
+        )
+
+        interactivity_graph = subgraph_stable(self.graph, terminal_keys)
+        interactivity_graph.remove_edges_from(interactivity_graph.edges())
+        interactivity_graph.add_edges_from(interactivity_edges)
+
+        # if self.do_debug:
+        #     tmp_map = {i: (n, self.get_node_key(n)) for i, n in enumerate(interactivity_graph.node_indices())}
+        #     print(f"      interactivity_graph.num_nodes = {interactivity_graph.num_nodes()}")
+        #     print(f"      interactivity_graph.num_edges = {interactivity_graph.num_edges()}")
+        #     print("      interactivity_graph.map:")
+        #     for k, v in tmp_map.items():
+        #         print(f"        {k}: {v}")
+
+        #     adj_matrix = rx.adjacency_matrix(interactivity_graph)
+
+        #     interactive_roots: dict[int, list[int]] = {}
+        #     for root_i, row in enumerate(adj_matrix):
+        #         _root = tmp_map[root_i][0]
+        #         root_wp = tmp_map[root_i][1]
+        #         interactive_roots[root_wp] = []
+        #         for col_i, weight in enumerate(row):
+        #             if weight:
+        #                 col_wp = tmp_map[col_i][1]
+        #                 interactive_roots[root_wp].append(col_wp)
+
+        #     print("      interactive_roots:")
+        #     for root, cols in interactive_roots.items():
+        #         print(f"        {root}: {cols}")
+
+        return interactivity_graph
+
+    def _unmask_solution(self, mask: int, nodes_list: list[int] | None = None) -> set[int]:
+        logger.trace("    extracting solution from mask...")
+        solution = set()
+
+        if nodes_list is None:
+            nodes_list = list(self.graph.node_indices())
+
+        while mask:
+            lsb = mask & -mask
+            idx = lsb.bit_length() - 1
+            u = nodes_list[idx]
+            solution.add(u)
+            mask ^= lsb
+
+        return solution
 
     # MARK: Main Loop
 
@@ -4024,9 +4010,15 @@ class SFGraphReductionEngine:
         num_terminal_roots_start = len(self.terminal_sets)
         num_terminals_start = sum(len(ts) for ts in self.terminal_sets.values()) + num_terminal_roots_start
 
+        # In the original problem space the min max drt represents a global bound that
+        # superceeds the min max drt of any terminal set in the reduced problem space as
+        # trees collide. If clusters a, b and c initially have a min max drt and two of them
+        # are merged to form d, then the min max drt of d would be calculated at a greater
+        # value than the global yet d could not actually detour further than the global bound
+        # because it is constrained by the beneficial detour of the other two clusters.
         self.set_edge_weights()
-        self._global_min_max_drt = self.get_maximum_rt_distance()
-        logger.info(f"  maximum RT distance: {self._global_min_max_drt}")
+        min_max_drt = self.min_max_rt_distance
+        logger.info(f"  Global maximum RT distance: {min_max_drt}")
 
         tmp_num_nodes = self.graph.num_nodes() + 1
         iteration = 0
