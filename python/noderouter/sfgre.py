@@ -3616,6 +3616,8 @@ class SFGraphReductionEngine:
             iteration += 1
             logger.info(f"--- Iteration {iteration} ---")
 
+            # MARK: Simple reductions
+
             # Isolates in the graph are always safe to directly remove
             if isolates := rx.isolates(self.graph):
                 self.graph.remove_nodes_from(isolates)
@@ -3646,9 +3648,11 @@ class SFGraphReductionEngine:
                 logger.success("  no terminal sets left. All demands are satisfied!")
                 break
 
-            # Reduce roots by distance - this is a terminal set consumption and Steiner node removal reduction
+            # Solve isolated roots - this is a terminal set and Steiner node reduction by `consumption` only
             if self.solve_isolated_roots_as_trees():
                 continue
+
+            # MARK: Basic reductions
 
             # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
             self.reduce_degree2_articulation()
