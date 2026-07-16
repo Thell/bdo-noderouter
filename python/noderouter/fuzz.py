@@ -676,6 +676,11 @@ def fuzzer_main(
                     raise KeyboardInterrupt
                 metrics = _run_single_config(strategies, samples, budget, danger_state)
                 all_metrics = all_metrics.vstack(metrics)
+
+                current_elapsed = time.time() - start_time
+                total_test_cases = all_metrics.shape[0]
+                print(f"=> {total_test_cases} test cases completed in {current_elapsed:.2f}s")
+
         _generate_all_cases_summaries(all_metrics)
 
     except KeyboardInterrupt:
