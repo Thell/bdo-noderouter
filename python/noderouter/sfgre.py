@@ -2346,7 +2346,6 @@ class SFGraphReductionEngine:
         logger.warning(f"      solving {len(isolates)} isolated trees...")
 
         all_consumed = set()
-        root_component_index_map, component_data = self._connected_component_mappings()
 
         # NOTE: super terminals can not be handled as isolates, but they can be part of an isolates solution...
         sr_index = self.super_root_index
@@ -2358,8 +2357,7 @@ class SFGraphReductionEngine:
             if 1 + len(self.terminal_sets[root]) <= DW_MAX_TREE_TERMINALS:
                 witnessed_nodes = self.solve_root_with_dw(root)
             else:
-                component_mappings = component_data[root_component_index_map[root]]
-                witnessed_nodes = self.solve_root_as_tree(root, component_mappings)
+                witnessed_nodes = self.solve_root_as_tree(root)
 
             # Consume all witnessed nodes, from the root outward; leaving the root node in the graph.
             consumed = set()
@@ -2847,7 +2845,7 @@ class SFGraphReductionEngine:
 
         return solution_nodes
 
-    def solve_root_as_tree(self, root: int, component_mappings: ConnectedComponentMappings) -> set[int]:
+    def solve_root_as_tree(self, root: int) -> set[int]:
         """Solves a single isolated root from the remaining reduced state graph.
 
         NOTE: An isolated root (per the interactivity-graph isolation check) has
@@ -2863,6 +2861,9 @@ class SFGraphReductionEngine:
 
         self.solved_trees += 1
 
+        root_component_index_map, component_data = self._connected_component_mappings()
+        comp_map = component_data[root_component_index_map[root]]
+
         # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity,
         #       matching solve_as_tree_composite's dispatch behavior.
         _, cost, mask = solve_tree(
@@ -2870,11 +2871,11 @@ class SFGraphReductionEngine:
                 instance_id=self.instance_id,
                 block_key=(root,),
                 terminals=terminals_list,
-                adj_map=component_mappings["adj_map"],
+                adj_map=comp_map["adj_map"],
                 node_weight_map=self.node_weight_map,
                 node_index_map=self.node_index_map,
-                dimacs_id_map=component_mappings["dimacs_id_map"],
-                inv_dimacs_id_map=component_mappings["inv_dimacs_id_map"],
+                dimacs_id_map=comp_map["dimacs_id_map"],
+                inv_dimacs_id_map=comp_map["inv_dimacs_id_map"],
                 enable_super_root_index=0,
                 do_debug=self.do_debug,
                 mip_validation=False,
