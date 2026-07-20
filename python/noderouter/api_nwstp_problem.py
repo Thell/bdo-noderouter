@@ -25,6 +25,26 @@ MAGIC_HEADER = "33D32945 STP File, STP Format Version 1.0"
 
 EXCLUDED_DIR = r"C:\Users\thell\Workspaces\bdo\bdo-noderouter\windows_defender_excluded"
 
+# NOTE:
+# It sucks to have to use TypeAlias but neither Pylance nor Ruff want to show the structure in the type hints
+from typing import TypeAlias
+
+BlockTask: TypeAlias = tuple[int, tuple[int, ...], list[int], int]  # ruff:ignore[non-pep695-type-alias]
+"""Layout: (cc_i, block_key, terminal, super_root_index)
+
+cc_i: int
+    Connected component mappings index.
+
+block_key: tuple[int, ...]
+    Block key. `(coverage_root1, coverage_root2, ...)`
+
+terminal: list[int]
+    Terminal nodes covered.
+
+super_root_index: int
+    Super root index. `0` denotes no super root.
+"""
+
 
 class ConnectedComponentMappings(TypedDict):
     component: set[int]

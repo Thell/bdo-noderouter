@@ -24,6 +24,9 @@ def solve_tree(problem: TreeProblem, solver: str = "choose") -> TreeSolveResult:
     if solver == "choose":
         solver = "dw" if problem.complexity < DW_MAX_TREE_COMPLEXITY else "scipstp"
 
+    if problem.enable_super_root_index:
+        solver = "scipstp"
+
     logger.trace(f"  Using solver: {solver} on problem with complexity {problem.complexity}...")
 
     match solver:
