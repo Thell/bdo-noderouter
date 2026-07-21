@@ -1574,7 +1574,7 @@ class SFGraphReductionEngine:
             # Each iteration recomputes the edge weights and steiner nodes...
             self.set_edge_weights()
             for node in set(graph.node_indices()) - non_steiner_nodes:
-                if graph.out_degree(node) != 2:
+                if self.reduction_degree(node) != 2:
                     continue
                 neighbors = list(self.reduction_neighbors(node))
                 u, v = neighbors
