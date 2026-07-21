@@ -2759,6 +2759,8 @@ class SFGraphReductionEngine:
             f"    remaining complexity: {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |st|: {num_super_terminals}, |n|: {num_nodes}"
         )
 
+        start_time = time()
+
         tmpG = self.graph.copy()
         if self.super_root_index is not None:
             tmpG.remove_node(self.super_root_index)
@@ -2800,119 +2802,117 @@ class SFGraphReductionEngine:
 
         logger.info(f"      {num_reassigned_super_terminals} super terminals reassigned to roots")
 
-        # --- Collect remaining super terminal candidate roots ---
-        # If there are any remaining super terminals we must not remove them from the graph
-        # _nor_ allow them to become isolated terminals. Therefore, we need to identify the
-        # demand sinks (roots, potential roots and terminals) in the neighborhood of each
-        # super terminal and add them to the candidate roots for that super terminal.
-        candidate_roots: dict[int, set[int]] = defaultdict(set)
+        # When there are no more super terminals we can remove the super root and let pre-solve's solve_as_tree_composite
+        # serve as the final solution...
+        if self.super_root_index not in self.terminal_sets:
+            self.super_root_index = None
+            self.potential_roots = set()
+            logger.warning("      pre-solve solved super terminals, using pre-solve solution...")
+            solution = presolve_solution
 
-        if self.super_root_index in self.terminal_sets:
-            all_terminals = set().union(*self.terminal_sets.values())
-            weight_map = {i: self.graph[i][PAYLOAD_WEIGHT_KEY] for i in self.graph.node_indices()}
+        else:
+            # --- Collect remaining super terminal candidate roots ---
+            # TODO: utilize a small interactive graph to solve all super terminals as a single tree.
+            # Then strip away the super root to isolate each super terminal's candidate roots.
 
-            for t in self.terminal_sets[self.super_root_index]:
-                # We add the super root since there is potential that the super terminal is
-                # further from demand sinks than the neighborhood radius and super terminal
-                # will ensure we have the nearest potential root.
-                # NOTE: While 10 and 5 are arbitrary choices we could make them configurable,
-                #       the important thing is the super root is included.
+            # If there are any remaining super terminals we must not remove them from the graph
+            # _nor_ allow them to become isolated terminals. Therefore, we need to identify the
+            # demand sinks (roots, potential roots and terminals) in the neighborhood of each
+            # super terminal and add them to the candidate roots for that super terminal.
+            candidate_roots: dict[int, set[int]] = defaultdict(set)
 
-                # Root/Potential Root sinks
-                root_sinks = self._collect_local_demand_neighborhood(t, self.potential_roots, weight_map, 10)
-                # Ensure that at least one sink is in root sinks by utilizing the super root
-                paths = rx.all_shortest_paths(self.graph, t, self.super_root_index)
-                for path in paths:
-                    for v in path:
-                        if v in self.potential_roots:
-                            root_sinks.add(v)
-                            break
-                candidate_roots[t].update(root_sinks)
+            if self.super_root_index in self.terminal_sets:
+                all_terminals = set().union(*self.terminal_sets.values())
+                weight_map = {i: self.graph[i][PAYLOAD_WEIGHT_KEY] for i in self.graph.node_indices()}
 
-                # Terminal sinks
-                # We include the roots of the neighborhood terminals as well as potential sinks
-                # since they could be closer and the root could be out of the neighborhood.
-                terminal_sinks = self._collect_local_demand_neighborhood(t, all_terminals, weight_map, 5)
-                terminal_roots = set()
-                for t in terminal_sinks:
-                    for r, ts in self.terminal_sets.items():
-                        if t in ts:
-                            terminal_roots.add(r)
-                            break
-                candidate_roots[t].update(terminal_roots)
+                for t in self.terminal_sets[self.super_root_index]:
+                    # We add the super root since there is potential that the super terminal is
+                    # further from demand sinks than the neighborhood radius and super terminal
+                    # will ensure we have the nearest potential root.
+                    # NOTE: While 10 and 5 are arbitrary choices we could make them configurable,
+                    #       the important thing is the super root is included.
 
-            logger.warning(
-                f"      {len(self.terminal_sets[self.super_root_index])} super terminals not reassigned to roots"
+                    # Root/Potential Root sinks
+                    root_sinks = self._collect_local_demand_neighborhood(
+                        t, self.potential_roots, weight_map, 10
+                    )
+                    # Ensure that at least one sink is in root sinks by utilizing the super root
+                    paths = rx.all_shortest_paths(self.graph, t, self.super_root_index)
+                    for path in paths:
+                        for v in path:
+                            if v in self.potential_roots:
+                                root_sinks.add(v)
+                                break
+                    candidate_roots[t].update(root_sinks)
+
+                    # Terminal sinks
+                    # We include the roots of the neighborhood terminals as well as potential sinks
+                    # since they could be closer and the root could be out of the neighborhood.
+                    terminal_sinks = self._collect_local_demand_neighborhood(t, all_terminals, weight_map, 5)
+                    terminal_roots = set()
+                    for t in terminal_sinks:
+                        for r, ts in self.terminal_sets.items():
+                            if t in ts:
+                                terminal_roots.add(r)
+                                break
+                    candidate_roots[t].update(terminal_roots)
+
+                logger.warning(
+                    f"      {len(self.terminal_sets[self.super_root_index])} super terminals not reassigned to roots"
+                )
+
+            # --- Solve as tree ---
+            # Now that we have a stably reduced graph and have obtained the candidate roots for each
+            # super terminal we can solve as a tree.
+
+            solution = self.solve_with_scipstp_super(
+                candidate_roots, presolve_block_results, presolve_block_costs
             )
 
-        # Clean up potential roots
-        # At this point any potential root that is not represented in the solution can be removed from the
-        # class's potential roots list.
-        num_prev_potential_roots = len(self.potential_roots)
+            # NOTE: When super terminal demands are settled and they connect to the super root via
+            #       a potential root we need to promote the potential root to a root cluster set and
+            #       move the super terminal to that set and remove it from the super root set.
+            #       When completed the super root set should be empty and it should be removed.
+            # First we need a subgraph of the solution...
+            solution = set(solution)
+            solutionGraph = subgraph_stable(self.graph, solution | {self.super_root_index})
+            for t in list(self.terminal_sets[self.super_root_index]):
+                # We identify the potential roots connecting the super terminal to the super root
+                # and remove the super terminal from the super root set.
+                pr_seen = set()
+                paths = rx.all_shortest_paths(solutionGraph, t, self.super_root_index)
+                for path in paths:
+                    # The potential root is always the one before the super root
+                    pr = path[-2]
+                    if pr in pr_seen:
+                        continue
+                    pr_seen.add(pr)
 
-        # TODO: I think this should be intersection difference... verify.
-        self.potential_roots.difference_update(candidate_roots)
+                    # NOTE: Use discard instead of remove since the may be multiple paths and the first
+                    #       processed would have already removed the terminal. Yet we don't know which
+                    #       is the ultimate global optimal, so the potential roots that are promoted
+                    #       need to remain and the post-solve MIP will take care of the rest of the
+                    #       ambiguity.
+                    # If the potential root is already a real root then simply move the super terminal
+                    # to that set.
+                    if pr in self.terminal_sets:
+                        self.terminal_sets[pr].add(t)
+                        self.terminal_sets[self.super_root_index].discard(t)
+                    # Otherwise we need to promote the potential root to a root cluster set.
+                    else:
+                        self.terminal_sets[pr] = {t}
+                        self.terminal_sets[self.super_root_index].discard(t)
 
-        num_potential_roots_removed = num_prev_potential_roots - len(self.potential_roots)
-        logger.warning(f"    removed {num_potential_roots_removed} potential roots")
-
-        # If we have reassigned any super terminal or removed any potential roots then there is the
-        # potential for the graph to further cascading reductions in the pipeline.
-        if num_reassigned_super_terminals > 0 or num_potential_roots_removed > 0:
-            return num_potential_roots_removed + num_reassigned_super_terminals
-
-        # --- Solve as tree ---
-        # Now that we have a stably reduced graph and have obtained the candidate roots for each
-        # super terminal we can solve as a tree.
-
-        start_time = time()
-        solution = self.solve_with_scipstp_super(
-            candidate_roots, presolve_block_results, presolve_block_costs
-        )
-        end_time = time()
-
-        # NOTE: When super terminal demands are settled and they connect to the super root via
-        #       a potential root we need to promote the potential root to a root cluster set and
-        #       move the super terminal to that set and remove it from the super root set.
-        #       When completed the super root set should be empty and it should be removed.
-        # First we need a subgraph of the solution...
-        solution = set(solution)
-        solutionGraph = subgraph_stable(self.graph, solution | {self.super_root_index})
-        for t in list(self.terminal_sets[self.super_root_index]):
-            # We identify the potential roots connecting the super terminal to the super root
-            # and remove the super terminal from the super root set.
-            pr_seen = set()
-            paths = rx.all_shortest_paths(solutionGraph, t, self.super_root_index)
-            for path in paths:
-                # The potential root is always the one before the super root
-                pr = path[-2]
-                if pr in pr_seen:
-                    continue
-                pr_seen.add(pr)
-
-                # NOTE: Use discard instead of remove since the may be multiple paths and the first
-                #       processed would have already removed the terminal. Yet we don't know which
-                #       is the ultimate global optimal, so the potential roots that are promoted
-                #       need to remain and the post-solve MIP will take care of the rest of the
-                #       ambiguity.
-                # If the potential root is already a real root then simply move the super terminal
-                # to that set.
-                if pr in self.terminal_sets:
-                    self.terminal_sets[pr].add(t)
-                    self.terminal_sets[self.super_root_index].discard(t)
-                # Otherwise we need to promote the potential root to a root cluster set.
-                else:
-                    self.terminal_sets[pr] = {t}
-                    self.terminal_sets[self.super_root_index].discard(t)
-
-                    # And if there is only a single path we also need to add hte pr to fixed nodes
-                    if len(paths) == 1:
-                        self.fixed_nodes.add(pr)
+                        # And if there is only a single path we also need to add hte pr to fixed nodes
+                        if len(paths) == 1:
+                            self.fixed_nodes.add(pr)
 
         removables = set(self.graph.node_indices()) - set(solution)
         if self.super_root_index in removables:
             removables.remove(self.super_root_index)
         removals = len(removables)
+
+        end_time = time()
 
         if removals > 0:
             duration = end_time - start_time
