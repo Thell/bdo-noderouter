@@ -141,6 +141,30 @@ active demand sets as denoted by 𝓐𐞪 excluding any super root.
 > Ⓡ ≔ ⓥ ∈ { 𝓡 ∖ 𝕊 }
 """
 
+# Primitive Types
+type BlockKey = tuple[int, ...]
+type BlockMask = int
+type Cost = int
+type ConnectedComponentMappingKey = int
+type CoverageRepresentative = int
+type SolutionMask = int
+
+# Collection Types
+type CoverageRepresentatives = set[int]
+type CoverageSets = dict[int, set[int]]
+type SolutionSet = set[int]
+type TerminalsList = list[int]
+type TerminalsSet = set[int]
+type BlockCosts = dict[BlockKey, Cost]
+type BlockResults = dict[BlockKey, SolutionMask]
+type MaskedBlockCosts = dict[BlockMask, Cost]
+type MaskedBlockResults = dict[BlockMask, BlockResults]
+type MaskedBlockSolutionMasks = dict[BlockMask, SolutionMask]
+
+# Tuple Types
+type BlockTask = tuple[ConnectedComponentMappingKey, BlockKey, TerminalsList]
+type CompositeSolution = tuple[SolutionSet, Cost, BlockResults, BlockCosts]
+
 
 def _connected_component_mappings(
     G: PyDiGraph, coverage_representatives: set[int], sr_index: int | None = None
@@ -215,7 +239,7 @@ def _connected_component_mappings(
 
 def _interactivity_graph(
     G: PyDiGraph,
-    coverage_sets: dict[int, set[int]],
+    coverage_sets: CoverageSets,
 ) -> PyDiGraph:
     """Creates the interactivity graph for the given reduced state graph over the given coverage sets."""
     coverage_representatives = set(coverage_sets.keys())
@@ -244,9 +268,9 @@ def _interactivity_graph(
 
 def _problem_generator(
     instance_id: str,
-    component_data: dict[int, ConnectedComponentMappings],
+    component_data: dict[ConnectedComponentMappingKey, ConnectedComponentMappings],
     node_weight_map: dict[int, int],
-    tasks: list[tuple[int, tuple[int], list[int]]],
+    tasks: list[BlockTask],
     sr_index: int = 0,
     do_debug: bool = False,
     mip_validation: bool = True,
@@ -271,23 +295,29 @@ def _problem_generator(
 
 def _solve_composite_blocks_dp(
     G: PyDiGraph,
-    coverage_sets: dict[int, set[int]],
-    block_results: dict[tuple[int], set[int]],
-    block_costs: dict[tuple[int], int],
-) -> tuple[set[int], int | float]:
+    coverage_representatives: CoverageRepresentatives,
+    block_results: BlockResults,
+    block_costs: BlockCosts,
+) -> CompositeSolution:
     block_results, block_costs = _retain_dominant_blocks_by_singletons(block_results, block_costs)
 
-    block_mask_solutions, block_mask_costs = _blocks_to_blockmasks(coverage_sets, block_results, block_costs)
+    block_mask_solutions, block_mask_costs = _blocks_to_blockmasks(
+        coverage_representatives, block_results, block_costs
+    )
     block_mask_solutions, block_mask_costs = _retain_dominant_masks_by_composite(
         block_mask_solutions, block_mask_costs
     )
 
-    dp, choice = _solve_tree_partitions_dp(coverage_sets, block_mask_costs)
+    num_coverage_representatives = len(coverage_representatives)
 
-    best_solution_mask, best_cost = _extract_dp_solution(coverage_sets, block_mask_solutions, dp, choice)
+    dp, choice = _solve_tree_partitions_dp(num_coverage_representatives, block_mask_costs)
+
+    best_solution_mask, best_cost = _extract_dp_solution(
+        num_coverage_representatives, block_mask_solutions, dp, choice
+    )
     best_solution = _unmask_solution(G, best_solution_mask)
 
-    return best_solution, best_cost
+    return best_solution, int(best_cost), block_results, block_costs
 
 
 def _generate_valid_partition_blocks(
@@ -346,8 +376,8 @@ def _map_block_terminals(
 
 
 def _retain_dominant_blocks_by_singletons(
-    block_results: dict[tuple[int], set[int]], block_costs: dict[tuple[int], int]
-) -> tuple[dict[tuple[int], set[int]], dict[tuple[int], int]]:
+    block_results: BlockResults, block_costs: BlockCosts
+) -> tuple[BlockResults, BlockCosts]:
     logger.warning(f"    retaining dominant blocks by singletons... ({len(block_results)})")
 
     dominant_blocks = {}
@@ -364,11 +394,11 @@ def _retain_dominant_blocks_by_singletons(
 
 
 def _retain_dominant_blocks_by_distance(
-    valid_blocks: dict[int, set[tuple[int, ...]]],
+    valid_blocks: dict[int, set[BlockKey]],
     block_terminals: dict[tuple[int, tuple[int, ...]], list[int]],
     primitive_block_costs: dict[tuple[int], int],
     terminal_to_terminal_distances: dict[tuple[int, int], int | float],
-) -> list[tuple[int, tuple[int], list[int]]]:
+) -> list[BlockTask]:
     logger.warning(f"    retaining dominant blocks by distance... ({len(valid_blocks)})")
 
     # NOTE: OPT >= W_MST / (2 - 2/k) (KMB). If that lower bound already exceeds the cheapest
@@ -419,14 +449,13 @@ def _retain_dominant_blocks_by_distance(
 
 
 def _blocks_to_blockmasks(
-    coverage_sets: dict[int, set[int]],
-    block_results: dict[tuple[int], set[int]],
-    block_costs: dict[tuple[int], int],
-) -> tuple[dict[int, int], dict[int, int]]:
+    coverage_representatives: CoverageRepresentatives,
+    block_results: BlockResults,
+    block_costs: BlockCosts,
+) -> tuple[MaskedBlockSolutionMasks, MaskedBlockCosts]:
     logger.warning(f"    building block masks... ({len(block_results)})")
 
-    coverage_roots = sorted(coverage_sets.keys())
-    coverage_root_bit = {r: 1 << i for i, r in enumerate(coverage_roots)}
+    coverage_bit = {r: 1 << i for i, r in enumerate(coverage_representatives)}
 
     block_mask_costs = {}
     block_mask_solutions = {}
@@ -435,7 +464,7 @@ def _blocks_to_blockmasks(
         block_mask = 0
 
         for r in block_key:
-            block_mask |= coverage_root_bit[r]
+            block_mask |= coverage_bit[r]
 
         block_mask_costs[block_mask] = block_costs[block_key]
         block_mask_solutions[block_mask] = solution_mask
@@ -471,8 +500,8 @@ def _blockmasks_to_blocks(
 
 
 def _retain_dominant_masks_by_composite(
-    block_mask_solutions: dict[int, int], block_mask_costs: dict[int, int]
-) -> tuple[dict[int, int], dict[int, int]]:
+    block_mask_solutions: MaskedBlockSolutionMasks, block_mask_costs: MaskedBlockCosts
+) -> tuple[MaskedBlockSolutionMasks, MaskedBlockCosts]:
     logger.warning(f"    retaining dominant masks by composite DP... ({len(block_mask_costs)})")
 
     dominant_costs = {}
@@ -508,14 +537,14 @@ def _retain_dominant_masks_by_composite(
 
 
 def _solve_tree_partitions_dp(
-    coverage_sets: dict[int, set[int]], block_mask_costs: dict[int, int]
+    num_coverage_representatives: int, block_mask_costs: MaskedBlockCosts
 ) -> tuple[list[int | float], list[tuple[int, int] | None]]:
     logger.warning(f"    solving tree partitions DP... ({len(block_mask_costs)})")
 
     start_time = time()
 
-    coverage_roots = sorted(coverage_sets.keys())
-    full_mask = (1 << len(coverage_roots)) - 1
+    n = num_coverage_representatives
+    full_mask = (1 << n) - 1
 
     dp = [float("inf")] * (full_mask + 1)
     choice = [None] * (full_mask + 1)
@@ -534,7 +563,6 @@ def _solve_tree_partitions_dp(
     # Crossover: 2^n * B == 3^n  =>  B == (3/2)^n. Pick whichever side is smaller
     # instead of assuming one regime; the dominance filter's yield varies a lot
     # across instances and can't be assumed sparse from a handful of samples.
-    n = len(coverage_roots)
     num_blocks = len(block_mask_costs)
     crossover = 1.5**n
 
@@ -598,14 +626,14 @@ def _solve_tree_partitions_dp(
 
 
 def _extract_dp_solution(
-    coverage_sets: dict[int, set[int]],
+    num_coverage_representativesge_sets: int,
     block_mask_solutions: dict[int, int],
     dp: list[int | float],
     choice: list[tuple[int, int] | None],
 ) -> tuple[int, int | float]:
     logger.trace("    extracting best solution from DP...")
 
-    full_mask = (1 << len(coverage_sets)) - 1
+    full_mask = (1 << num_coverage_representativesge_sets) - 1
     best_cost = dp[full_mask]
     best_solution_mask = 0
 
@@ -2765,8 +2793,8 @@ class SFGraphReductionEngine:
         if self.super_root_index is not None:
             tmpG.remove_node(self.super_root_index)
         presolve_coverage_sets = {r: v for r, v in self.terminal_sets.items() if r != self.super_root_index}
-        presolve_solution, presolve_block_results, presolve_block_costs = self.solve_as_tree_composite(
-            tmpG, presolve_coverage_sets
+        presolve_solution, _presolve_cost, presolve_block_results, presolve_block_costs = (
+            self.solve_as_tree_composite(tmpG, presolve_coverage_sets)
         )
 
         # --- Reassign witnessed super terminals ---
@@ -2819,7 +2847,7 @@ class SFGraphReductionEngine:
             # _nor_ allow them to become isolated terminals. Therefore, we need to identify the
             # demand sinks (roots, potential roots and terminals) in the neighborhood of each
             # super terminal and add them to the candidate roots for that super terminal.
-            candidate_roots: dict[int, set[int]] = defaultdict(set)
+            super_terminal_candidate_root_sets: dict[int, set[int]] = defaultdict(set)
 
             if self.super_root_index in self.terminal_sets:
                 all_terminals = set().union(*self.terminal_sets.values())
@@ -2843,7 +2871,7 @@ class SFGraphReductionEngine:
                             if v in self.potential_roots:
                                 root_sinks.add(v)
                                 break
-                    candidate_roots[t].update(root_sinks)
+                    super_terminal_candidate_root_sets[t].update(root_sinks)
 
                     # Terminal sinks
                     # We include the roots of the neighborhood terminals as well as potential sinks
@@ -2855,7 +2883,7 @@ class SFGraphReductionEngine:
                             if t in ts:
                                 terminal_roots.add(r)
                                 break
-                    candidate_roots[t].update(terminal_roots)
+                    super_terminal_candidate_root_sets[t].update(terminal_roots)
 
                 logger.warning(
                     f"      {len(self.terminal_sets[self.super_root_index])} super terminals not reassigned to roots"
@@ -2866,8 +2894,10 @@ class SFGraphReductionEngine:
             # super terminal we can solve as a tree.
 
             solution = self.solve_with_scipstp_super(
-                candidate_roots, presolve_block_results, presolve_block_costs
+                super_terminal_candidate_root_sets, presolve_block_results, presolve_block_costs
             )
+
+            # --- Post solve cleanup ---
 
             # NOTE: When super terminal demands are settled and they connect to the super root via
             #       a potential root we need to promote the potential root to a root cluster set and
@@ -2888,22 +2918,24 @@ class SFGraphReductionEngine:
                         continue
                     pr_seen.add(pr)
 
-                    # NOTE: Use discard instead of remove since the may be multiple paths and the first
+                    # NOTE: Use discard instead of remove since there may be multiple paths and the first
                     #       processed would have already removed the terminal. Yet we don't know which
                     #       is the ultimate global optimal, so the potential roots that are promoted
-                    #       need to remain and the post-solve MIP will take care of the rest of the
-                    #       ambiguity.
+                    #       need to remain and the pipeline will take care of the rest of the ambiguity.
+
                     # If the potential root is already a real root then simply move the super terminal
                     # to that set.
                     if pr in self.terminal_sets:
                         self.terminal_sets[pr].add(t)
                         self.terminal_sets[self.super_root_index].discard(t)
+
                     # Otherwise we need to promote the potential root to a root cluster set.
                     else:
                         self.terminal_sets[pr] = {t}
                         self.terminal_sets[self.super_root_index].discard(t)
 
-                        # And if there is only a single path we also need to add hte pr to fixed nodes
+                        # And if there is only a single path we also need to add the pr to fixed nodes
+                        # since it is now an unambiguous real root.
                         if len(paths) == 1:
                             self.fixed_nodes.add(pr)
 
@@ -2968,7 +3000,7 @@ class SFGraphReductionEngine:
                 G.remove_node(self.super_root_index)
             coverage_sets = {r: v for r, v in self.terminal_sets.items() if r != self.super_root_index}
 
-            solution, _, _ = self.solve_as_tree_composite(G, coverage_sets)
+            solution, _cost, _block_results, _block_costs = self.solve_as_tree_composite(G, coverage_sets)
 
         else:
             logger.warning("      fall-thru: solving as MCF MIP using HiGHS solver...")
@@ -3089,26 +3121,41 @@ class SFGraphReductionEngine:
 
     def solve_with_scipstp_super(
         self,
-        candidate_roots: dict[int, set[int]],
+        super_terminal_candidate_root_sets: dict[int, set[int]],
         presolve_block_results: dict[tuple[int, ...], int],
         presolve_block_costs: dict[tuple[int, ...], int],
     ):
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
-        logger.warning("solve_with_scipstp_super...")
-
-        from concurrent.futures import ProcessPoolExecutor, as_completed
+        logger.warning("    solve_with_scipstp_super...")
 
         assert self.super_root_index is not None, "super root index must be set"
+
+        coverage_sets = {k: v for k, v in self.terminal_sets.items() if k != self.super_root_index}
+        surviving_super_terminals = set(super_terminal_candidate_root_sets.keys())
+        coverage_representatives = set(coverage_sets.keys()) | surviving_super_terminals
+
+        # START: Refactoring for unification with solve_as_tree_composite...
+
+        # _root_component_index_map, component_data = _connected_component_mappings(
+        #     self.graph, set(coverage_representatives)
+        # )
+
+        # interactivity_graph = self._interactivity_graph(G, coverage_sets)
+        # weight_map = {i: G[i][PAYLOAD_WEIGHT_KEY] for i in G.node_indices()}
+
+        # # Phase 1 - Non-super-terminal block preparation
+        # # TODO: # Skip this? we already have generated all blocks during pre-solve, so we could simply return them...
+        # valid_blocks, num_blocks, num_candidate_blocks = _generate_valid_partition_blocks(
+        #     component_data, interactivity_graph
+        # )
+        # block_terminals = _map_block_terminals(coverage_sets, valid_blocks)
+
+        # END: Refactoring for unification with solve_as_tree_composite...
 
         # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
         # so we need to pass in the adjacency map and node weights
         adj_map = {u: sorted(self.reduction_neighbors(u)) for u in self.graph.node_indices()}
         node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
-
-        roots = list(set(self.terminal_sets.keys()) - {self.super_root_index})
-        surviving_sts = sorted(candidate_roots.keys())
-        coverage_entities = roots + surviving_sts
-        coverage_bit = {u: 1 << i for i, u in enumerate(coverage_entities)}
 
         # Partition filtering...
         logger.trace("    generating valid partition blocks...")
@@ -3117,16 +3164,17 @@ class SFGraphReductionEngine:
 
         # Root reachability for component generation...
         logger.trace("      building reachability matrix...")
-        reachable = {r: {r} for r in coverage_entities}
-        for i, u in enumerate(coverage_entities):
-            for v in coverage_entities[i + 1 :]:
+        reachable = {r: {r} for r in coverage_representatives}
+        sorted_reps = sorted(coverage_representatives)
+        for i, u in enumerate(sorted_reps):
+            for v in sorted_reps[i + 1 :]:
                 if rx.has_path(self.graph, u, v):
                     reachable[u].add(v)
                     reachable[v].add(u)
 
         # Connected root components generation...
         components = []
-        remaining_roots = set(coverage_entities)
+        remaining_roots = set(coverage_representatives)
         while remaining_roots:
             root = next(iter(remaining_roots))
             component = sorted(reachable[root])
@@ -3147,7 +3195,7 @@ class SFGraphReductionEngine:
                 block = tuple(component[i] for i in range(k) if mask & (1 << i))
                 valid_blocks.add(block)
 
-        # NOTE: Since there is no filtering on the blocks during the presolve these contain _all_ non-sr valid blocks
+        # NOTE: Since there is no filtering on the blocks during the presolve these contain all non-sr valid blocks
         # TODO: When the pre-solve is brought in-line with the normal solve_as_tree we will need to ensure that we
         # retain and return the dominated blocks as well as the dominant blocks which will allow us to filter the
         # blocks we process in here as well.
@@ -3160,8 +3208,6 @@ class SFGraphReductionEngine:
                 continue
             unsolved_blocks.append(block_key)
 
-        num_roots = len(coverage_entities)
-
         # For index masking...
         nodes_list = list(self.graph.node_indices())
         node_index = {u: i for i, u in enumerate(nodes_list)}
@@ -3170,202 +3216,78 @@ class SFGraphReductionEngine:
         dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
         inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
 
-        # Determine if parallel block solving is warranted
-        if num_roots >= SCIPSTP_PAR_ROOTS_THRESHOLD:
-            # Map unique blocks to their full, flattened terminal sets for the solver
-            logger.warning(f"    concurrently solving {len(valid_blocks)} unique valid blocks...")
+        resolve_skip_count = 0
+        worker_tasks = []
 
-            worker_tasks = []
-            for block_key in unsolved_blocks:
-                terminals = set()
+        for block_key in unsolved_blocks:
+            terminals = set()
 
-                # A super terminal behaves as a terminal in the presence of another root,
-                # yet it behaves as a root with a single terminal (the super root) when
-                # there are no other roots. This enforces potential root transit when the
-                # super terminals are considered in isolation.
-                # When acting as a root with the super root as its only terminal, the solution
-                # will always be the shortest route to any potential root.
-                sr_index = 0  # disabled
-                if all(i in surviving_sts for i in block_key):
-                    terminals.add(self.super_root_index)
-                    sr_index = self.super_root_index
+            # A super terminal behaves as a terminal in the presence of another root,
+            # yet it behaves as a root with a single terminal (the super root) when
+            # there are no other roots. This enforces potential root transit when the
+            # super terminals are considered in isolation.
+            # When acting as a root with the super root as its only terminal, the solution
+            # will always be the shortest route to any potential root.
+            sr_index = 0  # disabled
+            if all(i in surviving_super_terminals for i in block_key):
+                terminals.add(self.super_root_index)
+                sr_index = self.super_root_index
 
-                for k in block_key:
-                    terminals.add(k)
-                    if k not in surviving_sts:
-                        terminals.update(self.terminal_sets[k])
+            for k in block_key:
+                terminals.add(k)
+                if k not in surviving_super_terminals:
+                    terminals.update(self.terminal_sets[k])
 
-                terminals = sorted(terminals)
-
-                worker_tasks.append((block_key, terminals, sr_index))
-
-            self.solved_trees += len(worker_tasks)
-
-            with ProcessPoolExecutor() as executor:
-                futures = [
-                    executor.submit(
-                        solve_tree,
-                        TreeProblem(
-                            instance_id=self.instance_id,
-                            block_key=task[0],
-                            terminals=task[1],
-                            adj_map=adj_map,
-                            node_weight_map=node_weight_map,
-                            node_index_map=node_index,
-                            dimacs_id_map=dimacs_id,
-                            inv_dimacs_id_map=inv_dimacs_id,
-                            enable_super_root_index=task[2],
-                            do_debug=self.do_debug,
-                            mip_validation=False,
-                        ),
-                        "scipstp",
-                    )
-                    for task in worker_tasks
-                ]
-
-                for f in as_completed(futures):
-                    block_key, cost, mask = f.result()
-                    block_results[block_key] = mask
-                    block_costs[block_key] = cost
-
-        else:
-            # Fallback to sequential block solving if below threshold
-            # Since we still need to have a temporary file for each unique block and call the executable
-            # we'll use the same helper functions as the concurrent version...
-            logger.warning(f"    sequentially solving {len(valid_blocks)} unique valid blocks...")
-
-            num_blocks = len(unsolved_blocks)
-
-            for block_n, block_key in enumerate(unsolved_blocks):
-                terminals = set()
-
-                # A super terminal behaves as a terminal in the presence of another root,
-                # yet it behaves as a root with a single terminal (the super root) when
-                # there are no other roots. The enforces potential root transit when the
-                # super terminals are considered in isolation.
-                sr_index = 0  # disabled
-                if all(i in surviving_sts for i in block_key):
-                    terminals.add(self.super_root_index)
-                    sr_index = self.super_root_index
-
-                for k in block_key:
-                    terminals.add(k)
-                    if k not in surviving_sts:
-                        terminals.update(self.terminal_sets[k])
-
-                terminals_list = sorted(terminals)
-
-                logger.trace(f"    solving ({block_n} of {num_blocks}) block {block_key}...")
-
-                self.solved_trees += 1
-
-                _, cost, solution_mask = solve_tree(
-                    TreeProblem(
-                        instance_id=self.instance_id,
-                        block_key=block_key,
-                        terminals=terminals_list,
-                        adj_map=adj_map,
-                        node_weight_map=node_weight_map,
-                        node_index_map=node_index,
-                        dimacs_id_map=dimacs_id,
-                        inv_dimacs_id_map=inv_dimacs_id,
-                        enable_super_root_index=sr_index,
-                        do_debug=self.do_debug,
-                        mip_validation=False,
-                    ),
-                    "scipstp",
-                )
-
-                logger.trace(
-                    f"    solved ({block_n} of {num_blocks}) block {block_key} containing {len(terminals_list)} terminals with cost {cost}"
-                )
-
-                block_results[block_key] = solution_mask
-                block_costs[block_key] = cost
-
-        # Build block mask tables
-        logger.trace("    building block mask table...")
-
-        block_mask_costs = {}
-        block_mask_solutions = {}
-
-        for block_key, solution_mask in block_results.items():
-            block_mask = 0
-
-            for r in block_key:
-                block_mask |= coverage_bit[r]
-
-            block_mask_costs[block_mask] = block_costs[block_key]
-            block_mask_solutions[block_mask] = solution_mask
-
-        # Sequential realization of partitions using memoized blocks
-        logger.trace("    solving partition DP...")
-
-        full_mask = (1 << len(coverage_entities)) - 1
-
-        dp = [float("inf")] * (full_mask + 1)
-        choice = [None] * (full_mask + 1)
-
-        dp[0] = 0
-
-        for state in range(full_mask + 1):
-            if dp[state] == float("inf"):
+            # If there aren't any super terminals in the block we don't need to resolve since it
+            # was already solved in the presolve phase
+            if not terminals & surviving_super_terminals:
+                resolve_skip_count += 1
                 continue
 
-            remaining = full_mask ^ state
-            sub = remaining
+            terminals = sorted(terminals)
 
-            while sub:
-                if sub in block_mask_costs:
-                    new_cost = dp[state] + block_mask_costs[sub]
+            worker_tasks.append((block_key, terminals, sr_index))
 
-                    next_state = state | sub
+        logger.warning(f"    {resolve_skip_count} blocks skipped in presolve...")
 
-                    if new_cost < dp[next_state]:
-                        dp[next_state] = new_cost
-                        choice[next_state] = (state, sub)
+        problem_generator = (
+            TreeProblem(
+                instance_id=self.instance_id,
+                block_key=task[0],
+                terminals=task[1],
+                adj_map=adj_map,
+                node_weight_map=node_weight_map,
+                node_index_map=node_index,
+                dimacs_id_map=dimacs_id,
+                inv_dimacs_id_map=inv_dimacs_id,
+                enable_super_root_index=task[2],
+                do_debug=self.do_debug,
+                mip_validation=False,
+            )
+            for task in worker_tasks
+        )
+        num_problems = len(worker_tasks)
 
-                sub = (sub - 1) & remaining
+        self._solve_treeproblem_tasks(
+            problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
+        )
 
-        best_cost = dp[full_mask]
-        best_solution_mask = 0
-
-        if best_cost == float("inf") or choice[full_mask] is None:
-            logger.error("    no valid partition solution found")
-            return set()
-
-        state = full_mask
-
-        while state:
-            prev_choice = choice[state]
-
-            if prev_choice is None:
-                logger.error(f"    broken DP reconstruction at state {state}")
-                break
-
-            prev_state, block_mask = prev_choice
-
-            best_solution_mask |= block_mask_solutions[block_mask]
-
-            state = prev_state
-
-        # Phase 3: Extract solution
-        logger.trace("    solve_with_scipstp_super: extracting solution...")
-
-        solution = _unmask_solution(self.graph, best_solution_mask)
-        if solution:
+        best_solution, best_cost, _block_results, _block_costs = _solve_composite_blocks_dp(
+            self.graph, coverage_representatives, block_results, block_costs
+        )
+        if best_solution:
             logger.debug(
                 f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
             )
-            logger.debug(
-                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in solution)}"
+            logger.trace(
+                f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
             )
 
-        return solution
+        return best_solution
 
     def solve_as_tree_composite(
         self, G: PyDiGraph, coverage_sets: dict[int, set[int]]
-    ) -> tuple[set[int], dict[tuple[int, ...], int], dict[tuple[int, ...], int]]:
+    ) -> tuple[set[int], int | float, dict[tuple[int, ...], int], dict[tuple[int, ...], int]]:
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
         logger.trace("solve_with_scipstp...")
 
@@ -3373,13 +3295,11 @@ class SFGraphReductionEngine:
 
         # Sometimes all that is left are super terminals and there's nothing to be done here...
         if not coverage_sets:
-            return set(), {}, {}
+            return set(), float("inf"), {}, {}
 
-        coverage_representatives = sorted(coverage_sets.keys())
+        coverage_representatives = set(coverage_sets.keys())
 
-        _root_component_index_map, component_data = _connected_component_mappings(
-            G, set(coverage_representatives)
-        )
+        _root_component_index_map, component_data = _connected_component_mappings(G, coverage_representatives)
         interactivity_graph = self._interactivity_graph(G, coverage_sets)
         weight_map = {i: G[i][PAYLOAD_WEIGHT_KEY] for i in G.node_indices()}
 
@@ -3469,7 +3389,9 @@ class SFGraphReductionEngine:
             problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
         )
 
-        best_solution, best_cost = _solve_composite_blocks_dp(G, coverage_sets, block_results, block_costs)
+        best_solution, best_cost, block_results, block_costs = _solve_composite_blocks_dp(
+            G, coverage_representatives, block_results, block_costs
+        )
         if best_solution:
             logger.debug(
                 f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
@@ -3478,7 +3400,7 @@ class SFGraphReductionEngine:
                 f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
             )
 
-        return best_solution, block_results, block_costs
+        return best_solution, best_cost, block_results, block_costs
 
     def _solve_treeproblem_tasks(
         self,
