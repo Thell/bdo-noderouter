@@ -2023,82 +2023,6 @@ class SFGraphReductionEngine:
 
         return best_left_graph, best_right_graph, best_cut_left_endpoints, best_cut_right_endpoints
 
-    def solve_isolated_roots_as_trees(self) -> int:
-        """
-        Singleton root arbor reduction by interactivity isolation.
-
-        Any isolated root is solved as a single tree. The witness of the tree
-        is then consumed from the root outward, leaving the root node in the
-        graph.
-
-        NOTE: This function does not handle super terminals as roots.
-        Returns number of collapsed nodes.
-        """
-        logger.trace("solve_isolated_roots_as_trees...")
-
-        interactivity_graph = self._interactivity_graph()
-        isolates = rx.isolates(interactivity_graph)
-        if not isolates:
-            return 0
-        logger.warning(f"      solving {len(isolates)} isolated trees...")
-
-        all_consumed = set()
-
-        # NOTE: super terminals can not be handled as isolates, but they can be part of an isolates solution...
-        sr_index = self.super_root_index
-
-        for root in isolates:
-            if root == sr_index:
-                continue
-
-            if 1 + len(self.terminal_sets[root]) <= DW_MAX_TREE_TERMINALS:
-                witnessed_nodes = self.solve_root_with_dw(root)
-            else:
-                witnessed_nodes = self.solve_root_as_tree(root)
-
-            # Consume all witnessed nodes, from the root outward; leaving the root node in the graph.
-            consumed = set()
-            witnessed_to_consume = set(witnessed_nodes)
-            while len(witnessed_to_consume) > 0:
-                neighbors = self.reduction_neighbors(root)
-                neighbors.discard(self.super_root_index)
-                neighbors = neighbors & witnessed_to_consume
-                if len(neighbors) == 0:
-                    break
-
-                for n in neighbors:
-                    self.consume(n, root)
-                    consumed.add(n)
-                    witnessed_to_consume.discard(n)
-
-            all_consumed.update(consumed)
-
-            if self.do_debug:
-                logger.trace(f"    witnessed: {sorted(self.get_node_key(n) for n in witnessed_nodes)}")
-
-            # Handle any settled super-root terminals
-            if self.super_root_index is not None:
-                settled_super_terminals = {
-                    i for i in self.terminal_sets[self.super_root_index] if i in witnessed_nodes
-                }
-                for t in settled_super_terminals:
-                    self.terminal_sets[self.super_root_index].remove(t)
-                if len(self.terminal_sets[self.super_root_index]) == 0:
-                    self.terminal_sets.pop(self.super_root_index)
-                    self.super_root_index = None
-
-            # Lastly remove the terminal set cluster
-            self.terminal_sets.pop(root)
-
-        if all_consumed:
-            logger.debug(f"  => consumed {len(all_consumed)} witnessed nodes")
-            if self.do_debug:
-                logger.trace(f"    consumed: {sorted(self.get_node_key(n) for n in all_consumed)}")
-                self.dump_state("solve_isolated_roots_as_trees", len(all_consumed))
-                self.validate_reachability()
-
-        return len(all_consumed)
-
     def reduce_steiner_nodes_by_distance(self) -> int:
         """
         Steiner node reduction by distance.
@@ -2181,6 +2105,83 @@ class SFGraphReductionEngine:
     ) -> set[int]:
         dist = self._local_dijkstra(center, radius, weight)
         return {u for u in dist if u in demand_nodes}
+
+    def solve_isolated_roots_as_trees(self) -> int:
+        """
+        Singleton root arbor reduction by interactivity isolation.
+
+        Any isolated root is solved as a single tree. The witness of the tree
+        is then consumed from the root outward, leaving the root node in the
+        graph.
+
+        NOTE: This function does not handle super terminals as roots.
+        Returns number of collapsed nodes.
+        """
+        logger.trace("solve_isolated_roots_as_trees...")
+
+        self.set_edge_weights()
+        interactivity_graph = self._interactivity_graph(self.graph, self.terminal_sets)
+        isolates = rx.isolates(interactivity_graph)
+        if not isolates:
+            return 0
+        logger.warning(f"      solving {len(isolates)} isolated trees...")
+
+        all_consumed = set()
+
+        # NOTE: super terminals can not be handled as isolates, but they can be part of an isolates solution...
+        sr_index = self.super_root_index
+
+        for root in isolates:
+            if root == sr_index:
+                continue
+
+            if 1 + len(self.terminal_sets[root]) <= DW_MAX_TREE_TERMINALS:
+                witnessed_nodes = self.solve_root_with_dw(root)
+            else:
+                witnessed_nodes = self.solve_root_as_tree(root)
+
+            # Consume all witnessed nodes, from the root outward; leaving the root node in the graph.
+            consumed = set()
+            witnessed_to_consume = set(witnessed_nodes)
+            while len(witnessed_to_consume) > 0:
+                neighbors = self.reduction_neighbors(root)
+                neighbors.discard(self.super_root_index)
+                neighbors = neighbors & witnessed_to_consume
+                if len(neighbors) == 0:
+                    break
+
+                for n in neighbors:
+                    self.consume(n, root)
+                    consumed.add(n)
+                    witnessed_to_consume.discard(n)
+
+            all_consumed.update(consumed)
+
+            if self.do_debug:
+                logger.trace(f"    witnessed: {sorted(self.get_node_key(n) for n in witnessed_nodes)}")
+
+            # Handle any settled super-root terminals
+            if self.super_root_index is not None:
+                settled_super_terminals = {
+                    i for i in self.terminal_sets[self.super_root_index] if i in witnessed_nodes
+                }
+                for t in settled_super_terminals:
+                    self.terminal_sets[self.super_root_index].remove(t)
+                if len(self.terminal_sets[self.super_root_index]) == 0:
+                    self.terminal_sets.pop(self.super_root_index)
+                    self.super_root_index = None
+
+            # Lastly remove the terminal set cluster
+            self.terminal_sets.pop(root)
+
+        if all_consumed:
+            logger.debug(f"  => consumed {len(all_consumed)} witnessed nodes")
+            if self.do_debug:
+                logger.trace(f"    consumed: {sorted(self.get_node_key(n) for n in all_consumed)}")
+                self.dump_state("solve_isolated_roots_as_trees", len(all_consumed))
+                self.validate_reachability()
+
+        return len(all_consumed)
 
     def solve_as_tree_super(self):
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
