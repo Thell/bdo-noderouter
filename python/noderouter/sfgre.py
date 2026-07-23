@@ -751,6 +751,9 @@ class SFGraphReductionEngine:
     # Global maximum distance between a root and its' furthest terminal
     _global_min_max_drt: float = float("inf")
 
+    # solve_as_tree is a witness of a non-reducible graph and should only execute once
+    _solved_as_tree: bool = False
+
     do_debug: bool = False
     call_counts: Counter = field(default_factory=Counter)
     solved_trees = 0
@@ -987,6 +990,26 @@ class SFGraphReductionEngine:
                 best_root = r
 
         return best_root
+
+    def dw_remaining_complexity(self):
+        complexity = 0  # 3^t * n + 2^t * n^2 for Dreyfus Wagner
+
+        num_nodes = self.graph.num_nodes()
+        num_roots = len(self.terminal_sets)
+        num_terminals = len(set().union(*self.terminal_sets.values()))
+        num_super_terminals = len(self.terminal_sets[self.super_root_index])
+
+        for choose_count in range(1, num_roots + 1):
+            for comb in combinations(self.terminal_sets.keys(), choose_count):
+                num_terms = sum(len(self.terminal_sets[c]) for c in comb) + choose_count
+                complexity += (3**num_terms * num_nodes) + (2**num_terms) * (num_nodes**2)
+
+        # TODO: Change back to info level after seeing how well scipstp scales...
+        logger.warning(
+            f"    remaining complexity: {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |n|: {num_nodes} (st: {num_super_terminals})"
+        )
+
+        return complexity
 
     def shortest_path_length(self, source_node, target_node) -> float:
         """Returns the length of the shortest path from source_node to target_node."""
@@ -2766,193 +2789,96 @@ class SFGraphReductionEngine:
 
     def solve_as_tree_super(self):
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
-        logger.trace("solve_as_tree_super...")
+        logger.trace("    solve_as_tree_super...")
 
         if self.super_root_index is None:
             return 0
 
-        complexity = 0  # 3^t * n + 2^t * n^2 for Dreyfus Wagner
+        complexity = self.dw_remaining_complexity()
 
-        num_nodes = self.graph.num_nodes()
-        num_roots = len(self.terminal_sets)
-        num_terminals = len(set().union(*self.terminal_sets.values()))
-        num_super_terminals = len(self.terminal_sets[self.super_root_index])
+        # --- Collect remaining super terminal candidate roots ---
+        # If there are any remaining super terminals we must not remove them from the graph
+        # _nor_ allow them to become isolated terminals. Therefore, we need to identify the
+        # demand sinks (roots, potential roots and terminals) in the neighborhood of each
+        # super terminal and add them to the candidate roots for that super terminal.
+        candidate_roots: dict[int, set[int]] = defaultdict(set)
 
-        for choose_count in range(1, num_roots + 1):
-            for comb in combinations(self.terminal_sets.keys(), choose_count):
-                num_terms = sum(len(self.terminal_sets[c]) for c in comb) + choose_count
-                complexity += (3**num_terms * num_nodes) + (2**num_terms) * (num_nodes**2)
+        if self.super_root_index in self.terminal_sets:
+            all_terminals = set().union(*self.terminal_sets.values())
+            weight_map = {i: self.graph[i][PAYLOAD_WEIGHT_KEY] for i in self.graph.node_indices()}
 
-        logger.warning(
-            f"    remaining complexity: {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |st|: {num_super_terminals}, |n|: {num_nodes}"
-        )
+            # NOTE: While 10 and 5 are arbitrary choices we could make them configurable,
+            #       the important thing is the super root is included.
+            root_radius = 10
+            terminal_radius = 5
 
-        start_time = time()
-
-        tmpG = self.graph.copy()
-        if self.super_root_index is not None:
-            tmpG.remove_node(self.super_root_index)
-        presolve_coverage_sets = {r: v for r, v in self.terminal_sets.items() if r != self.super_root_index}
-        presolve_solution, _presolve_cost, presolve_block_results, presolve_block_costs = (
-            self.solve_as_tree_composite(tmpG, presolve_coverage_sets)
-        )
-
-        # --- Reassign witnessed super terminals ---
-        # If there were any super terminals in the best solution then they can be unambiguously
-        # reassigned to the root of the cluster they are witnessed in by removing them from the
-        # super_root set and adding them to a root set it is connected to.
-        num_reassigned_super_terminals = 0
-
-        roots = set(self.terminal_sets.keys()) - {self.super_root_index}
-        witnessed_super_terminals = {
-            t for t in self.terminal_sets[self.super_root_index] if t in presolve_solution
-        }
-
-        solutionGraph = subgraph_stable(self.graph, presolve_solution)
-        components = rx.weakly_connected_components(solutionGraph)
-
-        if witnessed_super_terminals:
-            for t in witnessed_super_terminals:
-                self.terminal_sets[self.super_root_index].remove(t)
-                if not self.terminal_sets[self.super_root_index]:
-                    del self.terminal_sets[self.super_root_index]
-
-                # Identify the root set that the super terminal is connected to
-                for comp in components:
-                    if t in comp:
-                        r = set(comp).intersection(roots).pop()
-                        logger.trace(
-                            f"    super terminal {self.get_node_key(t)} is connected to root {self.get_node_key(r)}"
-                        )
-                        num_reassigned_super_terminals += 1
-                        self.terminal_sets[r].add(t)
-                        break
-
-        logger.info(f"      {num_reassigned_super_terminals} super terminals reassigned to roots")
-
-        # When there are no more super terminals we can remove the super root and let pre-solve's solve_as_tree_composite
-        # serve as the final solution...
-        if self.super_root_index not in self.terminal_sets:
-            self.super_root_index = None
-            self.potential_roots = set()
-            logger.warning("      pre-solve solved super terminals, using pre-solve solution...")
-            solution = presolve_solution
-
-        else:
-            # --- Collect remaining super terminal candidate roots ---
-            # TODO: utilize a small interactive graph to solve all super terminals as a single tree.
-            # Then strip away the super root to isolate each super terminal's candidate roots.
-
-            # If there are any remaining super terminals we must not remove them from the graph
-            # _nor_ allow them to become isolated terminals. Therefore, we need to identify the
-            # demand sinks (roots, potential roots and terminals) in the neighborhood of each
-            # super terminal and add them to the candidate roots for that super terminal.
-            super_terminal_candidate_root_sets: dict[int, set[int]] = defaultdict(set)
-
-            if self.super_root_index in self.terminal_sets:
-                all_terminals = set().union(*self.terminal_sets.values())
-                weight_map = {i: self.graph[i][PAYLOAD_WEIGHT_KEY] for i in self.graph.node_indices()}
-
-                for t in self.terminal_sets[self.super_root_index]:
-                    # We add the super root since there is potential that the super terminal is
-                    # further from demand sinks than the neighborhood radius and super terminal
-                    # will ensure we have the nearest potential root.
-                    # NOTE: While 10 and 5 are arbitrary choices we could make them configurable,
-                    #       the important thing is the super root is included.
-
-                    # Root/Potential Root sinks
-                    root_sinks = self._collect_local_demand_neighborhood(
-                        t, self.potential_roots, weight_map, 10
-                    )
-                    # Ensure that at least one sink is in root sinks by utilizing the super root
-                    paths = rx.all_shortest_paths(self.graph, t, self.super_root_index)
-                    for path in paths:
-                        for v in path:
-                            if v in self.potential_roots:
-                                root_sinks.add(v)
-                                break
-                    super_terminal_candidate_root_sets[t].update(root_sinks)
-
-                    # Terminal sinks
-                    # We include the roots of the neighborhood terminals as well as potential sinks
-                    # since they could be closer and the root could be out of the neighborhood.
-                    terminal_sinks = self._collect_local_demand_neighborhood(t, all_terminals, weight_map, 5)
-                    terminal_roots = set()
-                    for t in terminal_sinks:
-                        for r, ts in self.terminal_sets.items():
-                            if t in ts:
-                                terminal_roots.add(r)
-                                break
-                    super_terminal_candidate_root_sets[t].update(terminal_roots)
-
-                logger.warning(
-                    f"      {len(self.terminal_sets[self.super_root_index])} super terminals not reassigned to roots"
+            for t in self.terminal_sets[self.super_root_index]:
+                # Root/Potential Root sinks
+                root_sinks = self._collect_local_demand_neighborhood(
+                    t, self.potential_roots, weight_map, root_radius
                 )
 
-            # --- Solve as tree ---
-            # Now that we have a stably reduced graph and have obtained the candidate roots for each
-            # super terminal we can solve as a tree.
+                # Ensure that at least one sink is in root sinks by utilizing the super root
+                # NOTE: We add the super root since there is potential that the super terminal is
+                # further from demand sinks than the neighborhood radius and super terminal
+                # will ensure we have the nearest potential root.
+                paths = rx.all_shortest_paths(self.graph, t, self.super_root_index)
+                for path in paths:
+                    for v in path:
+                        if v in self.potential_roots:
+                            root_sinks.add(v)
+                            break
+                candidate_roots[t].update(root_sinks)
 
-            solution = self.solve_with_scipstp_super(
-                super_terminal_candidate_root_sets, presolve_block_results, presolve_block_costs
+                # Terminal sinks
+                # We include the roots of the neighborhood terminals as well as potential sinks
+                # since they could be closer and the root could be out of the neighborhood.
+                terminal_sinks = self._collect_local_demand_neighborhood(
+                    t, all_terminals, weight_map, terminal_radius
+                )
+                terminal_roots = set()
+                for t in terminal_sinks:
+                    for r, ts in self.terminal_sets.items():
+                        if t in ts:
+                            terminal_roots.add(r)
+                            break
+                candidate_roots[t].update(terminal_roots)
+
+            logger.warning(
+                f"      {len(self.terminal_sets[self.super_root_index])} super terminals not reassigned to roots"
             )
 
-            # --- Post solve cleanup ---
-
-            # NOTE: When super terminal demands are settled and they connect to the super root via
-            #       a potential root we need to promote the potential root to a root cluster set and
-            #       move the super terminal to that set and remove it from the super root set.
-            #       When completed the super root set should be empty and it should be removed.
-            # First we need a subgraph of the solution...
-            solution = set(solution)
-            solutionGraph = subgraph_stable(self.graph, solution | {self.super_root_index})
-            for t in list(self.terminal_sets[self.super_root_index]):
-                # We identify the potential roots connecting the super terminal to the super root
-                # and remove the super terminal from the super root set.
-                pr_seen = set()
-                paths = rx.all_shortest_paths(solutionGraph, t, self.super_root_index)
-                for path in paths:
-                    # The potential root is always the one before the super root
-                    pr = path[-2]
-                    if pr in pr_seen:
-                        continue
-                    pr_seen.add(pr)
-
-                    # NOTE: Use discard instead of remove since there may be multiple paths and the first
-                    #       processed would have already removed the terminal. Yet we don't know which
-                    #       is the ultimate global optimal, so the potential roots that are promoted
-                    #       need to remain and the pipeline will take care of the rest of the ambiguity.
-
-                    # If the potential root is already a real root then simply move the super terminal
-                    # to that set.
-                    if pr in self.terminal_sets:
-                        self.terminal_sets[pr].add(t)
-                        self.terminal_sets[self.super_root_index].discard(t)
-
-                    # Otherwise we need to promote the potential root to a root cluster set.
-                    else:
-                        self.terminal_sets[pr] = {t}
-                        self.terminal_sets[self.super_root_index].discard(t)
-
-                        # And if there is only a single path we also need to add the pr to fixed nodes
-                        # since it is now an unambiguous real root.
-                        if len(paths) == 1:
-                            self.fixed_nodes.add(pr)
-
-        removables = set(self.graph.node_indices()) - set(solution)
-        if self.super_root_index in removables:
-            removables.remove(self.super_root_index)
-        removals = len(removables)
-
+        # --- Solve as tree ---
+        start_time = time()
+        solution = self.solve_with_scipstp_super(candidate_roots)
         end_time = time()
 
+        removables = set(self.graph.node_indices()) - set(solution)
+
+        # Regardless of the disposition of the super root cluster we don't want to remove it from the graph
+        # as this is handled during root reduction.
+        if self.super_root_index in removables:
+            removables.remove(self.super_root_index)
+
+        removals = len(removables)
+
         if removals > 0:
+            if self.do_debug:
+                self.validate_reachability()
+                self.dump_graph("before solving as tree")
+
             duration = end_time - start_time
+
+            num_nodes = self.graph.num_nodes()
+            num_roots = len(self.terminal_sets)
+            num_terminals = len(set().union(*self.terminal_sets.values()))
+            num_super_terminals = len(self.terminal_sets[self.super_root_index])
             logger.warning(
                 f"    solved as tree in {duration:.2f}s with complexity {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |st|: {num_super_terminals}, |n|: {num_nodes}"
             )
 
             self.graph.remove_nodes_from(removables)
+            self._solved_as_tree = True
 
             logger.info(f"    removed {removals} dead tree solution nodes")
 
@@ -2974,21 +2900,10 @@ class SFGraphReductionEngine:
         if self.super_root_index is not None:
             return 0
 
-        complexity = 0  # 3^t * n + 2^t * n^2 for Dreyfus Wagner
-
+        complexity = self.dw_remaining_complexity()
         num_nodes = self.graph.num_nodes()
         num_roots = len(self.terminal_sets)
         num_terminals = len(set().union(*self.terminal_sets.values()))
-
-        for choose_count in range(1, num_roots + 1):
-            for comb in combinations(self.terminal_sets.keys(), choose_count):
-                num_terms = sum(len(self.terminal_sets[c]) for c in comb) + choose_count
-                complexity += (3**num_terms * num_nodes) + (2**num_terms) * (num_nodes**2)
-
-        # TODO: Change back to info level after seeing how well scipstp scales...
-        logger.warning(
-            f"    remaining complexity: {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |n|: {num_nodes}"
-        )
 
         # Exludes the MIP 'sweet spot'
         use_scip = self.terminal_sets and (num_nodes > 110 or num_roots < 6)
@@ -3121,60 +3036,37 @@ class SFGraphReductionEngine:
 
     def solve_with_scipstp_super(
         self,
-        super_terminal_candidate_root_sets: dict[int, set[int]],
-        presolve_block_results: dict[tuple[int, ...], int],
-        presolve_block_costs: dict[tuple[int, ...], int],
+        candidate_roots: dict[int, set[int]],
     ):
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
-        logger.warning("    solve_with_scipstp_super...")
+        logger.warning("solve_with_scipstp_super...")
 
         assert self.super_root_index is not None, "super root index must be set"
-
-        coverage_sets = {k: v for k, v in self.terminal_sets.items() if k != self.super_root_index}
-        surviving_super_terminals = set(super_terminal_candidate_root_sets.keys())
-        coverage_representatives = set(coverage_sets.keys()) | surviving_super_terminals
-
-        # START: Refactoring for unification with solve_as_tree_composite...
-
-        # _root_component_index_map, component_data = _connected_component_mappings(
-        #     self.graph, set(coverage_representatives)
-        # )
-
-        # interactivity_graph = self._interactivity_graph(G, coverage_sets)
-        # weight_map = {i: G[i][PAYLOAD_WEIGHT_KEY] for i in G.node_indices()}
-
-        # # Phase 1 - Non-super-terminal block preparation
-        # # TODO: # Skip this? we already have generated all blocks during pre-solve, so we could simply return them...
-        # valid_blocks, num_blocks, num_candidate_blocks = _generate_valid_partition_blocks(
-        #     component_data, interactivity_graph
-        # )
-        # block_terminals = _map_block_terminals(coverage_sets, valid_blocks)
-
-        # END: Refactoring for unification with solve_as_tree_composite...
 
         # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
         # so we need to pass in the adjacency map and node weights
         adj_map = {u: sorted(self.reduction_neighbors(u)) for u in self.graph.node_indices()}
         node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
 
+        roots = list(set(self.terminal_sets.keys()) - {self.super_root_index})
+        surviving_super_terminals = sorted(candidate_roots.keys())
+        coverage_entities = roots + surviving_super_terminals
+
         # Partition filtering...
         logger.trace("    generating valid partition blocks...")
 
-        valid_blocks = set()
-
         # Root reachability for component generation...
         logger.trace("      building reachability matrix...")
-        reachable = {r: {r} for r in coverage_representatives}
-        sorted_reps = sorted(coverage_representatives)
-        for i, u in enumerate(sorted_reps):
-            for v in sorted_reps[i + 1 :]:
+        reachable = {r: {r} for r in coverage_entities}
+        for i, u in enumerate(coverage_entities):
+            for v in coverage_entities[i + 1 :]:
                 if rx.has_path(self.graph, u, v):
                     reachable[u].add(v)
                     reachable[v].add(u)
 
         # Connected root components generation...
         components = []
-        remaining_roots = set(coverage_representatives)
+        remaining_roots = set(coverage_entities)
         while remaining_roots:
             root = next(iter(remaining_roots))
             component = sorted(reachable[root])
@@ -3188,25 +3080,13 @@ class SFGraphReductionEngine:
         # Since the partition DP reconstructs the optimal partitioning, we only need
         # to generate the valid blocks. Any valid block must be wholly contained
         # within a single reachability component.
+        valid_blocks = set()
         for component in components:
             logger.trace(f"      generating blocks for component size={len(component)}...")
             k = len(component)
             for mask in range(1, 1 << k):
                 block = tuple(component[i] for i in range(k) if mask & (1 << i))
                 valid_blocks.add(block)
-
-        # NOTE: Since there is no filtering on the blocks during the presolve these contain all non-sr valid blocks
-        # TODO: When the pre-solve is brought in-line with the normal solve_as_tree we will need to ensure that we
-        # retain and return the dominated blocks as well as the dominant blocks which will allow us to filter the
-        # blocks we process in here as well.
-        block_results = dict(presolve_block_results)
-        block_costs = dict(presolve_block_costs)
-
-        unsolved_blocks = []
-        for block_key in valid_blocks:
-            if block_key in block_results:
-                continue
-            unsolved_blocks.append(block_key)
 
         # For index masking...
         nodes_list = list(self.graph.node_indices())
@@ -3216,18 +3096,14 @@ class SFGraphReductionEngine:
         dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
         inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
 
-        resolve_skip_count = 0
         worker_tasks = []
-
-        for block_key in unsolved_blocks:
+        for block_key in valid_blocks:
             terminals = set()
 
             # A super terminal behaves as a terminal in the presence of another root,
             # yet it behaves as a root with a single terminal (the super root) when
             # there are no other roots. This enforces potential root transit when the
             # super terminals are considered in isolation.
-            # When acting as a root with the super root as its only terminal, the solution
-            # will always be the shortest route to any potential root.
             sr_index = 0  # disabled
             if all(i in surviving_super_terminals for i in block_key):
                 terminals.add(self.super_root_index)
@@ -3238,17 +3114,8 @@ class SFGraphReductionEngine:
                 if k not in surviving_super_terminals:
                     terminals.update(self.terminal_sets[k])
 
-            # If there aren't any super terminals in the block we don't need to resolve since it
-            # was already solved in the presolve phase
-            if not terminals & surviving_super_terminals:
-                resolve_skip_count += 1
-                continue
-
             terminals = sorted(terminals)
-
             worker_tasks.append((block_key, terminals, sr_index))
-
-        logger.warning(f"    {resolve_skip_count} blocks skipped in presolve...")
 
         problem_generator = (
             TreeProblem(
@@ -3268,18 +3135,21 @@ class SFGraphReductionEngine:
         )
         num_problems = len(worker_tasks)
 
+        block_results = {}
+        block_costs = {}
         self._solve_treeproblem_tasks(
             problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
         )
 
         best_solution, best_cost, _block_results, _block_costs = _solve_composite_blocks_dp(
-            self.graph, coverage_representatives, block_results, block_costs
+            self.graph, set(coverage_entities), block_results, block_costs
         )
+
         if best_solution:
             logger.debug(
                 f"    solved for terminals: { {self.get_node_key(r): {self.get_node_key(n) for n in ts} for r, ts in self.terminal_sets.items()} }"
             )
-            logger.trace(
+            logger.debug(
                 f"    found best solution (cost: {best_cost}): {sorted(self.get_node_key(n) for n in best_solution)}"
             )
 
@@ -3389,7 +3259,7 @@ class SFGraphReductionEngine:
             problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
         )
 
-        best_solution, best_cost, block_results, block_costs = _solve_composite_blocks_dp(
+        best_solution, best_cost, _block_results, _block_costs = _solve_composite_blocks_dp(
             G, coverage_representatives, block_results, block_costs
         )
         if best_solution:
@@ -3596,7 +3466,8 @@ class SFGraphReductionEngine:
 
             # Solve as tree for super root
             if (
-                num_nodes == self.graph.num_nodes()
+                not self._solved_as_tree
+                and num_nodes == self.graph.num_nodes()
                 and self.super_root_index is not None
                 and self.terminal_sets
             ):
@@ -3609,10 +3480,16 @@ class SFGraphReductionEngine:
                 )
                 if self.solve_as_tree_super() > 0:
                     tmp_num_nodes = 0
+                    self.solved_as_tree = True
                     continue
 
             # Solve as tree for non super root
-            if num_nodes == self.graph.num_nodes() and self.super_root_index is None and self.terminal_sets:
+            if (
+                not self._solved_as_tree
+                and num_nodes == self.graph.num_nodes()
+                and self.super_root_index is None
+                and self.terminal_sets
+            ):
                 self.dump_reduction_results(
                     "pre: solve_as_tree",
                     num_edges_start,
@@ -3621,6 +3498,7 @@ class SFGraphReductionEngine:
                     num_terminals_start,
                 )
                 self.solve_as_tree()
+                self.solved_as_tree = True
 
         # Rebuild pairs
         fixed_nodes_wp = {self.get_node_key(n) for n in self.fixed_nodes}
