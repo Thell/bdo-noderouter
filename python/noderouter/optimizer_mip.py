@@ -313,9 +313,13 @@ def optimize_with_terminals(seed: str, terminals: dict, config: dict) -> Solutio
         print("=== END REDUCED GRAPH ===")
 
     if reduced_terminals:
+        print(f"MIP: num_nodes: {exploration_graph_reduced.num_nodes()}, num_fixed_nodes: {len(fixed_nodes)}")
         set_graph_terminal_sets_attribute(exploration_graph_reduced, reduced_terminals)
         model = get_highs(config)
-        model, vars = create_model(model, graph=exploration_graph_reduced, fixed_nodes=fixed_nodes)
+        if exploration_graph_reduced.num_nodes()/2 < len(fixed_nodes):
+            model, vars = create_model(model, graph=exploration_graph_reduced)
+        else:
+            model, vars = create_model(model, graph=exploration_graph_reduced, fixed_nodes=fixed_nodes)
 
         controller = SolverController()
         model = solve(model, config, controller)
@@ -359,6 +363,7 @@ def optimize_with_terminals(seed: str, terminals: dict, config: dict) -> Solutio
     # NOTE: fixed nodes are waypoints, collapsed nodes are indices
     hyper_nodes = {i for i in solution_nodes if exploration_graph_reduced[i]["collapsed_nodes"]}
     hyper_nodes = hyper_nodes & solution_nodes
+
     for i in hyper_nodes:
         logger.trace(
             f"  expanding {node_key_by_index[i]} containing {sorted([node_key_by_index[n] for n in exploration_graph_reduced[i]['collapsed_nodes']])}"
@@ -389,6 +394,29 @@ def optimize_with_terminals(seed: str, terminals: dict, config: dict) -> Solutio
             f"    actual_weights = { {node_key_by_index[n]: tmp_G[n][PAYLOAD_WEIGHT_KEY] for n in tmp_G.node_indices()} }"
         )
         print("=== END OF EXPANDED FINAL MIP SOLUTION OF REDUCED GRAPH ===")
+
+    # if True:
+    #     print("=== FINAL MIP SOLUTION SUPER TERMINAL ROOTS ===")
+    #     tmpG = solution_graph = subgraph_stable(exploration_graph, solution_nodes | {node_key_by_index.inv[99999]})
+    #     node_key_by_index = solution_graph.attrs["node_key_by_index"]
+    #     print(f"terminal wps: {terminals}")
+    #     print(f"terminal indices: { {node_key_by_index.inv[t]: node_key_by_index.inv[r] for t, r in terminals.items()} }")
+    #     all_terminals = set(terminals.keys())
+    #     for t in (t for t, r in terminals.items() if r == 99999):
+    #         paths = rx.all_shortest_paths(tmpG, node_key_by_index.inv[t], node_key_by_index.inv[99999])
+    #         for p in paths:
+    #             weight = sum(tmpG[n][PAYLOAD_WEIGHT_KEY] for n in p)
+    #             print(f"path (weight: {weight}): {p} (terminal: { t }, root: { node_key_by_index[p[-2]] })")
+    #         # Find first terminal in path after the super terminal
+    #         for p in paths:
+    #             for u in p[1:]:
+    #                 if node_key_by_index[u] in fixed_nodes_copy:
+    #                     length_to_terminal = sum(tmpG[n][PAYLOAD_WEIGHT_KEY] for n in p[:p.index(u)])
+    #                     print(f"first terminal: {u} {node_key_by_index[u]} (length: {length_to_terminal})")
+    #                     break
+    #             else:
+    #                 print("no 'attachment' terminal found in path")
+    #             break
 
     if ds.get_config("config")["logger"]["level"] in ["DEBUG", "TRACE"]:
         validate_solution(solution_graph, terminals)
