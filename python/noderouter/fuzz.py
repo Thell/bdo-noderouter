@@ -604,11 +604,19 @@ def _run_single_config(
                 continue
 
             # # Debugging - one-offs
-            # target_seed = "95faa43"
+            # target_seed = "9c69237"
             # if seed != target_seed:
             #     continue
             # else:
-            #     find_and_remove_cache_by_seed(target_seed)
+            #     find_and_remove_cache_by_seed(seed)
+
+            # # fmt: off
+            # target_seeds = ["de1e3ca", "61f6ff4", "9948061", "6c128a7", "0416955"]
+            # # fmt: on
+            # if seed not in target_seeds:
+            #     continue
+            # else:
+            #     find_and_remove_cache_by_seed(seed)
 
             logger.success(f"Processing seed: {seed}")
 
