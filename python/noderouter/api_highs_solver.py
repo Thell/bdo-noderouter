@@ -290,7 +290,7 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
             used_nodes.update(path[t_index])
             used_roots.add(r_index)
 
-    # Super terminal paths
+    # Super terminal paths - traverse from terminal to root
     for r_index, terminal_set in terminal_sets.items():
         r_key = node_key_by_index[r_index]
         if r_key != SUPER_ROOT:
@@ -299,19 +299,19 @@ def _cleanup_solution(solution_graph: rx.PyDiGraph):
             if t_index in root_indices_in_graph:
                 continue
             for potential_root in used_roots:
-                if not rx.has_path(solution_graph, potential_root, t_index):
+                if not rx.has_path(solution_graph, t_index, potential_root):
                     continue
-                path = rx.dijkstra_shortest_paths(solution_graph, potential_root, t_index)
-                used_nodes.update(path[t_index])
+                path = rx.dijkstra_shortest_paths(solution_graph, t_index, potential_root)
+                used_nodes.update(path[potential_root])
                 used_nodes.add(potential_root)
                 break
             else:
                 for potential_root in root_indices_in_graph - used_roots:
                     if potential_root != SUPER_ROOT:
-                        if not rx.has_path(solution_graph, potential_root, t_index):
+                        if not rx.has_path(solution_graph, t_index, potential_root):
                             continue
-                        path = rx.dijkstra_shortest_paths(solution_graph, potential_root, t_index)
-                        used_nodes.update(path[t_index])
+                        path = rx.dijkstra_shortest_paths(solution_graph, t_index, potential_root)
+                        used_nodes.update(path[potential_root])
                         used_nodes.add(potential_root)
                         break
                 else:
