@@ -675,6 +675,8 @@ def fuzzer_main(
                 if _shutdown_requested:
                     raise KeyboardInterrupt
                 metrics = _run_single_config(strategies, samples, budget, danger_state)
+                if metrics.shape[0] == 0:
+                    continue
                 all_metrics = all_metrics.vstack(metrics)
 
                 current_elapsed = time.time() - start_time
