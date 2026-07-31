@@ -1402,8 +1402,6 @@ class SFGraphReductionEngine:
 
                 if rep in self.terminal_sets[rep]:
                     logger.error(f"Duplicate rep {rep} root: {self.get_node_key(rep)}")
-                    if rep == 476:
-                        print("DEBUG")
 
                 merges += len(to_merge) - 1
 
