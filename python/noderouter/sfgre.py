@@ -3412,6 +3412,17 @@ class SFGraphReductionEngine:
 
         return removals
 
+    def solve_as_path(self):
+        """Solves a single remaining terminal -> root path and resolves the full problem space."""
+        assert len(self.terminal_sets) == 1
+        root = next(iter(self.terminal_sets.keys()))
+        assert len(self.terminal_sets[root]) == 1
+        terminal = self.terminal_sets[root].pop()
+
+        path = rx.all_shortest_paths(self.graph, terminal, root)[0]
+        self.fixed_nodes.update(path)
+        self.graph.clear()
+
     # MARK: Tree Solvers
 
     def solve_root_with_dw(self, root: int):
@@ -3884,6 +3895,15 @@ class SFGraphReductionEngine:
             if num_nodes != self.graph.num_nodes():
                 logger.info("  repeating simple reductions...")
                 continue
+
+            # solve_as_path - this is a final solution, moves path to solution and resolves the problem
+            if len(self.terminal_sets) == 1 and len(next(iter(self.terminal_sets.values()))) == 1:
+                self.solve_as_path()
+                self.terminal_sets = {}
+                self.potential_roots = set()
+                self.super_root_index = None
+                logger.success("  solved as path - no terminal sets left. All demands are satisfied!")
+                break
 
             if not self.terminal_sets:
                 logger.success("  no terminal sets left. All demands are satisfied!")
