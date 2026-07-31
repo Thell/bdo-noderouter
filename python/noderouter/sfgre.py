@@ -1150,6 +1150,58 @@ class SFGraphReductionEngine:
 
     # MARK: Reductions
 
+    def reduce_potential_roots(self):
+        """
+        Reduces potential root entries by distance.
+
+        A potential root is only viable if it is within 2 * global_min_max_drt of any super terminal
+        and is reachable by a super terminal. If not and if it has either an empty hyper contents
+        or is a leaf it is removed from the set of potential roots.
+        """
+        # Nothing to do...
+        if self.super_root_index is None:
+            return
+
+        # All super demands are satisfied. Just do cleanup...
+        if not self.terminal_sets.get(self.super_root_index):
+            self.terminal_sets.pop(self.super_root_index, None)
+            self.graph.remove_node(self.super_root_index)
+            self.super_root_index = None
+            self.potential_roots = set()
+            return
+
+        logger.trace("reduce_potential_roots...")
+
+        collisions: set[int] = set()
+        guaranteed_sinks: set[int] = set()
+        radius = 2 * self.min_max_rt_distance
+        weight_map = self.node_weight_map
+
+        for st in self.terminal_sets[self.super_root_index]:
+            st_collisions = self._collision_envelope(st, weight_map, radius)
+            collisions |= st_collisions
+
+            # The collision envelope is a radius-based reachability guarantee, but
+            # it does not guarantee a sink.
+            # The one thing that's true unconditionally is that st is a surviving
+            # super terminal, so it has a real path to sr so we need to guarantee
+            # that a sink survives, independent of collision/radius outcome.
+            if not st_collisions & self.potential_roots:
+                paths = rx.all_shortest_paths(
+                    self.graph, st, self.super_root_index, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY]
+                )
+                # The potential root will always be the node prior to the super root and if more
+                # than one exists then there is still ambiguity regarding which is globally optimal
+                # so we need to keep all of them.
+                guaranteed_sinks |= {p[-2] for p in paths}
+
+        num_old_roots = len(self.potential_roots)
+        real_roots = set(self.terminal_sets.keys())
+        self.potential_roots = (collisions & self.potential_roots) | real_roots | guaranteed_sinks
+
+        if self.do_debug:
+            logger.debug(f"  reduced potential roots from {num_old_roots} to {len(self.potential_roots)}")
+
     def reduce_demand_roots(self) -> int:
         """
         Reduces the number of distinct roots by merging fixed nodes (terminals or roots)
@@ -3402,7 +3454,10 @@ class SFGraphReductionEngine:
                 logger.info(f"  removed {len(isolates)} isolates...")
                 logger.trace(f"    {sorted(self.get_node_key(n) for n in isolates)}")
 
-            # Reduce demand roots - this is a terminal set consolidation only
+            # Reduce potential roots - this is not a graph mutation it is a potential roots set consolidation only
+            self.reduce_potential_roots()
+
+            # Reduce demand roots - this is not a graph mutation it is a terminal set consolidation only
             self.reduce_roots_via_articulation_points()
             self.reduce_demand_roots()
 
