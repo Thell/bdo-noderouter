@@ -1804,6 +1804,105 @@ class SFGraphReductionEngine:
 
         return removals + fixes
 
+    def reduce_degree2_articulation_super(self) -> int:
+        """
+        Processes degree-2 articulation point / 2-bridge nodes for inclusion/exclusion.
+
+        If an articulation node's removal violates any demands it must be included in the solution, if
+        its removal does not violate any demands and no super terminal would prefer it in an optimal
+        solution then it is safe to be excluded from the solution.
+
+        Handles:
+        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝  ⭆  ⁝ⓤ ∣ ⓥ⁝, 𝐆 ∖ Ⓢ  ⇔  Ⓡ (↠∣Ⓢ∣↠) Ⓣ ∀ 𝐃`**
+        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝  ⭆  ⁝ⓤ ⇋ ⓥ⁝, ⓤ ↣ ○  ⇔  Ⓡ ¬(↠∣Ⓢ∣↠) Ⓣ ∀ 𝐃, dist(𝕥, 𝕡) <= dist(𝕥, Ⓢ)`**
+        """
+        logger.trace("reduce_degree2_articulation...")
+
+        non_steiners = self.non_steiner_nodes()
+        non_steiners.discard(self.super_root_index)
+
+        fixes = 0
+        removals = 0
+
+        # Get articulation points
+        tmpG = self.graph.copy()
+        if self.super_root_index is not None:
+            tmpG.remove_node(self.super_root_index)
+        tmp_undir = tmpG.to_undirected(multigraph=False)
+        articulations = rx.articulation_points(tmp_undir)
+        if not articulations:
+            return 0
+
+        # Map back to self.graph indices
+        tmp_map = {i: u for i, u in enumerate(self.graph.node_indices())}
+        articulations = {tmp_map[i] for i in articulations}
+
+        articulations = {u for u in articulations if u not in non_steiners and self.reduction_degree(u) == 2}
+        if not articulations:
+            return 0
+
+        # Compute collision envelopes
+        sr_index = self.super_root_index
+        st_collisions = {}
+        weight_map = self.node_weight_map
+        if sr_index is not None:
+            for st in self.terminal_sets[sr_index]:
+                st_collisions[st] = self._collision_envelope(st, weight_map, 2 * self.min_max_rt_distance)
+
+        for u in articulations:
+            if not self.graph.has_node(u):
+                continue
+
+            neighbors = list(self.graph.successor_indices(u))
+            if len(neighbors) != 2:
+                continue
+            a, b = neighbors
+
+            # Demand separation test
+            tmp = self.graph.copy()
+            tmp.remove_node(u)
+
+            # NOTE: Traverse from terminal to root (for super-root presence)
+            violates_demand = any(
+                not rx.has_path(tmp, t, r) for r, terminals in self.terminal_sets.items() for t in terminals
+            )
+
+            if violates_demand:
+                # Must include
+                self.consume(u, a if a in self.fixed_nodes else b)
+                fixes += 1
+                continue
+
+            if sr_index is None:
+                continue
+
+            # Super terminal violation test
+            components = rx.strongly_connected_components(tmp)
+            potential_violation = False
+            for st in self.terminal_sets[sr_index]:
+                for c in components:
+                    if st in c and not st_collisions[st].issubset(set(c)):
+                        potential_violation = True
+                        break
+                if potential_violation:
+                    break
+
+            if not potential_violation:
+                # Safe to remove
+                self.remove_node(u)
+                removals += 1
+            # else:
+            #     # Can not certify because of ambiguity with super terminal optimality
+            #     pass
+
+        if removals > 0 or fixes > 0:
+            logger.info(f"  fixed {fixes} degree-2 bridges, removed {removals} redundant degree-2 nodes")
+            if self.do_debug:
+                self.dump_state("reduce_degree2_articulation", removals + fixes)
+                self.validate_reachability()
+
+        return removals + fixes
+
     def reduce_steiner_bridges(self) -> int:
         """Bridge reduction for Steiner Forest."""
         logger.trace("reduce_steiner_bridges...")
@@ -1911,6 +2010,151 @@ class SFGraphReductionEngine:
             removals += 1
 
         if removals > 0:
+            logger.info(
+                f"  consumed {removals} Steiner bridge nodes and removed {edge_removals} bridge edges"
+            )
+            if self.do_debug:
+                self.dump_state("reduce_bridge_steiner_consumption", removals + edge_removals)
+                self.validate_reachability()
+
+        return removals
+
+    def reduce_steiner_bridges_super(self) -> int:
+        """Bridge reduction for Steiner Forest."""
+        logger.trace("reduce_steiner_bridges...")
+
+        non_steiners = self.non_steiner_nodes()
+        non_steiners.discard(self.super_root_index)
+
+        removals = 0
+        edge_removals = 0
+
+        # Get bridges
+        tmpG = self.graph.copy()
+        sr_index = self.super_root_index
+        if sr_index is not None:
+            tmpG.remove_node(sr_index)
+
+        tmp_undir = tmpG.to_undirected(multigraph=False)
+        tmp_map = {i: u for i, u in enumerate(self.graph.node_indices())}
+
+        bridges = rx.bridges(tmp_undir)
+        if not bridges:
+            return 0
+
+        bridges = sorted((tmp_map[min(u, v)], tmp_map[max(u, v)]) for u, v in bridges)  # ty:ignore[invalid-assignment]
+        logger.trace(f"  {bridges=}")
+
+        # Precompute super terminal collision envelopes once, up front -- same construction
+        # and staleness caveat as reduce_degree2_articulation: computed against the graph
+        # state at loop start, so a removal earlier in this same pass can only make a later
+        # check MORE conservative (a stale, wider envelope is harder to satisfy issubset
+        # against), never unsound. Self-corrects on the pipeline's next iteration.
+        st_collisions: dict[int, set[int]] = {}
+        if sr_index is not None:
+            weight_map = self.node_weight_map
+            radius_cap = 2 * self.min_max_rt_distance
+            for st in self.terminal_sets[sr_index]:
+                st_collisions[st] = self._collision_envelope(st, weight_map, radius_cap)
+
+        for u, v in bridges:
+            if not (self.graph.has_node(u) and self.graph.has_node(v)):
+                continue
+
+            deg_u = self.reduction_degree(u)
+            deg_v = self.reduction_degree(v)
+            if not ((deg_u >= 2 and deg_v > 2) or (deg_v >= 2 and deg_u > 2)):
+                continue
+
+            steiner_u = u not in non_steiners
+            steiner_v = v not in non_steiners
+            if not (steiner_u or steiner_v):
+                continue
+
+            # Demand separation test
+            tmp = self.graph.copy()
+            tmp.remove_edge(u, v)
+            tmp.remove_edge(v, u)
+
+            violates_demand = any(
+                not rx.has_path(tmp, t, r)
+                for r, terminals in self.terminal_sets.items()
+                for t in terminals
+                if r != self.super_root_index
+            )
+
+            if not violates_demand:
+                sccs = list(rx.strongly_connected_components(tmp))
+
+                if sr_index is not None:
+                    # Super terminal collision certification. If every super terminal's full
+                    # collision envelope stays inside its own resulting component, this edge
+                    # was never on a route any optimal solution needed -- safe to consider for
+                    # removal. If any envelope now spans the cut, we can't certify: skip.
+                    scc_of: dict[int, int] = {}
+                    for scc_i, scc in enumerate(sccs):
+                        for n in scc:
+                            scc_of[n] = scc_i
+
+                    violates_st = False
+                    for st, envelope in st_collisions.items():
+                        scc_i = scc_of.get(st)
+                        if scc_i is None:
+                            continue  # resolved by an earlier iteration of this same pass
+                        if not envelope.issubset(sccs[scc_i]):
+                            violates_st = True
+                            break
+
+                    if violates_st:
+                        continue
+
+                    # sr_index's own SCC is always a content-free trivial singleton (pure sink,
+                    # never in fixed_nodes) -- it would vacuously satisfy "no fixed nodes" below
+                    # regardless of what the real split looks like, so it must not be considered
+                    # as one of the candidate pieces.
+                    sccs = [scc for scc in sccs if sr_index not in scc]
+
+                # NOTE: We can't certify exclusion of either endpoint of a single bridge because it says nothing
+                #       about the two endpoints in an optimal Solution. And in a node weighted problem if both
+                #       end up being selected then the edge is naturally selected.
+                #       But, if the created component from removing the bridge contains no terminals or roots
+                #       or only one arborescence then it is safe to remove the bridge edge.
+                #       In that case we can remove the edge but not consume either endpoint.
+                for scc in sccs:
+                    set_scc = set(scc)
+
+                    if not set_scc & self.fixed_nodes:
+                        self.graph.remove_edge(u, v)
+                        self.graph.remove_edge(v, u)
+                        edge_removals += 1
+                        logger.trace(
+                            f"  removed bridge edge: no fixed nodes: ({self.get_node_key(u)}, {self.get_node_key(v)})"
+                        )
+                        break
+
+                    scc_roots = set_scc & set(self.terminal_sets.keys())
+                    if len(scc_roots) == 1:
+                        scc_root = next(iter(scc_roots))
+                        if set_scc & self.terminal_sets[scc_root]:
+                            self.graph.remove_edge(u, v)
+                            self.graph.remove_edge(v, u)
+                            edge_removals += 1
+                            logger.trace(
+                                f"  removed bridge edge: single root: ({self.get_node_key(u)}, {self.get_node_key(v)})"
+                            )
+                            break
+                continue
+
+            # The edge must be traversed in an optimal Solution...
+            if steiner_u:
+                self.consume(u, v)
+                logger.trace(f"  consumed Steiner bridge node: {self.get_node_key(u)}")
+            else:
+                self.consume(v, u)
+                logger.trace(f"  consumed Steiner bridge node: {self.get_node_key(v)}")
+            removals += 1
+
+        if removals > 0 or edge_removals > 0:
             logger.info(
                 f"  consumed {removals} Steiner bridge nodes and removed {edge_removals} bridge edges"
             )
@@ -3518,6 +3762,22 @@ class SFGraphReductionEngine:
             # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
             if num_nodes == self.graph.num_nodes():
                 self.reduce_enclosed_steiner_clusters()
+
+            # NOTE: The following two reductions are virtually identical to the normal reductions but
+            # have super root/terminal support. The are distinct from the normal reductions because
+            # they have additional overhead _and_ alter the cascading reductions when used in place of
+            # the normal reductions.
+
+            if self.super_root_index is not None and num_nodes != self.graph.num_nodes():
+                # reduce_degree2_articulation_super - this is a Steiner node graph reduction by `remove` only
+                removed = self.reduce_degree2_articulation_super()
+
+                # reduce_steiner_bridges_super - this is a Steiner node graph reduction by `remove` only
+                removed += self.reduce_steiner_bridges_super()
+
+                if removed > 0:
+                    tmp_num_nodes = 0
+                    continue
 
             # Solve as tree for super root
             if (
