@@ -323,17 +323,16 @@ def _solve_composite_blocks_dp(
 
 def _generate_valid_partition_blocks(
     component_data: dict[int, ConnectedComponentMappings], interactivity_graph: PyDiGraph
-) -> tuple[dict[int, set[tuple]], int, int]:
+) -> tuple[dict[int, set[BlockKey]], int, int]:
     """Generate structurally valid blocks from all connected components.
     Returns a mapping from connected component index to a set of valid blocks
     """
     logger.trace("    generating valid partition blocks...")
 
-    valid_blocks: dict[int, set[tuple]] = defaultdict(set)
+    valid_blocks: dict[int, set[BlockKey]] = defaultdict(set)
     num_blocks = 0
     num_candidate_blocks = 0
 
-    # Phase 1 - generate structurally valid blocks (unchanged)
     for cc_i, cc_data in component_data.items():
         reachable = sorted(cc_data.get("reachable"))
         k = len(reachable)
