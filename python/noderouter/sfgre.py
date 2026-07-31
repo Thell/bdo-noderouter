@@ -1851,7 +1851,7 @@ class SFGraphReductionEngine:
             # Since super root was removed any super terminal test would violate which
             # could potentially cause extra edges to be forced in the solution...
             violates_demand = any(
-                not rx.has_path(tmp, r, t)
+                not rx.has_path(tmp, t, r)
                 for r, terminals in self.terminal_sets.items()
                 for t in terminals
                 if r != self.super_root_index
