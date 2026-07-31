@@ -3006,6 +3006,172 @@ class SFGraphReductionEngine:
         dist = self._local_dijkstra(center, radius, weight)
         return {u for u in dist if u in demand_nodes}
 
+    def reduce_eye_cycle_steiners(self) -> int:
+        """
+        Detects and reduces "eye" cycles: two or more internally-disjoint
+        degree-2 chains sharing the same pair of anchor endpoints, forming a
+        chordless cycle of length >= 4 whose interior may contain terminals,
+        provided every such terminal belongs to the same root's terminal set.
+
+        Chordlessness is a structural consequence of requiring every interior
+        node to be reduction_degree() == 2 -- such a node has no third edge to
+        chord with, so no separate check is needed.
+
+        For anchors {a, e} and interior terminals `required` (single root,
+        forced into every DW call since they are mandatory, never removal
+        candidates):
+
+            keep = OPT_ST({a} u required)
+                u OPT_ST({e} u required)
+                u OPT_ST({a, e} u required)
+            removable = interior_steiners - keep
+
+        The true optimum realizes exactly one of the three possible external
+        attachment patterns for this component (through a only, through e only,
+        or through both); whichever it is, that case is one of the three DW
+        calls, so the optimum's node set is a subset of `keep`. Any interior
+        Steiner node absent from all three is therefore absent from every
+        possible optimal realization.
+        """
+        logger.trace("reduce_eye_cycle_steiners...")
+
+        self.set_edge_weights()
+
+        roots = set(self.terminal_sets.keys())
+        terminal_root_of: dict[int, int] = {t: r for r, ts in self.terminal_sets.items() for t in ts}
+
+        def is_anchor(u: int) -> bool:
+            return (
+                u == self.super_root_index
+                or u in self.potential_roots
+                or u in roots
+                or self.reduction_degree(u) != 2
+            )
+
+        anchors = [n for n in self.graph.node_indices() if is_anchor(n)]
+
+        visited_edges: set[frozenset[int]] = set()
+        chains_by_pair: dict[frozenset[int], list[tuple[list[int], set[int]]]] = defaultdict(list)
+
+        for a in anchors:
+            for n in self.reduction_neighbors(a):
+                edge = frozenset((a, n))
+                if edge in visited_edges:
+                    continue
+                visited_edges.add(edge)
+
+                interior: list[int] | None = []
+                terminal_roots_seen: set[int] = set()
+                prev, curr = a, n
+
+                while not is_anchor(curr):
+                    interior.append(curr)
+                    if curr in terminal_root_of:
+                        terminal_roots_seen.add(terminal_root_of[curr])
+
+                    nbrs = self.reduction_neighbors(curr) - {prev}
+                    if len(nbrs) != 1:
+                        # Stale degree accounting; abandon this walk rather than certify on bad data.
+                        interior = None
+                        break
+
+                    nxt = next(iter(nbrs))
+                    visited_edges.add(frozenset((curr, nxt)))
+                    prev, curr = curr, nxt
+
+                if interior is None:
+                    continue
+
+                pair = frozenset((a, curr))
+                chains_by_pair[pair].append((interior, terminal_roots_seen))
+
+        removables: set[int] = set()
+        num_eyes = 0
+
+        for pair, chains in chains_by_pair.items():
+            if len(pair) != 2 or len(chains) < 2:
+                continue
+
+            # Worst-case (smallest) cycle formed by any two of the parallel chains
+            # must still meet the length-4 floor.
+            chain_lengths = sorted(len(interior) for interior, _ in chains)
+            if chain_lengths[0] + chain_lengths[1] + 2 < 4:
+                continue
+
+            combined_roots: set[int] = set()
+            for _, troots in chains:
+                combined_roots |= troots
+            if len(combined_roots) > 1:
+                continue  # ambiguous root ownership; not certifiable here
+
+            interior_set = {n for interior, _ in chains for n in interior}
+            interior_terminals = {n for n in interior_set if n in terminal_root_of}
+            interior_steiners = interior_set - interior_terminals
+            if not interior_steiners:
+                continue  # nothing to certify away
+
+            a, e = tuple(pair)
+            removable = self._reduce_eye_cycle_dreyfus_wagner(interior_set, {a, e}, interior_terminals)
+            if removable:
+                removables.update(removable)
+                num_eyes += 1
+
+        if removables:
+            self.graph.remove_nodes_from(removables)
+            logger.info(f"  removed {len(removables)} eye-cycle Steiner nodes across {num_eyes} eyes")
+            if self.do_debug:
+                logger.trace(f"    {sorted(self.get_node_key(n) for n in removables)}")
+                self.dump_state("reduce_eye_cycle_steiners", len(removables))
+                self.validate_reachability()
+
+        return len(removables)
+
+    def _reduce_eye_cycle_dreyfus_wagner(
+        self,
+        interior: set[int],
+        interfaces: set[int],
+        required: set[int],
+    ) -> set[int]:
+        """
+        Certifies removable Steiner nodes within a single eye cycle's interior.
+
+        `interfaces` = {a, e}, the two anchors bounding the eye.
+        `required` = interior terminals (single root), forced into every DW call.
+        """
+        component = interior | interfaces
+
+        local_nodes = list(component)
+        adj_map: dict[int, set[int]] = {n: set() for n in local_nodes}
+        node_weight_map: dict[int, int] = {}
+
+        for u in local_nodes:
+            nbrs = self.reduction_neighbors(u)
+            for v in nbrs:
+                if v in component:
+                    adj_map[u].add(v)
+            node_weight_map[u] = int(self.graph[u][PAYLOAD_WEIGHT_KEY])
+
+        def steiner_tree_nodes(terminals: tuple[int, ...]) -> set[int]:
+            terminals_list = list(terminals)
+            cost, _d_nodes, solution_nodes = nwst_dw.solve_nwst(
+                adj_map, node_weight_map, terminals_list, terminals_list[0]
+            )
+            if cost == 18446744073709551615:  # Rust u64::MAX sentinel
+                return set(terminals)
+            return set(solution_nodes)
+
+        a, e = tuple(interfaces)
+
+        keep: set[int] = set()
+        for subset in ({a}, {e}, {a, e}):
+            terms = tuple(sorted(subset | required))
+            if len(terms) < 2:
+                keep.update(terms)
+                continue
+            keep.update(steiner_tree_nodes(terms))
+
+        return (interior - required) - keep
+
     def solve_isolated_roots_as_trees(self) -> int:
         """
         Singleton root arbor reduction by interactivity isolation.
@@ -3762,6 +3928,11 @@ class SFGraphReductionEngine:
             # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
             if num_nodes == self.graph.num_nodes():
                 self.reduce_enclosed_steiner_clusters()
+
+            # reduce_eye_cycle_steiners - this is a Steiner node graph reduction by `remove` only
+            if num_nodes == self.graph.num_nodes() and self.reduce_eye_cycle_steiners() > 0:
+                tmp_num_nodes = 0
+                continue
 
             # NOTE: The following two reductions are virtually identical to the normal reductions but
             # have super root/terminal support. The are distinct from the normal reductions because
