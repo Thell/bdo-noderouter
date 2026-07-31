@@ -3723,9 +3723,9 @@ class SFGraphReductionEngine:
                 logger.success("  no terminal sets left. All demands are satisfied!")
                 break
 
-            # # Solve isolated roots - this is a terminal set and Steiner node reduction by `consumption` only
-            # if self.solve_isolated_roots_as_trees():
-            #     continue
+            # Solve isolated roots - this is a terminal set and Steiner node reduction by `consumption` only
+            if self.solve_isolated_roots_as_trees():
+                continue
 
             # MARK: Basic reductions
 
