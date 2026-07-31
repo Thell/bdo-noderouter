@@ -963,7 +963,7 @@ class SFGraphReductionEngine:
             for t in terminals:
                 # NOTE: traverse from terminal to root to ensure super terminal reachability
                 if not rx.has_path(self.graph, t, r):
-                    logger.error(f"Unreachable ts pair: {self.get_node_key(r)} → {self.get_node_key(t)}")
+                    logger.error(f"Unreachable ts pair: {self.get_node_key(t)} → {self.get_node_key(r)}")
                     all_ts_reachable = False
         if not all_ts_reachable:
             raise RuntimeError("Unreachable pairs")
