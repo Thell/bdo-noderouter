@@ -260,7 +260,7 @@ def _interactivity_graph(
     )
 
     interactivity_graph = subgraph_stable(G, coverage_representatives)
-    interactivity_graph.remove_edges_from(interactivity_graph.edges())
+    interactivity_graph.remove_edges_from(interactivity_graph.edge_list())
     interactivity_graph.add_edges_from(interactivity_edges)
 
     return interactivity_graph
