@@ -56,5 +56,5 @@ include = ["python/noderouter"]
 extraPaths = ["python/noderouter"]
 
 [tool.uv.sources]
-nwst-dw = { path = "../../Rust/nwst_dw" }
-sfpgre-cch = { path = "../../Rust/sfpgre_cch" }
+nwst-dw = { git = "https://github.com/Thell/nwst_dw" }
+sfpgre-cch = { git = "https://github.com/Thell/sfpgre_cch" }
