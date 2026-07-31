@@ -299,6 +299,7 @@ def _solve_composite_blocks_dp(
     block_results: BlockResults,
     block_costs: BlockCosts,
 ) -> CompositeSolution:
+    logger.warning(f"    _solve_composite_blocks_dp... ({len(block_results)})")
     block_results, block_costs = _retain_dominant_blocks_by_singletons(block_results, block_costs)
 
     block_mask_solutions, block_mask_costs = _blocks_to_blockmasks(
