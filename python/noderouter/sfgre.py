@@ -997,7 +997,9 @@ class SFGraphReductionEngine:
         num_nodes = self.graph.num_nodes()
         num_roots = len(self.terminal_sets)
         num_terminals = len(set().union(*self.terminal_sets.values()))
-        num_super_terminals = len(self.terminal_sets[self.super_root_index])
+        num_super_terminals = (
+            len(self.terminal_sets[self.super_root_index]) if self.super_root_index is not None else 0
+        )
 
         for choose_count in range(1, num_roots + 1):
             for comb in combinations(self.terminal_sets.keys(), choose_count):
