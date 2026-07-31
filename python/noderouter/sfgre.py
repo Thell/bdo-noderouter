@@ -423,7 +423,7 @@ def _retain_dominant_blocks_by_distance(
                 for i, ti in enumerate(terminals)
                 for tj in terminals[i + 1 :]
             )
-            logger.trace(f"(max t -> t dist {max_dist:.2f}, singleton-sum {singleton_sum:.2f})")
+
             if max_dist > singleton_sum:
                 num_dist_pruned += 1
                 continue
