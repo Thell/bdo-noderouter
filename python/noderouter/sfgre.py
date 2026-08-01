@@ -293,6 +293,64 @@ def _problem_generator(
     )
 
 
+def _solve_treeproblem_tasks(
+    problem_generator: Generator[TreeProblem],
+    num_problems: int,
+    results_dest: dict[tuple[int, ...], int],
+    costs_dest: dict[tuple[int, ...], int],
+):
+    """Solves the given tree problems switching between sequential and concurrent based on num_problems
+    using the auto-switching `solve_tree` function which switches between DW and scipstp.
+    """
+    orig_num_results = len(results_dest)
+
+    # Yes, really, empirically it is 42, lol.
+    if num_problems >= 42:
+        logger.warning("    _solve_treeproblem_tasks: solving concurrently...")
+
+        try:
+            with ProcessPoolExecutor(max_workers=14) as executor:
+                chunksize = max(1, min(256, num_problems // 16))
+                logger.warning(f"    chunksize: {chunksize}")
+
+                # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
+                results = executor.map(solve_tree, problem_generator, chunksize=chunksize)
+
+                for completed_count, (block_key, cost, mask) in enumerate(results, start=1):
+                    if completed_count % 1_000 == 0:
+                        logger.warning(
+                            f"    solved ({completed_count}/{num_problems}) {completed_count / num_problems:.2%}..."
+                        )
+
+                    results_dest[block_key] = mask
+                    costs_dest[block_key] = cost
+
+        except BrokenProcessPool as e:
+            logger.critical(f"Instance failed: Worker process died violently (OOM or Segfault). {e}")
+            print(e)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Instance failed: Python exception bubbled up from worker: {e}")
+            print(e, file=sys.stderr)
+
+    else:
+        logger.warning("    _solve_treeproblem_tasks: solving sequentially...")
+
+        for block_n, problem in enumerate(problem_generator, start=1):
+            logger.trace(f"    solving ({block_n}/{num_problems}) block {problem.block_key}...")
+
+            # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
+            block_key, cost, mask = solve_tree(problem)
+
+            logger.trace(
+                f"    solved ({block_n}/{num_problems}) block {block_key} containing {len(problem.terminals)} terminals with cost {cost}"
+            )
+
+            results_dest[block_key] = mask
+            costs_dest[block_key] = cost
+
+    logger.warning(f"    solved {len(results_dest) - orig_num_results} unique valid blocks ..")
+
+
 def _solve_composite_blocks_dp(
     G: PyDiGraph,
     coverage_representatives: CoverageRepresentatives,
@@ -3505,7 +3563,7 @@ class SFGraphReductionEngine:
 
         block_results = dict(non_super_dp_block_results)
         block_costs = dict(non_super_dp_block_costs)
-        self._solve_treeproblem_tasks(
+        _solve_treeproblem_tasks(
             problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
         )
 
@@ -3659,7 +3717,7 @@ class SFGraphReductionEngine:
         num_problems = len(composite_tasks)
         self.solved_trees += num_problems
 
-        self._solve_treeproblem_tasks(
+        _solve_treeproblem_tasks(
             problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
         )
 
@@ -3785,7 +3843,7 @@ class SFGraphReductionEngine:
             f"    solving {num_problems} surviving of {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
         )
 
-        self._solve_treeproblem_tasks(
+        _solve_treeproblem_tasks(
             problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
         )
 
@@ -3809,63 +3867,6 @@ class SFGraphReductionEngine:
             dp_block_results,
             dp_block_costs,
         )
-
-    def _solve_treeproblem_tasks(
-        self,
-        problem_generator: Generator[TreeProblem],
-        num_problems: int,
-        results_dest: dict[tuple[int, ...], int],
-        costs_dest: dict[tuple[int, ...], int],
-    ):
-        orig_num_results = len(results_dest)
-
-        # Yes, really, empirically it is 42, lol.
-        if num_problems >= 42:
-            logger.warning("    _solve_treeproblem_tasks: solving concurrently...")
-
-            try:
-                with ProcessPoolExecutor(max_workers=14) as executor:
-                    chunksize = max(1, min(256, num_problems // 16))
-                    logger.warning(f"    chunksize: {chunksize}")
-
-                    # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
-                    results = executor.map(solve_tree, problem_generator, chunksize=chunksize)
-
-                    for completed_count, (block_key, cost, mask) in enumerate(results, start=1):
-                        if completed_count % 1_000 == 0:
-                            logger.warning(
-                                f"    solved ({completed_count}/{num_problems}) {completed_count / num_problems:.2%}..."
-                            )
-
-                        results_dest[block_key] = mask
-                        costs_dest[block_key] = cost
-
-            except BrokenProcessPool as e:
-                logger.critical(f"Instance failed: Worker process died violently (OOM or Segfault). {e}")
-                print(e)
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"Instance failed: Python exception bubbled up from worker: {e}")
-                print(e, file=sys.stderr)
-
-        else:
-            logger.warning("    _solve_treeproblem_tasks: solving sequentially...")
-
-            for block_n, problem in enumerate(problem_generator, start=1):
-                logger.trace(f"    solving ({block_n}/{num_problems}) block {problem.block_key}...")
-
-                # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
-                block_key, cost, mask = solve_tree(problem)
-
-                logger.trace(
-                    f"    solved ({block_n}/{num_problems}) block {block_key} containing {len(problem.terminals)} terminals with cost {cost}"
-                )
-
-                results_dest[block_key] = mask
-                costs_dest[block_key] = cost
-
-        logger.warning(
-            f"    solved {len(results_dest) - orig_num_results} unique valid blocks .."
-        )  # of {num_candidate_blocks} ({len(results_dest) / num_candidate_blocks:.2%})"
 
     def _interactivity_graph(
         self,
