@@ -475,7 +475,7 @@ def _retain_dominant_blocks_by_distance(
 
             mst_weight = metric_closure_mst_weight(terminals, terminal_to_terminal_distances)
             lower_bound = steiner_lower_bound(mst_weight, len(terminals))
-            logger.trace(f"(MST lower bound {lower_bound:.2f}, singleton-sum {singleton_sum:.2f})")
+
             if lower_bound > singleton_sum:
                 num_mst_pruned += 1
                 continue
