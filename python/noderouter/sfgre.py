@@ -3156,7 +3156,7 @@ class SFGraphReductionEngine:
 
         # --- Solve as tree ---
         start_time = time()
-        solution = self.solve_with_scipstp_super(candidate_roots)
+        solution = self.solve_as_tree_composite_super(candidate_roots)
         end_time = time()
 
         removables = set(self.graph.node_indices()) - set(solution)
@@ -3406,7 +3406,7 @@ class SFGraphReductionEngine:
             filtered.append((u, v, gap))
         return filtered
 
-    def solve_with_scipstp_super(
+    def solve_as_tree_composite_super(
         self,
         candidate_roots: dict[int, set[int]],
     ):
