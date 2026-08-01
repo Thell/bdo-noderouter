@@ -3264,6 +3264,36 @@ class SFGraphReductionEngine:
 
         return removals
 
+    def solve_as_path(self):
+        """Solves a single remaining terminal -> root path and resolves the full problem space."""
+        logger.trace("solve_as_path...")
+
+        assert len(self.terminal_sets) == 1
+        root = next(iter(self.terminal_sets.keys()))
+        assert len(self.terminal_sets[root]) == 1
+        terminal = next(iter(self.terminal_sets[root]))
+
+        self.set_edge_weights()
+        paths = rx.all_shortest_paths(self.graph, terminal, root, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
+
+        # NOTE: We retain any ambiguity in parallel paths since MIP presolve
+        #       will resolve it with the benefit of the fixed_nodes structure
+        #       more efficiently.
+        witnessed = set().union(*paths)
+        removables = set(self.graph.node_indices()) - witnessed
+        removals = len(removables)
+
+        if removables:
+            self.graph.remove_nodes_from(removables)
+            logger.info(f"    solve_as_path: removed {removals} dead solution nodes")
+
+            if self.do_debug:
+                logger.trace(f"    {sorted(self.get_node_key(i) for i in removables)}")
+                self.dump_state("solve_as_path", removals)
+                self.validate_reachability()
+
+        return removals
+
     # MARK: Tree Solvers
 
     def solve_root_with_dw(self, root: int):
@@ -3963,6 +3993,9 @@ class SFGraphReductionEngine:
 
             # Reduce degree1 roots - this is a Steiner node graph reduction by `consume` with terminal set consolidation
             self.reduce_degree1_roots()
+
+            if len(self.terminal_sets) == 1 and len(next(iter(self.terminal_sets.values()))) == 1:
+                self.solve_as_path()
 
             if num_nodes != self.graph.num_nodes():
                 logger.info("  repeating simple reductions...")
