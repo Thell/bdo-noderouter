@@ -2979,6 +2979,8 @@ class SFGraphReductionEngine:
             min_drt = float("inf")
             for r, terminals in self.terminal_sets.items():
                 for t in terminals | {r}:
+                    if t == self.super_root_index:
+                        continue
                     min_drt = min(min_drt, self.shortest_path_length(v, t))
 
             if min_drt > min_max_drt:
