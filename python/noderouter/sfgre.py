@@ -254,7 +254,6 @@ def _interactivity_graph(
             paths = rx.all_shortest_paths(G, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
             arbor_rt_all_shortest_path_unions[r].update(*paths)
 
-    # TODO: check how the interactivity edges handle the presence of super root...
     interactivity_edges = get_interactivity_edges(
         G, coverage_sets, node_weight_map, arbor_rt_all_shortest_path_unions
     )
@@ -263,7 +262,75 @@ def _interactivity_graph(
     interactivity_graph.remove_edges_from(interactivity_graph.edge_list())
     interactivity_graph.add_edges_from(interactivity_edges)
 
+    connected_pairs = _steiner_connected_root_pairs(G, coverage_sets)
+    num_dropped = _filter_interactivity_edges(interactivity_graph, connected_pairs)
+    if num_dropped:
+        # Using error during prototyping to stand out in logs, should be trace
+        logger.error(f"    dropped {num_dropped} interactivity edges lacking a Steiner-only path")
+
     return interactivity_graph
+
+
+def _steiner_connected_root_pairs(
+    G: PyDiGraph, coverage_sets: dict[int, set[int]], super_root_index: int | None = None
+) -> set[tuple[int, int]]:
+    """Root pairs (r, s) that share a genuine Steiner-only path in G.
+
+    A composite solve of r and s only has synergy to exploit if some path
+    connecting their arbors is not underwritten by a third root's already-
+    committed demand nodes -- that node's cost is paid in full by whichever
+    block contains it regardless of partitioning, so a detour through it
+    buys no sharing. Certifies exclusion only: absence of any Steiner-only
+    path means the gap/drt admission test was measuring proximity through
+    someone else's territory, not real interactivity.
+    """
+    non_steiner = set(coverage_sets.keys()) | set().union(*coverage_sets.values())
+
+    steiner_nodes = set(G.node_indices()) - non_steiner
+
+    if super_root_index is not None:
+        steiner_nodes.discard(super_root_index)
+        non_steiner.discard(super_root_index)
+
+    steiner_sub = subgraph_stable(G, steiner_nodes)
+    steiner_components = rx.weakly_connected_components(steiner_sub)
+
+    node_to_comp: dict[int, int] = {}
+    for comp_i, comp in enumerate(steiner_components):
+        for n in comp:
+            node_to_comp[n] = comp_i
+
+    root_components: dict[int, set[int]] = {}
+    for r, terminals in coverage_sets.items():
+        comps = set()
+        for d in terminals | {r}:
+            for nbr in G.predecessor_indices(d):
+                if nbr in node_to_comp:
+                    comps.add(node_to_comp[nbr])
+        root_components[r] = comps
+
+    connected_pairs = set()
+    roots = sorted(root_components.keys())
+    for i, r in enumerate(roots):
+        for s in roots[i + 1 :]:
+            if root_components[r] & root_components[s]:
+                connected_pairs.add((r, s))
+            elif G.has_edge(r, s) or G.has_edge(s, r):
+                # Directly adjacent roots should already be merged by
+                # reduce_adjacent_terminals -- kept here defensively.
+                connected_pairs.add((r, s))
+
+    return connected_pairs
+
+
+def _filter_interactivity_edges(interactivity_graph: PyDiGraph, connected_pairs: set[tuple[int, int]]) -> int:
+    removed = 0
+    for u, v in list(interactivity_graph.edge_list()):
+        key = (u, v) if u < v else (v, u)
+        if key not in connected_pairs:
+            interactivity_graph.remove_edge(u, v)
+            removed += 1
+    return removed
 
 
 def _problem_generator(
@@ -3656,6 +3723,11 @@ class SFGraphReductionEngine:
         interactivity_graph.remove_edges_from(interactivity_graph.edge_list())
         interactivity_graph.add_edges_from(interactivity_edges)
         composite_interactivity_graph = interactivity_graph
+
+        connected_pairs = _steiner_connected_root_pairs(G, interactivity_composite_coverage_sets, sr_index)
+        num_dropped = _filter_interactivity_edges(interactivity_graph, connected_pairs)
+        if num_dropped:
+            logger.error(f"    dropped {num_dropped} interactivity edges lacking a Steiner-only path")
 
         if self.do_debug:
             print(f"      max_drt = {self.min_max_rt_distance}")
