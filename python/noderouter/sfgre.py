@@ -265,8 +265,7 @@ def _interactivity_graph(
     connected_pairs = _steiner_connected_root_pairs(G, coverage_sets)
     num_dropped = _filter_interactivity_edges(interactivity_graph, connected_pairs)
     if num_dropped:
-        # Using error during prototyping to stand out in logs, should be trace
-        logger.error(f"    dropped {num_dropped} interactivity edges lacking a Steiner-only path")
+        logger.warning(f"    dropped {num_dropped} blocked interactivity")
 
     return interactivity_graph
 
@@ -3727,7 +3726,7 @@ class SFGraphReductionEngine:
         connected_pairs = _steiner_connected_root_pairs(G, interactivity_composite_coverage_sets, sr_index)
         num_dropped = _filter_interactivity_edges(interactivity_graph, connected_pairs)
         if num_dropped:
-            logger.error(f"    dropped {num_dropped} interactivity edges lacking a Steiner-only path")
+            logger.warning(f"    dropped {num_dropped} blocked interactivity edges")
 
         if self.do_debug:
             print(f"      max_drt = {self.min_max_rt_distance}")
