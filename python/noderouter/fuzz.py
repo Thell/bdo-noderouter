@@ -731,6 +731,6 @@ if __name__ == "__main__":
 
     # # For normal fuzzing use [False, True]
     # include_danger = [False, True]
-    danger_states = [False]
+    danger_states = [True]
 
     fuzzer_main(strategies, samples, budgets, danger_states)

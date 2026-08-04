@@ -162,7 +162,8 @@ type MaskedBlockResults = dict[BlockMask, BlockResults]
 type MaskedBlockSolutionMasks = dict[BlockMask, SolutionMask]
 
 # Tuple Types
-type BlockTask = tuple[ConnectedComponentMappingKey, BlockKey, TerminalsList]
+# type BlockTask = tuple[ConnectedComponentMappingKey, BlockKey, TerminalsList]
+type BlockTask = tuple[ConnectedComponentMappingKey, BlockKey, TerminalsList, int]  # int is sr_index
 type CompositeSolution = tuple[SolutionSet, Cost, BlockResults, BlockCosts]
 
 
@@ -230,7 +231,7 @@ def _connected_component_mappings(
             "inv_dimacs_id_map": inv_dimacs_id,
         }
 
-    logger.warning(
+    logger.trace(
         f"      identified {len(component_data)} reachability component(s): {[len(cc_data.get('reachable')) for cc_data in component_data.values()]}"
     )
 
@@ -238,31 +239,35 @@ def _connected_component_mappings(
 
 
 def _interactivity_graph(
-    G: PyDiGraph,
+    paths_G: PyDiGraph,
+    interactivity_G: PyDiGraph,
     coverage_sets: CoverageSets,
+    super_root_index: int | None = None,
 ) -> PyDiGraph:
     """Creates the interactivity graph for the given reduced state graph over the given coverage sets."""
     coverage_representatives = set(coverage_sets.keys())
-    node_weight_map = {u: G[u][PAYLOAD_WEIGHT_KEY] for u in G.node_indices()}
+    node_weight_map = {u: paths_G[u][PAYLOAD_WEIGHT_KEY] for u in paths_G.node_indices()}
 
+    # NOTE: We have to use self.graph to capture st -> sr paths here...
     # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
     arbor_rt_all_shortest_path_unions = {r: set() for r in coverage_representatives}
     for r, terminals in coverage_sets.items():
         if r not in coverage_representatives:
             continue
         for t in terminals:
-            paths = rx.all_shortest_paths(G, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
+            paths = rx.all_shortest_paths(paths_G, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
             arbor_rt_all_shortest_path_unions[r].update(*paths)
 
+    # NOTE: We can't use self.graph with a super root or gaps will collapse
     interactivity_edges = get_interactivity_edges(
-        G, coverage_sets, node_weight_map, arbor_rt_all_shortest_path_unions
+        interactivity_G, coverage_sets, node_weight_map, arbor_rt_all_shortest_path_unions
     )
 
-    interactivity_graph = subgraph_stable(G, coverage_representatives)
+    interactivity_graph = subgraph_stable(paths_G, coverage_representatives)
     interactivity_graph.remove_edges_from(interactivity_graph.edge_list())
     interactivity_graph.add_edges_from(interactivity_edges)
 
-    connected_pairs = _steiner_connected_root_pairs(G, coverage_sets)
+    connected_pairs = _steiner_connected_root_pairs(paths_G, coverage_sets, super_root_index)
     num_dropped = _filter_interactivity_edges(interactivity_graph, connected_pairs)
     if num_dropped:
         logger.warning(f"    dropped {num_dropped} blocked interactivity")
@@ -358,7 +363,6 @@ def _problem_generator(
     component_data: dict[ConnectedComponentMappingKey, ConnectedComponentMappings],
     node_weight_map: dict[int, int],
     tasks: list[BlockTask],
-    sr_index: int = 0,
     do_debug: bool = False,
     mip_validation: bool = True,
 ) -> Generator[TreeProblem]:
@@ -372,7 +376,7 @@ def _problem_generator(
             node_index_map=component_data[task[0]]["node_index_map"],
             dimacs_id_map=component_data[task[0]]["dimacs_id_map"],
             inv_dimacs_id_map=component_data[task[0]]["inv_dimacs_id_map"],
-            enable_super_root_index=sr_index,
+            enable_super_root_index=task[3],
             do_debug=do_debug,
             mip_validation=mip_validation,
         )
@@ -526,7 +530,7 @@ def _retain_dominant_composite_tasks_by_distance(
     surviving = []
     num_dist_pruned = num_mst_pruned = 0
 
-    for block_key, terminals, sr_index in tasks:
+    for cc_i, block_key, terminals, sr_index in tasks:
         real_terminals = [t for t in terminals if t != sr]
         singleton_sum = sum(block_costs[(comp,)] for comp in block_key)
 
@@ -545,7 +549,12 @@ def _retain_dominant_composite_tasks_by_distance(
             num_mst_pruned += 1
             continue
 
-        surviving.append((block_key, terminals, sr_index))
+        surviving.append((
+            cc_i,
+            block_key,
+            terminals,
+            sr_index,
+        ))
 
     num_pruned = num_dist_pruned + num_mst_pruned
     logger.warning(
@@ -562,6 +571,8 @@ def _retain_dominant_blocks_by_distance(
     terminal_to_terminal_distances: dict[tuple[int, int], int | float],
 ) -> list[BlockTask]:
     logger.warning(f"    retaining dominant blocks by distance... ({len(valid_blocks)})")
+    # NOTE: This should only be used on non-super solve as tree pathways as it sets the task
+    #       super_root_index to zero (which is disabled)!
 
     # NOTE: OPT >= W_MST / (2 - 2/k) (KMB). If that lower bound already exceeds the cheapest
     #       decomposition we can prove right now (singleton sum), no joint solve can beat it.
@@ -597,7 +608,7 @@ def _retain_dominant_blocks_by_distance(
                 num_mst_pruned += 1
                 continue
 
-            surviving_tasks.append((cc_i, block_key, terminals))
+            surviving_tasks.append((cc_i, block_key, terminals, 0))
 
     num_bound_pruned = num_dist_pruned + num_mst_pruned
     num_composite_blocks = sum(1 for blocks in valid_blocks.values() for bk in blocks if len(bk) > 1)
@@ -1299,7 +1310,7 @@ class SFGraphReductionEngine:
                 complexity += (3**num_terms * num_nodes) + (2**num_terms) * (num_nodes**2)
 
         # TODO: Change back to info level after seeing how well scipstp scales...
-        logger.warning(
+        logger.debug(
             f"    remaining complexity: {complexity}, |r|: {num_roots}, |t|: {num_terminals}, |n|: {num_nodes} (st: {num_super_terminals})"
         )
 
@@ -1466,11 +1477,12 @@ class SFGraphReductionEngine:
 
         collisions: set[int] = set()
         guaranteed_sinks: set[int] = set()
-        radius = 2 * self.min_max_rt_distance
+        non_steiners: set[int] = self.non_steiner_nodes()
+        radius_cap = 2 * self.min_max_rt_distance
         weight_map = self.node_weight_map
 
         for st in self.terminal_sets[self.super_root_index]:
-            st_collisions = self._collision_envelope(st, weight_map, radius)
+            st_collisions = self._collision_envelope(st, non_steiners, weight_map, radius_cap)
             collisions |= st_collisions
 
             # The collision envelope is a radius-based reachability guarantee, but
@@ -3142,7 +3154,7 @@ class SFGraphReductionEngine:
         logger.trace("solve_isolated_roots_as_trees...")
 
         self.set_edge_weights()
-        interactivity_graph = self._interactivity_graph(self.graph, self.terminal_sets)
+        interactivity_graph = self._interactivity_graph(self.graph, self.graph, self.terminal_sets)
         isolates = rx.isolates(interactivity_graph)
         if not isolates:
             return 0
@@ -3426,9 +3438,7 @@ class SFGraphReductionEngine:
         dict[tuple[int, ...], int],
     ]:
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
-        logger.trace("solve_with_scipstp...")
-
-        self.dump_graph("solve_with_scipstp: pre-solve")
+        logger.warning("  solve_as_tree_composite...")
 
         # Sometimes all that is left are super terminals and there's nothing to be done here...
         if not coverage_sets:
@@ -3437,7 +3447,7 @@ class SFGraphReductionEngine:
         coverage_representatives = set(coverage_sets.keys())
 
         _root_component_index_map, component_data = _connected_component_mappings(G, coverage_representatives)
-        interactivity_graph = self._interactivity_graph(G, coverage_sets)
+        interactivity_graph = self._interactivity_graph(G, G, coverage_sets)
         weight_map = {i: G[i][PAYLOAD_WEIGHT_KEY] for i in G.node_indices()}
 
         # Phase 1 - block preparation
@@ -3449,7 +3459,7 @@ class SFGraphReductionEngine:
         # --- Wave 1: singletons. These are the atoms of every decomposition --
         # there's nothing to prune them against, so they always get solved.
         singleton_tasks = [
-            (cc_i, block_key, block_terminals[(cc_i, block_key)])
+            (cc_i, block_key, block_terminals[(cc_i, block_key)], 0)
             for cc_i, blocks in valid_blocks.items()
             for block_key in blocks
             if len(block_key) == 1
@@ -3474,18 +3484,9 @@ class SFGraphReductionEngine:
         )
 
         self.solved_trees += len(singleton_tasks)
-        for block_n, problem in enumerate(problem_generator, start=1):
-            logger.trace(f"    solving ({block_n}/{num_blocks}) block {problem.block_key}...")
-
-            # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
-            block_key, cost, mask = solve_tree(problem)
-
-            logger.trace(
-                f"    solved ({block_n}/{num_blocks}) block {block_key} containing {len(problem.terminals)} terminals with cost {cost}"
-            )
-
-            block_results[block_key] = mask
-            block_costs[block_key] = cost
+        _solve_treeproblem_tasks(
+            problem_generator, len(singleton_tasks), results_dest=block_results, costs_dest=block_costs
+        )
 
         # Phase 2 (Wave 2 gate) - filter by dominance using max_dist/MST bound and primitive cost
         # NOTE: OPT >= W_MST / (2 - 2/k) (KMB). If that lower bound already exceeds the cheapest
@@ -3555,7 +3556,7 @@ class SFGraphReductionEngine:
         non_super_dp_block_costs: dict[tuple[int, ...], int],
     ):
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
-        logger.warning("    solve_with_scipstp_super...")
+        logger.warning("  solve_as_tree_composite_super...")
 
         assert self.super_root_index is not None, "super root index must be set"
 
@@ -3563,257 +3564,142 @@ class SFGraphReductionEngine:
         non_super_valid_blocks = set().union(*non_super_valid_blocks.values())
         non_super_dominated_blocks = set(non_super_valid_blocks) - set(non_super_dp_block_results.keys())
 
-        # Even though scipstp NWSTP is fully a node weighted setup the rustworkx graph isn't pickleable
-        # so we need to pass in the adjacency map and node weights
-        adj_map = {u: sorted(self.reduction_neighbors(u)) for u in self.graph.node_indices()}
         node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
 
-        roots = list(set(self.terminal_sets.keys()) - {self.super_root_index})
+        roots = set(self.terminal_sets.keys()) - {self.super_root_index}
         super_terminals = sorted(candidate_roots.keys())
-        coverage_entities = roots + super_terminals
-
-        # Root reachability for component generation...
-        logger.trace("      building reachability matrix...")
-        reachable = {r: {r} for r in coverage_entities}
-        for i, u in enumerate(coverage_entities):
-            for covered_entity in coverage_entities[i + 1 :]:
-                if rx.has_path(self.graph, u, covered_entity):
-                    reachable[u].add(covered_entity)
-                    reachable[covered_entity].add(u)
-
-        # Connected root components generation...
-        components = []
-        remaining_roots = set(coverage_entities)
-        while remaining_roots:
-            root = next(iter(remaining_roots))
-            component = sorted(reachable[root])
-            components.append(component)
-            remaining_roots -= reachable[root]
-
-        logger.trace(
-            f"      identified {len(components)} reachability component(s): {[len(c) for c in components]}"
-        )
-
-        # For index masking...
-        nodes_list = list(self.graph.node_indices())
-        node_index = {u: i for i, u in enumerate(nodes_list)}
-
-        # DIMACS node ids are 1-based, contiguous
-        dimacs_id = {u: i + 1 for i, u in enumerate(nodes_list)}
-        inv_dimacs_id = {i + 1: u for i, u in enumerate(nodes_list)}
-
-        # Partition filtering...
-        logger.trace("    generating valid partition blocks...")
-
-        # Since the partition DP reconstructs the optimal partitioning, we only need
-        # to generate the valid blocks. Any valid block must be wholly contained
-        # within a single reachability component.
-        valid_blocks = set()
-        for component in components:
-            logger.trace(f"      generating blocks for component size={len(component)}...")
-            k = len(component)
-            for mask in range(1, 1 << k):
-                block = tuple(component[i] for i in range(k) if mask & (1 << i))
-                valid_blocks.add(block)
-        logger.trace(f"    generated valid blocks ({len(valid_blocks)})")
-
-        # Filter valid blocks by removing all non-super dominated blocks...
-        valid_blocks -= non_super_dominated_blocks
-        logger.trace(
-            f"    filtered {len(non_super_dominated_blocks)} valid blocks by non-super blocks... ({len(valid_blocks)}) remaining"
-        )
-
-        skipped_presolved_block_count = 0
         super_terminals_set = set(super_terminals)
+        coverage_entities = roots | super_terminals_set
 
-        # --- Generate tasks ---
-        singleton_tasks = []
-        composite_tasks = []
-
-        # Sort all remaining valid blocks by block key length and block key
-        valid_blocks = sorted(valid_blocks, key=lambda b: (len(b), b))
-
-        for block_key in valid_blocks:
-            terminals = set()
-
-            # A super terminal behaves as a terminal in the presence of another root,
-            # yet it behaves as a root with a single terminal (the super root) when
-            # there are no other roots. This enforces potential root transit when the
-            # super terminals are considered in isolation.
-            sr_index = 0  # disabled
-            if all(i in super_terminals for i in block_key):
-                terminals.add(self.super_root_index)
-                sr_index = self.super_root_index
-
-            for k in block_key:
-                terminals.add(k)
-                if k not in super_terminals:
-                    terminals.update(self.terminal_sets[k])
-
-            if not terminals & super_terminals_set:
-                skipped_presolved_block_count += 1
-                continue
-
-            terminals = sorted(terminals)
-            task = (block_key, terminals, sr_index)
-            if len(block_key) == 1 or len(block_key) == 2 and sr_index == block_key[1]:
-                singleton_tasks.append(task)
-            else:
-                composite_tasks.append(task)
-
-        logger.warning(f"    skipped resolving presolved blocks: {skipped_presolved_block_count}")
-        num_singleton_tasks = len(singleton_tasks)
-        num_composite_tasks = len(composite_tasks)
-        print(
-            f"    num tasks: {num_singleton_tasks + num_composite_tasks} (singletons: {num_singleton_tasks}) (composites: {num_composite_tasks})"
-        )
-
-        # --- Solve singleton tasks ---
-        problem_generator = (
-            TreeProblem(
-                instance_id=self.instance_id,
-                block_key=task[0],
-                terminals=task[1],
-                adj_map=adj_map,
-                node_weight_map=node_weight_map,
-                node_index_map=node_index,
-                dimacs_id_map=dimacs_id,
-                inv_dimacs_id_map=inv_dimacs_id,
-                enable_super_root_index=task[2],
-                do_debug=self.do_debug,
-                mip_validation=False,
-            )
-            for task in singleton_tasks
-        )
-        num_problems = len(singleton_tasks)
-
-        block_results = dict(non_super_dp_block_results)
-        block_costs = dict(non_super_dp_block_costs)
-        _solve_treeproblem_tasks(
-            problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
-        )
-
-        # --- Composite representatives interactivity setup ---
-        # Super terminal envelopes... super root
+        # --- Composite coverage representatives ---
         st_interactivity_coverage_sets: CoverageSets = defaultdict(set)
         for t in super_terminals:
             paths = rx.all_shortest_paths(
                 self.graph, t, self.super_root_index, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY]
             )
             trimmed = [p[:-1] for p in paths]  # drop the synthetic sr hop
-            logger.trace(f"st: {t} -> {sr_index}: {[[self.get_node_key(v) for v in p] for p in trimmed]}")
+            logger.trace(
+                f"st: {t} -> {self.super_root_index}: {[[self.get_node_key(v) for v in p] for p in trimmed]}"
+            )
             st_interactivity_coverage_sets[t] = {p[-1] for p in trimmed}
 
-        # Super terminal envelopes... candidate roots
         for t in super_terminals:
             st_interactivity_coverage_sets[t] |= set(candidate_roots[t])
 
         interactivity_composite_coverage_sets = dict(non_super_coverage_representatives)
-
         for k, covered_entities in st_interactivity_coverage_sets.items():
             interactivity_composite_coverage_sets[k] = covered_entities
 
-        # Special case handling for path unions...
-        G = self.graph
-
-        # Drop all instances of super root from all coverage sets
+        # Drop all instances of super root from all coverage sets since sr_index isn't
+        # a valid root to index into.
         for s in interactivity_composite_coverage_sets.values():
             s.discard(self.super_root_index)
 
-        coverage_representatives = set(interactivity_composite_coverage_sets.keys())
-        node_weight_map = {u: G[u][PAYLOAD_WEIGHT_KEY] for u in G.node_indices()}
+        interactivity_graph = self._interactivity_graph(
+            self.graph, non_super_G, interactivity_composite_coverage_sets
+        )
 
-        # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
-        arbor_rt_all_shortest_path_unions = {r: set() for r in interactivity_composite_coverage_sets}
-        for r, terminals in interactivity_composite_coverage_sets.items():
-            if r not in coverage_representatives:
-                continue
-            for t in terminals:
-                paths = rx.all_shortest_paths(G, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
-                arbor_rt_all_shortest_path_unions[r].update(*paths)
+        # --- Component generation ---
+        _root_component_index_map, component_data = _connected_component_mappings(
+            self.graph, coverage_entities, self.super_root_index
+        )
 
-        interactivity_edges = get_interactivity_edges(
-            non_super_G,
-            interactivity_composite_coverage_sets,
+        # The super root is always its own trivial SCC (pure sink), so `component_data`
+        # carries no adjacency entry for it. A block folding all remaining super terminals
+        # into a lone-root TreeProblem needs `adj_map[super_root_index]` populated with just
+        # the potential roots reachable within that component.
+        sr_predecessors = self.reduction_neighbors(self.super_root_index)
+        for cc_data in component_data.values():
+            local_sr_preds = sr_predecessors & cc_data["component"]
+            if local_sr_preds:
+                cc_data["adj_map"][self.super_root_index] = sorted(local_sr_preds)
+
+        # Phase 1 - block preparation
+        valid_blocks, num_blocks, num_candidate_blocks = _generate_valid_partition_blocks(
+            component_data, interactivity_graph
+        )
+
+        for cc_i in valid_blocks:
+            valid_blocks[cc_i] -= non_super_dominated_blocks
+        num_surviving_blocks = sum(len(b) for b in valid_blocks.values())
+        logger.warning(
+            f"    filtered {num_blocks - num_surviving_blocks} valid blocks by non-super blocks... "
+            f"({num_surviving_blocks}) remaining"
+        )
+
+        skipped_presolved_block_count = 0
+
+        # --- Generate tasks ---
+        singleton_tasks: list[BlockTask] = []
+        composite_tasks: list[BlockTask] = []
+
+        for cc_i, blocks in valid_blocks.items():
+            for block_key in blocks:
+                terminals = set()
+
+                # A super terminal behaves as a terminal in the presence of another root,
+                # yet it behaves as a root with a single terminal (the super root) when
+                # there are no other roots. This enforces potential root transit when the
+                # super terminals are considered in isolation.
+                block_sr_index = 0  # disabled
+                if all(i in super_terminals for i in block_key):
+                    terminals.add(self.super_root_index)
+                    block_sr_index = self.super_root_index
+
+                for k in block_key:
+                    terminals.add(k)
+                    if k not in super_terminals:
+                        terminals.update(self.terminal_sets[k])
+
+                if not terminals & super_terminals_set:
+                    skipped_presolved_block_count += 1
+                    continue
+
+                terminals = sorted(terminals)
+                task = (cc_i, block_key, terminals, block_sr_index)
+                if len(block_key) == 1 or len(block_key) == 2 and block_sr_index == block_key[1]:
+                    singleton_tasks.append(task)
+                else:
+                    composite_tasks.append(task)
+
+        logger.warning(f"    skipping resolving {skipped_presolved_block_count} non-super blocks...")
+
+        # --- Wave 1: singletons. These are the atoms of every decomposition --
+        # there's nothing to prune them against, so they always get solved.
+        problem_generator = _problem_generator(
+            self.instance_id,
+            component_data,
             node_weight_map,
-            arbor_rt_all_shortest_path_unions,
+            singleton_tasks,
+            do_debug=self.do_debug,
+            mip_validation=False,
         )
-        filtered_interactivity_edges = self._filter_blocked_st_interactivity_edges(
-            interactivity_edges, candidate_roots, set(super_terminals)
-        )
+
+        # NOTE: Long lived collections throughout the solving phases
+        # Pre-populated with non-super block results for filtering and final DP solving
+        block_results = dict(non_super_dp_block_results)
+        block_costs = dict(non_super_dp_block_costs)
+
+        # Solve all singletons for usage in composite block filtering (Wave 2)
         logger.warning(
-            f"    filtered ({len(interactivity_edges)} -> {len(filtered_interactivity_edges)}) interactivity edges..."
+            f"    sequentially solving {len(singleton_tasks)} singleton blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
         )
-        interactivity_edges = filtered_interactivity_edges
 
-        interactivity_graph = subgraph_stable(G, coverage_representatives)
-        interactivity_graph.remove_edges_from(interactivity_graph.edge_list())
-        interactivity_graph.add_edges_from(interactivity_edges)
-        composite_interactivity_graph = interactivity_graph
-
-        connected_pairs = _steiner_connected_root_pairs(G, interactivity_composite_coverage_sets, sr_index)
-        num_dropped = _filter_interactivity_edges(interactivity_graph, connected_pairs)
-        if num_dropped:
-            logger.warning(f"    dropped {num_dropped} blocked interactivity edges")
-
-        if self.do_debug:
-            print(f"      max_drt = {self.min_max_rt_distance}")
-            tmp_map = {i: (n, self.get_node_key(n)) for i, n in enumerate(interactivity_graph.node_indices())}
-            print(f"      interactivity_graph.num_nodes = {interactivity_graph.num_nodes()}")
-            print(f"      interactivity_graph.num_edges = {interactivity_graph.num_edges()}")
-            print(
-                f"      num weakly connected components = {rx.number_weakly_connected_components(interactivity_graph)}"
-            )
-            print(
-                f"      num strongly connected components = {rx.number_strongly_connected_components(interactivity_graph)}"
-            )
-            print("      interactivity_graph.map:")
-            for k, v in tmp_map.items():
-                print(f"        {k}: {v}")
-
-            adj_matrix = rx.adjacency_matrix(interactivity_graph)
-
-            interactive_roots: dict[int, list[int]] = {}
-            for root_i, row in enumerate(adj_matrix):
-                _root = tmp_map[root_i][0]
-                root_wp = tmp_map[root_i][1]
-                interactive_roots[root_wp] = []
-                for col_i, weight in enumerate(row):
-                    if weight:
-                        col_wp = tmp_map[col_i][1]
-                        interactive_roots[root_wp].append(col_wp)
-
-            print("      interactive_roots:")
-            for root, cols in interactive_roots.items():
-                print(f"        {root}: {cols}")
-
-        # --- Filter dominated composite tasks by connectivity ---
-        num_composite_tasks = len(composite_tasks)
-        surviving_composite_tasks = []
-        for task in composite_tasks:
-            block_key = task[0]
-            subIG = composite_interactivity_graph.subgraph(block_key)
-            if not rx.is_strongly_connected(subIG):
-                continue
-            surviving_composite_tasks.append(task)
-
-        logger.warning(
-            f"    Connectivity filtering: num surviving composite tasks: {len(surviving_composite_tasks)} of ({num_composite_tasks})"
+        self.solved_trees += len(singleton_tasks)
+        _solve_treeproblem_tasks(
+            problem_generator, len(singleton_tasks), results_dest=block_results, costs_dest=block_costs
         )
-        composite_tasks = surviving_composite_tasks
 
-        # --- Filter dominated composite tasks by max_dist/MST ---
         # Phase 2 (Wave 2 gate) - filter by dominance using max_dist/MST bound and primitive cost
         # NOTE: OPT >= W_MST / (2 - 2/k) (KMB). If that lower bound already exceeds the cheapest
         #       decomposition we can prove right now (singleton sum), no joint solve can beat it.
         #       Strict '>' only -- ties fall through to the solver.
         #       (Same as the post-solve dominance check, since a tying composite may still share
         #       more structure with the rest of the forest than any decomposition would.)
-        # --- Filter dominated composite tasks by max_dist/MST ---
         terminal_to_terminal_distances = {}
         all_terminals = sorted(
             set(non_super_coverage_representatives.keys()).union(*non_super_coverage_representatives.values())
-            | set(super_terminals)
+            | super_terminals_set
         )
         for i, ti in enumerate(all_terminals):
             for tj in all_terminals[i + 1 :]:
@@ -3821,37 +3707,33 @@ class SFGraphReductionEngine:
                 terminal_to_terminal_distances[(ti, tj)] = d
                 terminal_to_terminal_distances[(tj, ti)] = d
 
+        # block_costs serves as the primitive and pres-olved block costs...
         composite_tasks = _retain_dominant_composite_tasks_by_distance(
             composite_tasks, block_costs, terminal_to_terminal_distances, self.super_root_index
         )
 
-        # --- Solve composite tasks ---
-        logger.warning(f"    Solving {len(composite_tasks)} composite tasks")
-        problem_generator = (
-            TreeProblem(
-                instance_id=self.instance_id,
-                block_key=task[0],
-                terminals=task[1],
-                adj_map=adj_map,
-                node_weight_map=node_weight_map,
-                node_index_map=node_index,
-                dimacs_id_map=dimacs_id,
-                inv_dimacs_id_map=inv_dimacs_id,
-                enable_super_root_index=task[2],
-                do_debug=self.do_debug,
-                mip_validation=False,
-            )
-            for task in composite_tasks
+        # Wave 2: Surviving valid block solving...
+        problem_generator = _problem_generator(
+            self.instance_id,
+            component_data,
+            node_weight_map,
+            composite_tasks,
+            do_debug=self.do_debug,
+            mip_validation=False,
         )
         num_problems = len(composite_tasks)
         self.solved_trees += num_problems
+
+        logger.warning(
+            f"    solving {num_problems} surviving of {num_blocks} unique valid blocks of {num_candidate_blocks} ({num_blocks / num_candidate_blocks:.2%})..."
+        )
 
         _solve_treeproblem_tasks(
             problem_generator, num_problems, results_dest=block_results, costs_dest=block_costs
         )
 
         best_solution, best_cost, _block_results, _block_costs = _solve_composite_blocks_dp(
-            self.graph, set(coverage_entities), block_results, block_costs
+            self.graph, coverage_entities, block_results, block_costs
         )
 
         if best_solution:
@@ -3866,11 +3748,14 @@ class SFGraphReductionEngine:
 
     def _interactivity_graph(
         self,
-        G: PyDiGraph,
+        paths_G: PyDiGraph,
+        interactivity_G: PyDiGraph,
         coverage_sets: dict[int, set[int]],
     ) -> PyDiGraph:
         """Creates the interactivity graph for the given reduced state graph over the given coverage sets."""
-        interactivity_graph = _interactivity_graph(G, coverage_sets)
+        interactivity_graph = _interactivity_graph(
+            paths_G, interactivity_G, coverage_sets, self.super_root_index
+        )
 
         if self.do_debug:
             tmp_map = {i: (n, self.get_node_key(n)) for i, n in enumerate(interactivity_graph.node_indices())}
