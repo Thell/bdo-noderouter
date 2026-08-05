@@ -5,7 +5,7 @@ scaling_tests = true
 [logger]
 # Basic output no timestamp, no filename
 # Set level to 'INFO' to output terminal, root pairs and solutions
-level = "TRACE"
+level = "SUCCESS"
 
 # The loguru default format string (useful when debugging).
 # level = "DEBUG"

@@ -142,34 +142,48 @@ active demand sets as denoted by 𝓐𐞪 excluding any super root.
 """
 
 # Primitive Types
-type BlockKey = tuple[int, ...]
-type BlockMask = int
+type Mask = int  # bit represenation of any node indices
+type NodeIndex = int
+type RootIndex = int
+type PotentialRootIndex = int
+type SuperRootIndex = int
+type SuperTerminalIndex = int
+type TerminalIndex = int
+
+type BlockMask = Mask
 type Cost = int
 type ConnectedComponentMappingKey = int
-type CoverageRepresentative = int
-type SolutionMask = int
+type CoveredEntity = NodeIndex
+type CoverageRepresentative = NodeIndex
+type SolutionMask = Mask
 
 # Collection Types
-type CoverageRepresentatives = set[int]
-type CoverageSets = dict[int, set[int]]
-type SolutionSet = set[int]
-type TerminalsList = list[int]
-type TerminalsSet = set[int]
+type BlockKey = tuple[NodeIndex, ...]
+
+type CoverageBits = dict[RootIndex, Mask]
+type CoverageRepresentatives = set[CoverageRepresentative]
+type CoverageSets = dict[CoverageRepresentative, set[CoveredEntity]]
+type SolutionSet = set[NodeIndex]
+type TerminalsList = list[TerminalIndex]
+type TerminalsSet = set[TerminalIndex]
 type BlockCosts = dict[BlockKey, Cost]
 type BlockResults = dict[BlockKey, SolutionMask]
 type MaskedBlockCosts = dict[BlockMask, Cost]
 type MaskedBlockResults = dict[BlockMask, BlockResults]
 type MaskedBlockSolutionMasks = dict[BlockMask, SolutionMask]
 
-# Tuple Types
-# type BlockTask = tuple[ConnectedComponentMappingKey, BlockKey, TerminalsList]
-type BlockTask = tuple[ConnectedComponentMappingKey, BlockKey, TerminalsList, int]  # int is sr_index
+type BlockTask = tuple[ConnectedComponentMappingKey, BlockKey, TerminalsList, NodeIndex]  # int is sr_index
 type CompositeSolution = tuple[SolutionSet, Cost, BlockResults, BlockCosts]
 
 
 def _connected_component_mappings(
-    G: PyDiGraph, coverage_representatives: set[int], sr_index: int | None = None
-) -> tuple[dict[int, int], dict[int, ConnectedComponentMappings]]:
+    G: PyDiGraph,
+    coverage_representatives: CoverageRepresentatives,
+    super_root_index: SuperRootIndex | None = None,
+) -> tuple[
+    dict[NodeIndex, ConnectedComponentMappingKey],
+    dict[ConnectedComponentMappingKey, ConnectedComponentMappings],
+]:
     """Generates a set of mappings for each connected component of the graph for use in TreeProblems.
 
     NOTE: The presence of the super root would make for a single connected component and is removed
@@ -188,7 +202,7 @@ def _connected_component_mappings(
     # However SCC is notably slower than WCC so we default to WCC unless the super root is present
     cc_fn = (
         rx.strongly_connected_components
-        if sr_index is not None and G.has_node(sr_index)
+        if super_root_index is not None and G.has_node(super_root_index)
         else rx.weakly_connected_components
     )
     components = cc_fn(G)
@@ -242,44 +256,58 @@ def _interactivity_graph(
     paths_G: PyDiGraph,
     interactivity_G: PyDiGraph,
     coverage_sets: CoverageSets,
-    super_root_index: int | None = None,
+    super_root_index: SuperRootIndex | None = None,
+    report_dropped_edges: bool = False,
+    interactivity_edges: list[tuple[RootIndex, RootIndex, float]] | None = None,
 ) -> PyDiGraph:
-    """Creates the interactivity graph for the given reduced state graph over the given coverage sets."""
+    """Creates the interactivity graph for the given reduced state graph over the given coverage sets.
+
+    If interactivity_edges is provided, it is used as-is instead of being computed here --
+    this lets a caller apply its own edge-level filtering (e.g. the super pathway's
+    _filter_blocked_st_interactivity_edges) on the raw edge list before the graph is built
+    and Steiner-filtered, so both filters run against the same edge set in the right order.
+    """
     coverage_representatives = set(coverage_sets.keys())
-    node_weight_map = {u: paths_G[u][PAYLOAD_WEIGHT_KEY] for u in paths_G.node_indices()}
 
-    # NOTE: We have to use self.graph to capture st -> sr paths here...
-    # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
-    arbor_rt_all_shortest_path_unions = {r: set() for r in coverage_representatives}
-    for r, terminals in coverage_sets.items():
-        if r not in coverage_representatives:
-            continue
-        for t in terminals:
-            paths = rx.all_shortest_paths(paths_G, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
-            arbor_rt_all_shortest_path_unions[r].update(*paths)
+    if interactivity_edges is None:
+        node_weight_map = {u: paths_G[u][PAYLOAD_WEIGHT_KEY] for u in paths_G.node_indices()}
 
-    # NOTE: We can't use self.graph with a super root or gaps will collapse
-    interactivity_edges = get_interactivity_edges(
-        interactivity_G, coverage_sets, node_weight_map, arbor_rt_all_shortest_path_unions
-    )
+        # NOTE: We have to use self.graph to capture st -> sr paths here...
+        # Union sets of all nodes for all shortest paths for each t -> r for each t in terminal_set r
+        arbor_rt_all_shortest_path_unions = {r: set() for r in coverage_representatives}
+        for r, terminals in coverage_sets.items():
+            if r not in coverage_representatives:
+                continue
+            for t in terminals:
+                paths = rx.all_shortest_paths(paths_G, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
+                arbor_rt_all_shortest_path_unions[r].update(*paths)
+
+        # NOTE: We can't use self.graph with a super root or gaps will collapse
+        interactivity_edges = get_interactivity_edges(
+            interactivity_G, coverage_sets, node_weight_map, arbor_rt_all_shortest_path_unions
+        )
 
     interactivity_graph = subgraph_stable(paths_G, coverage_representatives)
     interactivity_graph.remove_edges_from(interactivity_graph.edge_list())
     interactivity_graph.add_edges_from(interactivity_edges)
 
+    orig_edge_count = interactivity_graph.num_edges()
     connected_pairs = _steiner_connected_root_pairs(paths_G, coverage_sets, super_root_index)
     num_dropped = _filter_interactivity_edges(interactivity_graph, connected_pairs)
-    if num_dropped:
-        logger.warning(f"    dropped {num_dropped} blocked interactivity")
+
+    if num_dropped and (report_dropped_edges or logger._core.min_level < 10):  # ty:ignore[unresolved-attribute]
+        logger.warning(
+            f"      dropped {num_dropped} blocked interactivity edges of {orig_edge_count} ({num_dropped / orig_edge_count:.2%})"
+        )
 
     return interactivity_graph
 
 
 def _filter_blocked_st_interactivity_edges(
-    interactivity_edges: list[tuple[int, int, float]],
-    candidate_roots: dict[int, set[int]],
-    surviving_sts: set[int],
-) -> list[tuple[int, int, float]]:
+    interactivity_edges: list[tuple[RootIndex, RootIndex, float]],
+    candidate_roots: CoverageSets,
+    surviving_sts: set[NodeIndex],
+) -> list[tuple[RootIndex, RootIndex, float]]:
     """Drops st<->root edges the gap/drt test reports but the collision-envelope search
     already disproved. gap1+gap2 <= drt1+drt2 is a proximity condition and candidate_roots[st]
     is an exact containment proof, so non-membership there certifies non-interactivity
@@ -297,8 +325,8 @@ def _filter_blocked_st_interactivity_edges(
 
 
 def _steiner_connected_root_pairs(
-    G: PyDiGraph, coverage_sets: dict[int, set[int]], super_root_index: int | None = None
-) -> set[tuple[int, int]]:
+    G: PyDiGraph, coverage_sets: CoverageSets, super_root_index: SuperRootIndex | None = None
+) -> set[tuple[NodeIndex, NodeIndex]]:
     """Root pairs (r, s) that share a genuine Steiner-only path in G.
 
     A composite solve of r and s only has synergy to exploit if some path
@@ -361,7 +389,7 @@ def _filter_interactivity_edges(interactivity_graph: PyDiGraph, connected_pairs:
 def _problem_generator(
     instance_id: str,
     component_data: dict[ConnectedComponentMappingKey, ConnectedComponentMappings],
-    node_weight_map: dict[int, int],
+    node_weight_map: dict[NodeIndex, Cost],
     tasks: list[BlockTask],
     do_debug: bool = False,
     mip_validation: bool = True,
@@ -387,8 +415,8 @@ def _problem_generator(
 def _solve_treeproblem_tasks(
     problem_generator: Generator[TreeProblem],
     num_problems: int,
-    results_dest: dict[tuple[int, ...], int],
-    costs_dest: dict[tuple[int, ...], int],
+    results_dest: BlockResults,
+    costs_dest: BlockCosts,
 ):
     """Solves the given tree problems switching between sequential and concurrent based on num_problems
     using the auto-switching `solve_tree` function which switches between DW and scipstp.
@@ -402,7 +430,7 @@ def _solve_treeproblem_tasks(
         try:
             with ProcessPoolExecutor(max_workers=14) as executor:
                 chunksize = max(1, min(256, num_problems // 16))
-                logger.warning(f"    chunksize: {chunksize}")
+                logger.warning(f"      chunksize: {chunksize}")
 
                 # NOTE: solve_tree auto switches between DW and scipstp based on tree complexity
                 results = executor.map(solve_tree, problem_generator, chunksize=chunksize)
@@ -410,7 +438,7 @@ def _solve_treeproblem_tasks(
                 for completed_count, (block_key, cost, mask) in enumerate(results, start=1):
                     if completed_count % 1_000 == 0:
                         logger.warning(
-                            f"    solved ({completed_count}/{num_problems}) {completed_count / num_problems:.2%}..."
+                            f"      solved ({completed_count}/{num_problems}) {completed_count / num_problems:.2%}..."
                         )
 
                     results_dest[block_key] = mask
@@ -433,24 +461,25 @@ def _solve_treeproblem_tasks(
             block_key, cost, mask = solve_tree(problem)
 
             logger.trace(
-                f"    solved ({block_n}/{num_problems}) block {block_key} containing {len(problem.terminals)} terminals with cost {cost}"
+                f"      solved ({block_n}/{num_problems}) block {block_key} containing {len(problem.terminals)} terminals with cost {cost}"
             )
 
             results_dest[block_key] = mask
             costs_dest[block_key] = cost
 
-    logger.warning(f"    solved {len(results_dest) - orig_num_results} unique valid blocks ..")
+    logger.warning(f"      solved {len(results_dest) - orig_num_results} unique valid blocks ..")
 
 
 def _generate_valid_partition_blocks(
-    component_data: dict[int, ConnectedComponentMappings], interactivity_graph: PyDiGraph
-) -> tuple[dict[int, set[BlockKey]], int, int]:
+    component_data: dict[int, ConnectedComponentMappings],
+    interactivity_graph: PyDiGraph,
+) -> tuple[dict[ConnectedComponentMappingKey, set[BlockKey]], int, int]:
     """Generate structurally valid blocks from all connected components.
     Returns a mapping from connected component index to a set of valid blocks
     """
     logger.trace("    generating valid partition blocks...")
 
-    valid_blocks: dict[int, set[BlockKey]] = defaultdict(set)
+    valid_blocks: dict[ConnectedComponentMappingKey, set[BlockKey]] = defaultdict(set)
     num_blocks = 0
     num_candidate_blocks = 0
 
@@ -476,8 +505,9 @@ def _generate_valid_partition_blocks(
 
 
 def _map_block_terminals(
-    coverage_sets: dict[int, set[int]], valid_blocks: dict[int, set[tuple]]
-) -> dict[tuple[int, tuple[int, ...]], list[int]]:
+    coverage_sets: CoverageSets,
+    valid_blocks: dict[ConnectedComponentMappingKey, set[BlockKey]],
+) -> dict[tuple[ConnectedComponentMappingKey, BlockKey], list[int]]:
     # Populate and map block terminals.
     block_terminals = {}
     for cc_i, blocks in valid_blocks.items():
@@ -497,7 +527,8 @@ def _map_block_terminals(
 
 
 def _retain_dominant_blocks_by_singletons(
-    block_results: BlockResults, block_costs: BlockCosts
+    block_results: BlockResults,
+    block_costs: BlockCosts,
 ) -> tuple[BlockResults, BlockCosts]:
     logger.warning(f"    retaining dominant blocks by singletons... ({len(block_results)})")
 
@@ -515,11 +546,11 @@ def _retain_dominant_blocks_by_singletons(
 
 
 def _retain_dominant_composite_tasks_by_distance(
-    tasks: list[tuple[tuple[int, ...], list[int], int]],  # (block_key, terminals, sr_index)
-    block_costs: dict[tuple[int, ...], int],
-    terminal_to_terminal_distances: dict[tuple[int, int], int | float],
-    sr: int,
-) -> list[tuple[tuple[int, ...], list[int], int]]:
+    tasks: list[BlockTask],
+    block_costs: BlockCosts,
+    terminal_to_terminal_distances: dict[tuple[NodeIndex, NodeIndex], Cost | float],
+    super_root_index: SuperRootIndex,
+) -> list[BlockTask]:
     """Flat-task analog of _retain_dominant_blocks_by_distance -- same OPT >= W_MST / (2 - 2/k)
     bound, operating directly on (block_key, terminals, sr_index) tuples instead of the
     cc_i-keyed valid_blocks/block_terminals shape. sr is stripped from terminals before the
@@ -531,7 +562,7 @@ def _retain_dominant_composite_tasks_by_distance(
     num_dist_pruned = num_mst_pruned = 0
 
     for cc_i, block_key, terminals, sr_index in tasks:
-        real_terminals = [t for t in terminals if t != sr]
+        real_terminals = [t for t in terminals if t != super_root_index]
         singleton_sum = sum(block_costs[(comp,)] for comp in block_key)
 
         max_dist = max(
@@ -565,10 +596,10 @@ def _retain_dominant_composite_tasks_by_distance(
 
 
 def _retain_dominant_blocks_by_distance(
-    valid_blocks: dict[int, set[BlockKey]],
-    block_terminals: dict[tuple[int, tuple[int, ...]], list[int]],
-    primitive_block_costs: dict[tuple[int], int],
-    terminal_to_terminal_distances: dict[tuple[int, int], int | float],
+    valid_blocks: dict[ConnectedComponentMappingKey, set[BlockKey]],
+    block_terminals: dict[tuple[ConnectedComponentMappingKey, BlockKey], TerminalsList],
+    primitive_block_costs: BlockCosts,
+    terminal_to_terminal_distances: dict[tuple[NodeIndex, NodeIndex], Cost | float],
 ) -> list[BlockTask]:
     logger.warning(f"    retaining dominant blocks by distance... ({len(valid_blocks)})")
     # NOTE: This should only be used on non-super solve as tree pathways as it sets the task
@@ -646,10 +677,10 @@ def _blocks_to_blockmasks(
 
 
 def _blockmasks_to_blocks(
-    coverage_sets: dict[int, set[int]],
-    block_mask_solutions: dict[int, int],
-    block_mask_costs: dict[int, int],
-) -> tuple[dict[tuple[int, ...], int], dict[tuple[int, ...], int]]:
+    coverage_sets: CoverageSets,
+    block_mask_solutions: MaskedBlockSolutionMasks,
+    block_mask_costs: MaskedBlockCosts,
+) -> tuple[BlockResults, BlockCosts]:
     logger.warning(f"    reversing block masks... ({len(block_mask_solutions)})")
 
     coverage_roots = sorted(coverage_sets.keys())
@@ -673,7 +704,8 @@ def _blockmasks_to_blocks(
 
 
 def _retain_dominant_masks_by_composite(
-    block_mask_solutions: MaskedBlockSolutionMasks, block_mask_costs: MaskedBlockCosts
+    block_mask_solutions: MaskedBlockSolutionMasks,
+    block_mask_costs: MaskedBlockCosts,
 ) -> tuple[MaskedBlockSolutionMasks, MaskedBlockCosts]:
     logger.warning(f"    retaining dominant masks by composite DP... ({len(block_mask_costs)})")
 
@@ -737,9 +769,9 @@ def _solve_composite_blocks_dp(
 
 
 def _partition_block_masks_by_cooccurrence(
-    coverage_representatives: set[int],
-    coverage_bit: dict[int, int],
-    block_mask_costs: dict[int, int],
+    coverage_representatives: CoverageRepresentatives,
+    coverage_bits: CoverageBits,
+    block_mask_costs: MaskedBlockCosts,
 ) -> list[tuple[dict[int, int], dict[int, int], list[int]]]:
     """Groups coverage representatives into independent components based on which
     representatives actually co-occur in some surviving block mask (post-dominance
@@ -751,7 +783,7 @@ def _partition_block_masks_by_cooccurrence(
     decomposes exactly into each component's independent optimum, so a single
     combined n-bit DP pays for state combinations no actual block could realize.
     """
-    bit_to_rep = {b: r for r, b in coverage_bit.items()}
+    bit_to_rep = {b: r for r, b in coverage_bits.items()}
     parent = {r: r for r in coverage_representatives}
 
     def find(x):
@@ -782,7 +814,7 @@ def _partition_block_masks_by_cooccurrence(
     global_to_local: dict[int, tuple[int, int]] = {}
     for c_i, group in enumerate(component_groups):
         for i, r in enumerate(group):
-            global_to_local[coverage_bit[r]] = (c_i, 1 << i)
+            global_to_local[coverage_bits[r]] = (c_i, 1 << i)
 
     per_component_costs: list[dict[int, int]] = [{} for _ in component_groups]
     per_component_l2g: list[dict[int, int]] = [{} for _ in component_groups]
@@ -804,13 +836,13 @@ def _partition_block_masks_by_cooccurrence(
 
 
 def _solve_partitioned_tree_dp(
-    coverage_representatives: set[int],
-    coverage_bit: dict[int, int],
-    block_mask_costs: dict[int, int],
-    block_mask_solutions: dict[int, int],
-) -> tuple[int, int | float]:
+    coverage_representatives: CoverageRepresentatives,
+    coverage_bits: CoverageBits,
+    block_mask_costs: MaskedBlockCosts,
+    block_mask_solutions: MaskedBlockSolutionMasks,
+) -> tuple[SolutionMask, Cost | float]:
     partitioned = _partition_block_masks_by_cooccurrence(
-        coverage_representatives, coverage_bit, block_mask_costs
+        coverage_representatives, coverage_bits, block_mask_costs
     )
 
     if len(partitioned) > 1:
@@ -840,9 +872,10 @@ def _solve_partitioned_tree_dp(
 
 
 def _solve_tree_partitions_dp(
-    num_coverage_representatives: int, block_mask_costs: MaskedBlockCosts
+    num_coverage_representatives: int,
+    block_mask_costs: MaskedBlockCosts,
 ) -> tuple[list[int | float], list[tuple[int, int] | None]]:
-    logger.warning(f"    solving tree partitions DP... ({len(block_mask_costs)})")
+    logger.trace(f"      solving tree partitions DP... ({len(block_mask_costs)})")
 
     start_time = time()
 
@@ -872,7 +905,7 @@ def _solve_tree_partitions_dp(
     use_block_iteration = num_blocks < crossover
 
     logger.warning(
-        f"    n={n}, |block_mask_costs|={num_blocks}, crossover={crossover:.1f} "
+        f"        n={n}, |block_mask_costs|={num_blocks}, crossover={crossover:.1f} "
         f"-> using {'block-iteration' if use_block_iteration else 'submask-enumeration'} pathway"
     )
 
@@ -922,21 +955,21 @@ def _solve_tree_partitions_dp(
                 sub = (sub - 1) & remaining
 
     logger.warning(
-        f"    solved {candidate_checks} candidate checks of {state_transitions} state transitions in {time() - start_time:.2f}s"
+        f"        solved {candidate_checks} candidate checks of {state_transitions} state transitions in {time() - start_time:.2f}s"
     )
 
     return dp, choice
 
 
 def _extract_dp_solution(
-    num_coverage_representativesge_sets: int,
-    block_mask_solutions: dict[int, int],
+    num_coverage_representative_sets: int,
+    block_mask_solutions: dict[BlockMask, SolutionMask],
     dp: list[int | float],
     choice: list[tuple[int, int] | None],
-) -> tuple[int, int | float]:
+) -> tuple[SolutionMask, Cost | float]:
     logger.trace("    extracting best solution from DP...")
 
-    full_mask = (1 << num_coverage_representativesge_sets) - 1
+    full_mask = (1 << num_coverage_representative_sets) - 1
     best_cost = dp[full_mask]
     best_solution_mask = 0
 
@@ -959,7 +992,11 @@ def _extract_dp_solution(
     return best_solution_mask, best_cost
 
 
-def _unmask_solution(G: PyDiGraph, mask: int, nodes_list: list[int] | None = None) -> set[int]:
+def _unmask_solution(
+    G: PyDiGraph,
+    mask: SolutionMask,
+    nodes_list: list[NodeIndex] | None = None,
+) -> set[int]:
     logger.trace("    extracting solution from mask...")
     solution = set()
 
@@ -1087,6 +1124,10 @@ class SFGraphReductionEngine:
         logger.debug(f"Post {msg}:  trigger count: {trigger_count}")
         if trigger_count == 0:
             return
+
+        if not self.graph.has_node(105):
+            print("*********************************************************************************")
+            print("ERROR: Graph missing node 105")
 
         sets = self.terminal_sets
         logger.debug(
@@ -1467,7 +1508,8 @@ class SFGraphReductionEngine:
 
         # All super demands are satisfied. Just do cleanup...
         if not self.terminal_sets.get(self.super_root_index):
-            self.terminal_sets.pop(self.super_root_index, None)
+            if self.terminal_sets.pop(self.super_root_index, None) is not None:
+                logger.warning("      reduce_potential_roots: removing super root...")
             self.graph.remove_node(self.super_root_index)
             self.super_root_index = None
             self.potential_roots = set()
@@ -1602,6 +1644,7 @@ class SFGraphReductionEngine:
                 logger.trace(f"Removed direct connected super terminal: {self.get_node_key(t)}")
 
         if self.super_root_index is not None and not terminal_sets[self.super_root_index]:
+            logger.warning("      reduce_demand_roots: removing super root...")
             terminal_sets.pop(self.super_root_index)
             self.graph.remove_node(self.super_root_index)
             self.super_root_index = None
@@ -3193,13 +3236,12 @@ class SFGraphReductionEngine:
 
             # Handle any settled super-root terminals
             if sr_index is not None:
-                settled_super_terminals = {
-                    i for i in self.terminal_sets[self.super_root_index] if i in witnessed_nodes
-                }
+                settled_super_terminals = {i for i in self.terminal_sets[sr_index] if i in witnessed_nodes}
                 for t in settled_super_terminals:
-                    self.terminal_sets[self.super_root_index].remove(t)
-                if len(self.terminal_sets[self.super_root_index]) == 0:
-                    self.terminal_sets.pop(self.super_root_index)
+                    self.terminal_sets[sr_index].remove(t)
+                if len(self.terminal_sets[sr_index]) == 0:
+                    logger.warning("      solve_isolated_roots_as_trees: removing super root")
+                    self.terminal_sets.pop(sr_index)
                     self.super_root_index = None
 
             # Lastly remove the terminal set cluster
@@ -3252,7 +3294,7 @@ class SFGraphReductionEngine:
         non_super_G = self.graph.copy()
         sr_index = self.super_root_index
         if sr_index is not None:
-            non_super_G.remove_node(self.super_root_index)
+            non_super_G.remove_node(sr_index)
         non_super_coverage_representatives = {r: v for r, v in self.terminal_sets.items() if r != sr_index}
 
         (
@@ -3263,8 +3305,6 @@ class SFGraphReductionEngine:
             non_super_dp_block_costs,
         ) = self.solve_as_tree_composite(non_super_G, non_super_coverage_representatives)
 
-        end_time = time()
-
         if sr_index is not None:
             solution = self.solve_as_tree_super(
                 non_super_G,
@@ -3273,6 +3313,8 @@ class SFGraphReductionEngine:
                 non_super_dp_block_results,
                 non_super_dp_block_costs,
             )
+
+        end_time = time()
 
         removables = set(self.graph.node_indices()) - set(solution)
         removals = len(removables)
@@ -3307,7 +3349,10 @@ class SFGraphReductionEngine:
                 self.validate_reachability()
 
         else:
-            logger.error("    failed to solve as tree")
+            if len(self.terminal_sets) == 1 and self.super_root_index in self.terminal_sets:
+                logger.warning("    did not solve as tree, passing to MIP...")
+            else:
+                logger.error("    failed to solve as tree")
 
         return removals
 
@@ -3324,13 +3369,13 @@ class SFGraphReductionEngine:
 
         # Pass thru to MIP (or, let the solve as path deal with this)
         if self.super_root_index is None:
-            return 0
+            return set(self.graph.node_indices())
 
         if self.super_root_index not in self.terminal_sets:
-            return 0
+            return set(self.graph.node_indices())
 
         if len(self.terminal_sets) == 1 and len(self.terminal_sets[self.super_root_index]) == 1:
-            return 0
+            return set(self.graph.node_indices())
 
         # --- Collect remaining super terminal candidate roots ---
         # NOTE: If there are any remaining super terminals we must not remove them from the graph
@@ -3431,23 +3476,23 @@ class SFGraphReductionEngine:
     def solve_as_tree_composite(
         self, G: PyDiGraph, coverage_sets: dict[int, set[int]]
     ) -> tuple[
-        set[int],
-        int | float,
-        dict[int, set[tuple[int, ...]]],
-        dict[tuple[int, ...], int],
-        dict[tuple[int, ...], int],
+        SolutionSet,
+        Cost | float,
+        dict[int, set[BlockKey]],
+        BlockResults,
+        BlockCosts,
     ]:
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
         logger.warning("  solve_as_tree_composite...")
 
         # Sometimes all that is left are super terminals and there's nothing to be done here...
         if not coverage_sets:
-            return set(), float("inf"), {}, {}, {}, {}, {}
+            return set(), float("inf"), {}, {}, {}
 
         coverage_representatives = set(coverage_sets.keys())
 
         _root_component_index_map, component_data = _connected_component_mappings(G, coverage_representatives)
-        interactivity_graph = self._interactivity_graph(G, G, coverage_sets)
+        interactivity_graph = self._interactivity_graph(G, G, coverage_sets, True)
         weight_map = {i: G[i][PAYLOAD_WEIGHT_KEY] for i in G.node_indices()}
 
         # Phase 1 - block preparation
@@ -3548,21 +3593,23 @@ class SFGraphReductionEngine:
 
     def solve_as_tree_composite_super(
         self,
-        candidate_roots: dict[int, set[int]],
+        candidate_roots: CoverageSets,
         non_super_G: PyDiGraph,
-        non_super_coverage_representatives: dict[int, set[int]],
-        non_super_valid_blocks: dict[int, set[tuple[int, ...]]],
-        non_super_dp_block_results: dict[tuple[int, ...], int],
-        non_super_dp_block_costs: dict[tuple[int, ...], int],
-    ):
+        non_super_coverage_representatives: CoverageSets,
+        non_super_valid_blocks: dict[int, set[BlockKey]],
+        non_super_dp_block_results: BlockResults,
+        non_super_dp_block_costs: BlockCosts,
+    ) -> SolutionSet:
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
         logger.warning("  solve_as_tree_composite_super...")
 
         assert self.super_root_index is not None, "super root index must be set"
 
         # NOTE: any block in valid blocks but not in block results was dominated prior to solving.
-        non_super_valid_blocks = set().union(*non_super_valid_blocks.values())
-        non_super_dominated_blocks = set(non_super_valid_blocks) - set(non_super_dp_block_results.keys())
+        non_super_valid_blocks_values = set().union(*non_super_valid_blocks.values())
+        non_super_dominated_blocks = set(non_super_valid_blocks_values) - set(
+            non_super_dp_block_results.keys()
+        )
 
         node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
 
@@ -3578,9 +3625,6 @@ class SFGraphReductionEngine:
                 self.graph, t, self.super_root_index, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY]
             )
             trimmed = [p[:-1] for p in paths]  # drop the synthetic sr hop
-            logger.trace(
-                f"st: {t} -> {self.super_root_index}: {[[self.get_node_key(v) for v in p] for p in trimmed]}"
-            )
             st_interactivity_coverage_sets[t] = {p[-1] for p in trimmed}
 
         for t in super_terminals:
@@ -3595,8 +3639,32 @@ class SFGraphReductionEngine:
         for s in interactivity_composite_coverage_sets.values():
             s.discard(self.super_root_index)
 
+        # --- Interactivity graph ---
+        # NOTE: We have to use self.graph to capture st -> sr paths here...
+        arbor_rt_all_shortest_path_unions = {r: set() for r in interactivity_composite_coverage_sets}
+        for r, terminals in interactivity_composite_coverage_sets.items():
+            for t in terminals:
+                paths = rx.all_shortest_paths(self.graph, t, r, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY])
+                arbor_rt_all_shortest_path_unions[r].update(*paths)
+
+        interactivity_edges = get_interactivity_edges(
+            non_super_G,
+            interactivity_composite_coverage_sets,
+            node_weight_map,
+            arbor_rt_all_shortest_path_unions,
+        )
+
+        interactivity_edges = _filter_blocked_st_interactivity_edges(
+            interactivity_edges, candidate_roots, super_terminals_set
+        )
+
+        # NOTE: We can't use self.graph for the interactivity itself or the gaps will collapse
         interactivity_graph = self._interactivity_graph(
-            self.graph, non_super_G, interactivity_composite_coverage_sets
+            self.graph,
+            non_super_G,
+            interactivity_composite_coverage_sets,
+            True,
+            interactivity_edges=interactivity_edges,
         )
 
         # --- Component generation ---
@@ -3750,11 +3818,18 @@ class SFGraphReductionEngine:
         self,
         paths_G: PyDiGraph,
         interactivity_G: PyDiGraph,
-        coverage_sets: dict[int, set[int]],
+        coverage_sets: CoverageSets,
+        report_dropped_edges: bool = False,
+        interactivity_edges: list[tuple[NodeIndex, NodeIndex, Cost | float]] | None = None,
     ) -> PyDiGraph:
         """Creates the interactivity graph for the given reduced state graph over the given coverage sets."""
         interactivity_graph = _interactivity_graph(
-            paths_G, interactivity_G, coverage_sets, self.super_root_index
+            paths_G,
+            interactivity_G,
+            coverage_sets,
+            self.super_root_index,
+            report_dropped_edges,
+            interactivity_edges,
         )
 
         if self.do_debug:
@@ -3906,7 +3981,7 @@ class SFGraphReductionEngine:
                     num_terminals_start,
                 )
                 self.solve_as_tree()
-                self.solved_as_tree = True
+                self._solved_as_tree = True
 
         # Rebuild pairs
         fixed_nodes_wp = {self.get_node_key(n) for n in self.fixed_nodes}
