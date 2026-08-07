@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from enum import IntEnum
 
 import polars as pl
 from loguru import logger
@@ -23,14 +24,29 @@ from orchestrator_types import Instance, Plan, SeedType
 SUMMARY_FLOAT_PRECISION = 3
 WORST_SUBOPTIMAL_REPORTING_COUNT = 50
 
-_shutdown_requested = False
-
-
 SKIPPED_SEEDS_HEX = {}
 
 
+class ShutdownLevel(IntEnum):
+    NONE = 0
+    BUDGET = 1  # Stop after current budget block (coverage band)
+    STRATEGY = 2  # Stop after current strategy
+    SAMPLE = 3  # Stop after current test
+    IMMEDIATE = 4  # Exit immediately
+
+
 LOG_LEVELS = ["SUCCESS", "INFO", "DEBUG", "TRACE"]
-current_level_index = 1
+current_log_level_index = 1
+
+_shutdown_level = ShutdownLevel.NONE
+_shutdown_state_index = 0
+
+SHUTDOWN_STATES = [
+    (ShutdownLevel.BUDGET, "Graceful: Budget", "orange"),
+    (ShutdownLevel.STRATEGY, "Graceful: Strategy", "darkorange"),
+    (ShutdownLevel.SAMPLE, "Graceful: Test", "orangered"),
+    (ShutdownLevel.IMMEDIATE, "Immediate: Exit", "red"),
+]
 
 
 def _create_ui():
@@ -41,22 +57,33 @@ def _create_ui():
 
     # --- 1. SHUTDOWN BUTTON LOGIC ---
     def on_shutdown_click():
-        global _shutdown_requested
-        if _shutdown_requested:
+        global _shutdown_level, _shutdown_state_index
+
+        _shutdown_state_index += 1
+
+        if _shutdown_state_index > len(SHUTDOWN_STATES):
             print("\nHard exit — terminating immediately.", file=sys.stderr)
             os._exit(1)
-        _shutdown_requested = True
-        print("\nShutdown requested — finishing current test and reporting results...", file=sys.stderr)
-        shutdown_btn.config(text="FORCE TERMINATE", fg="white", bg="red")
 
-    shutdown_btn = tk.Button(root, text="Graceful Shutdown", command=on_shutdown_click, bg="orange")
+        level, _text, _bg = SHUTDOWN_STATES[_shutdown_state_index - 1]
+        _shutdown_level = level
+        print(f"\nShutdown requested — finishing current {level.name.lower()}...", file=sys.stderr)
+
+        if _shutdown_state_index < len(SHUTDOWN_STATES):
+            _, next_text, next_bg = SHUTDOWN_STATES[_shutdown_state_index]
+            shutdown_btn.config(text=next_text, fg="white", bg=next_bg)
+        else:
+            shutdown_btn.config(text="FORCE TERMINATE", fg="white", bg="red")
+
+    _, initial_text, initial_bg = SHUTDOWN_STATES[0]
+    shutdown_btn = tk.Button(root, text=initial_text, command=on_shutdown_click, bg=initial_bg)
     shutdown_btn.pack(expand=True, fill="both", padx=10, pady=(10, 5))
 
     # --- 2. LOG LEVEL TOGGLE LOGIC ---
     def on_log_click():
-        global current_level_index
-        current_level_index = (current_level_index + 1) % len(LOG_LEVELS)
-        new_level = LOG_LEVELS[current_level_index]
+        global current_log_level_index
+        current_log_level_index = (current_log_level_index + 1) % len(LOG_LEVELS)
+        new_level = LOG_LEVELS[current_log_level_index]
 
         log_btn.config(text=f"Log Level: {new_level}")
 
@@ -71,7 +98,7 @@ def _create_ui():
         print(f"[CONTROL] Loguru runtime level updated to: {new_level}", file=sys.stdout)
 
     # Use the globally resolved index to display the true initialization level
-    initial_text = f"Log Level: {LOG_LEVELS[current_level_index]}"
+    initial_text = f"Log Level: {LOG_LEVELS[current_log_level_index]}"
     log_btn = tk.Button(root, text=initial_text, command=on_log_click, bg="lightgray")
     log_btn.pack(expand=True, fill="both", padx=10, pady=(5, 10))
 
@@ -79,7 +106,7 @@ def _create_ui():
 
 
 def _install_shutdown_handler():
-    global current_level_index
+    global current_log_level_index
 
     # 1. Inspect the live configuration dict before launching the UI thread
     try:
@@ -88,7 +115,8 @@ def _install_shutdown_handler():
 
         # 2. Match the string (e.g. "DEBUG") to our array index. Fallback safely if unknown string.
         if startup_level in LOG_LEVELS:
-            current_level_index = LOG_LEVELS.index(startup_level)
+            current_log_level_index = LOG_LEVELS.index(startup_level)
+
     except Exception as e:  # noqa: BLE001
         print(
             f"[CONTROL WARNING] Failed to read startup config level: {e}. Defaulting index to INFO.",
@@ -141,7 +169,7 @@ class _FuzzInstanceMetrics(dict):
             )
 
         if speedup < 1.0:
-            logger.warning(f"NodeRouter should always be faster than MIP! {seed} => {budget}:{strategy}:{i}")
+            logger.warning(f"NodeRouter should always be faster than MIP! {seed} -> {budget}:{strategy}:{i}")
 
         super().__init__({
             "seed": seed,
@@ -583,7 +611,7 @@ def _run_single_config(
     percent = round(budget / MAX_BUDGET * 100)
 
     for strategy in strategies:
-        if _shutdown_requested:
+        if _shutdown_level > ShutdownLevel.STRATEGY:
             break
 
         if strategy == PairingStrategy.custom:
@@ -595,7 +623,7 @@ def _run_single_config(
         case_rows: list[_FuzzInstanceMetrics] = []
 
         for i in range(samples):
-            if _shutdown_requested:
+            if _shutdown_level >= ShutdownLevel.SAMPLE:
                 break
 
             seed = _make_seed(budget, strategy, i)
@@ -604,7 +632,7 @@ def _run_single_config(
                 continue
 
             # # Debugging - one-offs
-            # target_seed = "6ffd8d3"
+            # target_seed = "e849590"
             # if seed != target_seed:
             #     continue
             # else:
@@ -681,8 +709,9 @@ def fuzzer_main(
     try:
         for budget in budgets:
             for danger_state in danger_states:
-                if _shutdown_requested:
+                if _shutdown_level == ShutdownLevel.IMMEDIATE:
                     raise KeyboardInterrupt
+
                 metrics = _run_single_config(strategies, samples, budget, danger_state)
                 if metrics.shape[0] == 0:
                     continue
@@ -691,6 +720,9 @@ def fuzzer_main(
                 current_elapsed = time.time() - start_time
                 total_test_cases = all_metrics.shape[0]
                 print(f"=> {total_test_cases} test cases completed in {current_elapsed:.2f}s")
+
+            if _shutdown_level == ShutdownLevel.BUDGET:
+                break
 
         _generate_all_cases_summaries(all_metrics)
 
