@@ -304,7 +304,8 @@ class DimacsNWSTPProblem:
 
         enable_super_root_index = tree_problem.enable_super_root_index
         if enable_super_root_index > 0:
-            logger.warning(f"        Enabling super-root node {enable_super_root_index}...")
+            if tree_problem.do_debug:
+                logger.debug(f"        Enabling super-root node {enable_super_root_index}...")
             for nbr in adj_map[enable_super_root_index]:
                 edges.append((dimacs_id_map[nbr], dimacs_id_map[enable_super_root_index]))
 
