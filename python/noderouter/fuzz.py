@@ -71,9 +71,9 @@ def _create_ui():
 
         if _shutdown_state_index < len(SHUTDOWN_STATES):
             _, next_text, next_bg = SHUTDOWN_STATES[_shutdown_state_index]
-            shutdown_btn.config(text=next_text, fg="white", bg=next_bg)
+            shutdown_btn.config(text=next_text, bg=next_bg)
         else:
-            shutdown_btn.config(text="FORCE TERMINATE", fg="white", bg="red")
+            shutdown_btn.config(text="FORCE TERMINATE", bg="red")
 
     _, initial_text, initial_bg = SHUTDOWN_STATES[0]
     shutdown_btn = tk.Button(root, text=initial_text, command=on_shutdown_click, bg=initial_bg)
@@ -611,7 +611,7 @@ def _run_single_config(
     percent = round(budget / MAX_BUDGET * 100)
 
     for strategy in strategies:
-        if _shutdown_level > ShutdownLevel.STRATEGY:
+        if _shutdown_level >= ShutdownLevel.STRATEGY:
             break
 
         if strategy == PairingStrategy.custom:
