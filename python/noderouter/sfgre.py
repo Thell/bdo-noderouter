@@ -1210,7 +1210,8 @@ class SFGraphReductionEngine:
 
     fixed_nodes: set[int] = field(default_factory=set)
     potential_roots: set[int] = field(default_factory=set)
-    terminal_sets: dict[int, set[int]] = field(default_factory=dict)
+    terminal_sets: CoverageSets = field(default_factory=dict)
+    super_candidate_sink_sets: CoverageSets = field(default_factory=dict)
 
     _seen_nonreducible_outer_windows: set[tuple[int, ...]] = field(default_factory=set)
     _seen_nonreducible_steiner_face_clusters: set[tuple[int, ...]] = field(default_factory=set)
@@ -3311,53 +3312,50 @@ class SFGraphReductionEngine:
 
     def reduce_isolated_super_terminals(self) -> int:
         """Promote super-terminals to real roots when collision envelope admits a single sink."""
-        sr_index = self.super_root_index
         num_moved = 0
+        candidate_sink_sets = self.super_candidate_sink_sets
+        sr_index = self.super_root_index
 
-        if sr_index is not None:
-            while True:
-                candidate_sink_sets = self._super_candidate_sink_sets()
-                moved = False
+        if sr_index is None:
+            return 0
 
-                for st, sinks in list(candidate_sink_sets.items()):
-                    if len(sinks) != 1:
-                        continue
-                    sink = next(iter(sinks))
-                    moved = True
+        for st, sinks in list(candidate_sink_sets.items()):
+            if len(sinks) != 1:
+                continue
+            sink = next(iter(sinks))
+            num_moved += 1
 
-                    if sink in self.fixed_nodes and sink in self.terminal_sets:
-                        # Moving super-terminal to real root
-                        self.terminal_sets[sink].add(st)
-                        sink_type = "r"
-                    else:
-                        # Moving to promoted potential root
-                        self.terminal_sets[sink] = {st}
-                        self.fixed_nodes.add(sink)
-                        sink_type = "pr"
+            if sink in self.fixed_nodes and sink in self.terminal_sets:
+                # Moving super-terminal to real root
+                self.terminal_sets[sink].add(st)
+                sink_type = "r"
+            else:
+                # Moving to promoted potential root
+                self.terminal_sets[sink] = {st}
+                self.fixed_nodes.add(sink)
+                sink_type = "pr"
 
-                    self.terminal_sets[sr_index].discard(st)
-                    logger.warning(
-                        f"      promoted super-terminal {self.get_node_key(st)} "
-                        f"to root {self.get_node_key(sink)} (was: {sink_type})"
-                    )
+            self.terminal_sets[sr_index].discard(st)
+            del candidate_sink_sets[st]
 
-                if not moved:
-                    break
+            logger.warning(
+                f"      promoted super-terminal {self.get_node_key(st)} "
+                f"to root {self.get_node_key(sink)} (was: {sink_type})"
+            )
 
-                # super-root may now be empty
-                if not self.terminal_sets.get(sr_index):
-                    logger.debug("      solve_isolated_roots_as_trees: removing super root")
-                    self.terminal_sets.pop(sr_index, None)
-                    self.graph.remove_node(sr_index)
-                    self.potential_roots = set()
-                    self.super_root_index = None
-                    sr_index = None
-                    break
+        # super-root may now be empty
+        if not self.terminal_sets.get(sr_index):
+            logger.debug("      reduce_isolated_super_terminals: removing super root")
+            self.terminal_sets.pop(sr_index, None)
+            self.graph.remove_node(sr_index)
+            self.potential_roots = set()
+            self.super_root_index = None
+            self.super_candidate_sink_sets = {}
 
         if num_moved:
             logger.warning(f"      promoted {num_moved} isolated super terminals...")
             if self.do_debug:
-                self.dump_state("solve_isolated_roots_as_trees", num_moved)
+                self.dump_state("reduce_isolated_super_terminals", num_moved)
                 self.validate_reachability()
 
         return num_moved
@@ -3399,7 +3397,7 @@ class SFGraphReductionEngine:
                 self.graph, self.graph, self.terminal_sets
             )
         else:
-            candidate_sink_sets = self._super_candidate_sink_sets()
+            candidate_sink_sets = self.super_candidate_sink_sets
             node_weight_map = self.node_weight_map
 
             non_super_coverage_sets = self.terminal_sets.copy()
@@ -3773,7 +3771,7 @@ class SFGraphReductionEngine:
             non_super_dp_block_results.keys()
         )
 
-        super_candidate_sink_sets = self._super_candidate_sink_sets()
+        super_candidate_sink_sets = self.super_candidate_sink_sets
 
         node_weight_map = {u: self.graph[u][PAYLOAD_WEIGHT_KEY] for u in self.graph.node_indices()}
         roots = set(self.terminal_sets.keys()) - {sr_index}
@@ -3960,6 +3958,7 @@ class SFGraphReductionEngine:
         weight_map = {i: self.graph[i][PAYLOAD_WEIGHT_KEY] for i in self.graph.node_indices()}
 
         self.set_edge_weights()
+
         for st in self.terminal_sets[self.super_root_index]:
             covered = self._collision_envelope(st, non_steiners, weight_map, radius_cap)
 
@@ -4161,9 +4160,11 @@ class SFGraphReductionEngine:
                 logger.success("  no terminal sets left. All demands are satisfied!")
                 break
 
-            # Reduce isolated super terminal - this is a super-root member reduction only
-            if self.reduce_isolated_super_terminals():
-                continue
+            if self.super_root_index is not None:
+                self.super_candidate_sink_sets = self._super_candidate_sink_sets()
+
+                # Reduce isolated super terminals - this is a super-root member reduction only
+                self.reduce_isolated_super_terminals()
 
             # Solve isolated roots - this is a terminal set and Steiner node reduction by `consumption` only
             if self.solve_isolated_roots_as_trees():
