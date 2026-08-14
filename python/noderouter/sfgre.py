@@ -67,7 +67,7 @@ are symmetric.
 | **Ⓢ** | Steiner Node | An optional node; no inherent weight/demand. |
 | **Ⓣ** | Terminal Node | A node that *must* be connected to its partner. |
 | **Ⓡ** | Root Node | The root of an Arborescence (**𝓐**). |
-| **𝕡** | Potential Root Node | An individual node member of **𝔹**. |
+| **𝕡** | Potential Root Node | An individual node member of **𝓟**. |
 | **𝕥** | Super Terminal Node | A terminal whose demand is met by any node in **𝔹**. |
 | **ⓤ, ⓥ, ⓦ** | Variable Nodes | Generic nodes often consumed in reductions. |
 | **⦿** | Hyper-Node | A contracted component or cluster of nodes. |
@@ -139,6 +139,44 @@ Any node designated as the root of an arborescence (rooted tree) of the
 active demand sets as denoted by 𝓐𐞪 excluding any super root.
 
 > Ⓡ ≔ ⓥ ∈ { 𝓡 ∖ 𝕊 }
+
+### Super Terminal (𝕥)
+
+A terminal belonging to a super root’s arbor. Its demand is not bound to a
+single fixed root in 𝓡; it is satisfied by reachability to any admissible
+sink in 𝓟 ∪ 𝓡 that can reach its super root.
+
+> 𝕥 ∈ 𝓐_𝕊          (reference: |𝕊| = 1)
+> 𝕥 ∈ 𝓐_s, s ∈ 𝕊   (general)
+
+### Super Root (s ∈ 𝕊)
+
+A virtual sink vertex whose arbor 𝓐_s collects every super terminal assigned
+to it. Every potential root in 𝓟 that is eligible for s has an outbound edge
+to s; s itself has no outbound edges. This lets each super-terminal demand be
+treated as ordinary single-sink reachability (𝕥 ↠ s) during reduction and DP
+partitioning, while still allowing any admissible sink in 𝓟 ∪ 𝓡 to serve
+that demand.
+
+When |𝕊| = 1 this recovers the single global sink of the reference
+implementation; |𝕊| > 1 permits regional super roots.
+
+> 𝕊 ∩ 𝓡 = ∅,  𝕊 ∩ 𝓟 = ∅
+> 𝓐_𝕊 ≔ ⋃_{s ∈ 𝕊} 𝓐_s
+
+### Max DRT
+
+The global upper bound on any root–terminal shortest-path distance that can
+appear in an optimal forest. It is computed once on the original instance
+and never increases under reduction; subsequent local maxima are clipped to it.
+
+> **max_drt ≔ max { 𝔀(Ⓡ ↠ Ⓣ) | (Ⓡ, Ⓣ) ∈ 𝐃 }**
+> **∀ subsequent states : max_drt' ≤ max_drt**
+
+Used throughout as a dominance/containment radius (directly, or as 2·max_drt
+for collision-envelope certificates); see individual reduction handles for
+specific test conditions.
+
 """
 
 # Primitive Types
@@ -401,7 +439,7 @@ def _filter_blocked_st_interactivity_edges(
     surviving_sts: set[NodeIndex],
 ) -> list[tuple[RootIndex, RootIndex, float]]:
     """Drops st<->root edges the gap/drt test reports but the collision-envelope search
-    already disproved. gap1+gap2 <= drt1+drt2 is a proximity condition and candidate_roots[st]
+    already disproved. gap1+gap2 <= drt1+drt2 is a proximity condition and candidate sinks
     is an exact containment proof, so non-membership there certifies non-interactivity
     which superceeds the gap test.
     """
@@ -1620,11 +1658,13 @@ class SFGraphReductionEngine:
 
     def reduce_potential_roots(self):
         """
-        Reduces potential root entries by distance.
+        Reduces potential roots by state demotion based on distance.
 
         A potential root is only viable if it is within 2 * global_min_max_drt of any super terminal
-        and is reachable by a super terminal. If not and if it has either an empty hyper contents
-        or is a leaf it is removed from the set of potential roots.
+        and is reachable by a super terminal. If not it is removed from the set of potential roots
+        and becomes a normal Steiner node.
+
+        > **𝕡 ∈ 𝓟 : min(dist(𝕥, 𝕡)) > 2 * max_drt ⭆ 𝓟 ⭆ 𝓟 ∖ {𝕡}, Ⓢ ⭆ Ⓢ ⋃ {𝕡} ⇔ 𝓢 ≡ 𝓢'**
         """
         # Nothing to do...
         if self.super_root_index is None:
@@ -1677,21 +1717,22 @@ class SFGraphReductionEngine:
 
     def reduce_demand_roots(self) -> int:
         """
-        Reduces the number of distinct roots by merging fixed nodes (terminals or roots)
-        that lie in the same connected component.
+        Reduces roots by merging arbor sets based on arbor adjacency.
 
         Handles:
         > **`𝑻 ⭆ 𝑻', |𝑻'𐞪| ≤ |𝑻𐞪|, 𝐃 ≡ 𝐃'`**
 
         A subset of G consisting of the roots and terminals of all active demands with any
-        connecting edges amoungst them is taken and augmented with direct edges between each
+        connecting edges between them is taken and augmented with direct edges between each
         terminal and its root. The resulting connected components then define the reduced
         terminal sets.
+
+        > | 𝐆[𝓡 ⋃ 𝑻] : ∃ (Ⓡ_i ⇋ Ⓡ_j) ∨ ∃ (Ⓣ_i ⇋ Ⓣ_j) ⭆ Ⓡ_i ⇴ Ⓡ_j'
 
         Super Terminals are treated as independent of their root (since any super terminal
         can be connected to any potential root).
 
-        This does not reduce the number of terminal-root pairs. It canonicalizes the root
+        NOTE: This does not reduce the number of terminal-root pairs. It canonicalizes the root
         side of each pair and adds root->root pairs for collapsed roots which potentially
         increases the number of terminal-root pairs.
         """
@@ -1789,8 +1830,14 @@ class SFGraphReductionEngine:
 
         return merges
 
-    def reduce_roots_via_articulation_points(self) -> int:
-        """Merge roots whose connectivity is separated by cut vertices in the full graph."""
+    def reduce_roots_via_articulation(self) -> int:
+        """Reduces roots by merging arbor sets based reachability violations by cut articulation points.
+
+        Handles:
+        > | 𝓐_i ↠ ⓥ ↠ 𝑻_i : (ⓥ ∈ Cut(𝐆)) ∧ (𝓐_i ↠∣ⓥ∣↠ 𝑻_i = ∅) ⭆ 𝓐_i ⋃ 𝓐_j ⭆ 𝓐_{ij} ⇔ 𝐃 ≡ 𝐃'
+
+        All arbors that must traverse through a cut articulation point must collide and be merged.
+        """
         logger.trace("reduce_via_articulation_points...")
 
         if self.graph.num_nodes() <= 2:
@@ -1893,7 +1940,7 @@ class SFGraphReductionEngine:
         NOTE: Terminal_sets must be disjoint by root, which is guaranteed by reduce_demand_roots.
 
         Handles:
-        > **`⁝Ⓣʲ¹ ⇋ Ⓣʲ²⁝  ⭆  ⁝Ⓣʲ¹⁝, 𝐆 ∖ Ⓣʲ², 𝓢 ⋃ Ⓣʲ²(⦿)}`**
+        > **`⁝Ⓣʲ¹ ⇋ Ⓣʲ²⁝  ⭆  ⁝Ⓣʲ¹⁝, 𝐆 ∖ Ⓣʲ², 𝓢 ⋃ Ⓣʲ²(⦿)`**
         > **`⁝Ⓡʲ ⇋ Ⓣʲ⁝  ⭆  ⁝Ⓡʲ⁝, 𝐆 ∖ Ⓣʲ, 𝓢 ⋃ Ⓡʲ(⦿)`**
         """
         logger.trace("reduce_adjacent_terminals...")
@@ -1938,8 +1985,8 @@ class SFGraphReductionEngine:
 
         return merges
 
-    def reduce_degree1_steiner_nodes(self) -> int:
-        """Multi-pass degree-1 Steiner node reduction.
+    def reduce_degree1_steiners(self) -> int:
+        """Reduces Steiner nodes by removal based on degree.
 
         If a Steiner node is a leaf, it cannot satisfy or bridge a demand.
 
@@ -1970,7 +2017,7 @@ class SFGraphReductionEngine:
         return removals
 
     def reduce_degree1_terminals(self) -> int:
-        """Single-pass degree-1 terminal reduction.
+        """Reduces terminal adjacent Steiner nodes by consumption based on terminal degree.
 
         If a terminal node is a leaf it must use its neighbor to satisfy a demand.
 
@@ -2016,13 +2063,13 @@ class SFGraphReductionEngine:
         return removals
 
     def reduce_degree1_roots(self) -> int:
-        """Single-pass degree-1 root reduction.
+        """Reduces root adjacent Steiner and terminal nodes by consumption based on root degree.
 
         If a root node with unsatisfied demand is a leaf it must use its neighbor to satisfy a demand.
 
         Handles:
         > **`|Ⓡ ⇋ Ⓢ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ Ⓢ, 𝓢 ⋃ {Ⓢ, Ⓢ(⦿)}`**
-        > **`|Ⓡᵏ ⇋ Ⓣᵏ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ Ⓣᵏ, 𝓢 ⋃ Ⓣᵏ(⦿), 𝓐ᵏ ∖ Ⓣᵏ}`**
+        > **`|Ⓡᵏ ⇋ Ⓣᵏ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ Ⓣᵏ, 𝓢 ⋃ Ⓣᵏ(⦿), 𝓐ᵏ ∖ Ⓣᵏ`**
         > **`|Ⓡᵏ ⇋ Ⓣʲ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ Ⓣʲ, 𝓢 ⋃ Ⓣʲ(⦿), 𝓐ᵏ ⋃ {𝓐ʲ ∖ Ⓣʲ}`**
         > **`|Ⓡᵏ ⇋ 𝕥ʲ⁝  ⭆  Ⓡ ⇋ ⁝, 𝐆 ∖ 𝕥ʲ, 𝓢 ⋃ 𝕥ʲ(⦿), 𝕊 ∖ 𝕥`**
         """
@@ -2081,12 +2128,11 @@ class SFGraphReductionEngine:
 
         return removals
 
-    def merge_adjacent_degree2_steiner_chains(self) -> int:
-        """Merge degree-2 Steiner chains that are adjacent to each other.
+    def reduce_adjacent_degree2_steiners(self) -> int:
+        """Reduces adjacent degree-2 Steiner nodes by absorption.
 
         If a degree-2 Steiner node is adjacent to another degree-2 Steiner node they
-        can only satisfy a demand by bridging both Steiner nodes, so they can be
-        merged by absorption.
+        can only satisfy a demand by bridging both Steiner nodes.
 
         Handles:
         > **`⁝⇋ Ⓢ¹ ⇋ Ⓢ² ⇋⁝  ⭆  ⁝⇋ Ⓢ¹ ⇋⁝, Ⓢ² ⇴ Ⓢ¹`**
@@ -2131,12 +2177,14 @@ class SFGraphReductionEngine:
 
         return removals
 
-    def reduce_degree2_steiner_dominance(self) -> int:
-        """
-        Removes Steiner nodes of degree 2 that are dominated by alternate paths.
+    def reduce_degree2_steiners_by_dominance(self) -> int:
+        """Reduces Steiner nodes of degree 2 that are dominated by alternate paths.
+
+        A Steiner node v of degree 2 is dominated if there is a path from its adjacent
+        node u to its adjacent node v that is shorter than the direct path traversing v.
 
         Handles:
-        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝ ⭆  ⁝ⓤ ⇋ ⓥ⁝, 𝐆 ∖ Ⓢ  ⇔ 𝔀(ⓤ ↠∣Ⓢ∣↠ ⓥ) <= 𝔀(ⓤ ⇋ Ⓢ ⇋ ⓥ)`**
+        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝ ⭆  ⁝ⓤ ⇋ ⓥ⁝, 𝐆 ∖ Ⓢ  ⇔ 𝔀(ⓤ ↠∣Ⓢ∣↠ ⓥ) ≤ 𝔀(ⓤ ⇋ Ⓢ ⇋ ⓥ)`**
         """
         logger.trace("reduce_degree2_steiner_dominance...")
 
@@ -2184,7 +2232,7 @@ class SFGraphReductionEngine:
 
         return removals
 
-    def reduce_degree2_articulation(self) -> int:
+    def reduce_degree2_steiners_via_articulation(self) -> int:
         """
         Processes degree-2 articulation point / 2-bridge nodes for inclusion/exclusion.
 
@@ -2193,8 +2241,8 @@ class SFGraphReductionEngine:
         solution then it is safe to be excluded from the solution.
 
         Handles:
-        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝  ⭆  ⁝ⓤ ∣ ⓥ⁝, 𝐆 ∖ Ⓢ  ⇔  Ⓡ (↠∣Ⓢ∣↠) Ⓣ ∀ 𝐃`**
-        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝  ⭆  ⁝ⓤ ⇋ ⓥ⁝, ⓤ ↣ ○  ⇔  Ⓡ ¬(↠∣Ⓢ∣↠) Ⓣ ∀ 𝐃, dist(𝕥, 𝕡) <= dist(𝕥, Ⓢ)`**
+        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝  ⭆  ⁝ⓤ ∣ ⓥ⁝, 𝐆 ∖ Ⓢ  ⇔  Ⓡ (↠∣Ⓢ∣↠) Ⓣ ∀ 𝐃  ∧  (𝕊 = ∅ ∨ ∀ 𝕥 ∈ 𝕊 : Env(𝕥) ⊆ SCC(𝐆 ∖ Ⓢ, 𝕥))`**
+        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝  ⭆  ⁝ⓤ ⇋ ⓥ⁝, Ⓢ ↣ ○  ⇔  ∃ 𝐃 : Ⓡ ¬(↠∣Ⓢ∣↠) Ⓣ`**
         """
         logger.trace("reduce_degree2_articulation...")
 
@@ -2285,7 +2333,25 @@ class SFGraphReductionEngine:
         return removals + fixes
 
     def reduce_steiner_bridges(self) -> int:
-        """Bridge reduction for Steiner Forest."""
+        """Bridge reduction for Steiner Forest.
+
+        A bridge edge (ⓤ, ⓥ) whose removal severs no active demand path is a candidate for
+        exclusion. Exclusion is certified without consuming either endpoint only when, of the
+        two components the cut produces, at least one is either (a) free of any fixed node, or
+        (b) touched by exactly one root and contains that root's entire terminal set — in either
+        case the edge was never load-bearing for more than one arborescence. When a super root
+        is present, exclusion additionally requires every super terminal's collision envelope to
+        stay contained within its own resulting component; the super root's own trivial singleton
+        component is never treated as a candidate piece. If the cut does violate an active demand,
+        the edge must be traversed in any optimal solution and the Steiner endpoint is consumed
+        into the other.
+
+        Handles:
+        > **`⁝ⓤ ⇋ ⓥ⁝ : (ⓤ,ⓥ) ∈ Bridges(𝐆), (Ⓢ ∈ {ⓤ,ⓥ})  ⭆  𝐆 ∖ {(ⓤ,ⓥ)}  ⇔  Ⓡ (↠|(ⓤ,ⓥ)|↠) Ⓣ ∀ 𝐃 ∖ 𝕊`**
+        > **`  ∧  (𝕊 = ∅ ∨ ∀ 𝕥 ∈ 𝕊 : Env(𝕥) ⊆ SCC(𝐆 ∖ {(ⓤ,ⓥ)}, 𝕥))`**
+        > **`  ∧  ∃ 𝓒 ∈ π₀(𝐆 ∖ {(ⓤ,ⓥ)}) ∖ {𝕊} : (𝓒 ∩ 𝓢 = ∅) ∨ (|𝓒 ∩ 𝓡| = 1 ∧ 𝓐ʳ ⊆ 𝓒, r ∈ 𝓒 ∩ 𝓡)`**
+        > **`⁝ⓤ ⇋ Ⓢ ⇋ ⓥ⁝ : (ⓤ,ⓥ) ∈ Bridges(𝐆)  ⭆  ⁝ⓤ ⇋ ⓥ⁝, Ⓢ ↣ ○  ⇔  ∃ 𝐃 ∖ 𝕊 : Ⓡ ¬(↠|(ⓤ,ⓥ)|↠) Ⓣ`**
+        """
         logger.trace("reduce_steiner_bridges...")
 
         non_steiners = self.non_steiner_nodes()
@@ -2431,8 +2497,8 @@ class SFGraphReductionEngine:
 
     def reduce_degreek_steiner_dominance(self, max_degree: int = 4) -> int:
         """
-        Removes Steiner nodes of small degree k that are dominated by alternate paths.
-        Strict dominance is used in the presence of fixed nodes.
+        Reduces Steiner nodes of small degree k that are dominated by alternate
+        paths by removal. Strict dominance is used in the presence of fixed nodes.
 
         Reduction Rule:
         ```
@@ -2545,7 +2611,10 @@ class SFGraphReductionEngine:
         return removals
 
     def reduce_steiner_triangle_degree2_legs(self):
-        """Absorbs degree-2 Steiner nodes adjacent to degree-3 Steiner triangles.
+        """Reduces degree-2 Steiner nodes adjacent to degree-3 Steiner triangles by absorption.
+
+        Any degree-2 Steiner node adjacent to a degree-3 Steiner triangle can
+        only satisfy a demand by bridging the triangle.
 
         Handles:
         > **`⁝⋯Ⓢᵃ⇋Ⓢᵘ⇋Ⓢᵇ⋯⁝ ∧ ⋯Ⓢᵃ⇋Ⓢᵇ⋯ ∧ ⋯Ⓢᵘ⇋Ⓢᵛ⇋⁝  ⭆  ⓥ ⇴ ⓤ`**
@@ -2589,7 +2658,10 @@ class SFGraphReductionEngine:
         return removals
 
     def reduce_blocked_roots(self):
-        """Merge roots whose arborescences block another root's demand.
+        """Reduces roots whose demands are blocked by strictly one other root's arbor.
+
+        Any root whose demands are blocked by strictly one other root's arbor can
+        only satisfy a demand by collision with that other root's arbor.
 
         Handles:
         > **` ⁝ Ⓣʲ ¬(↠∣𝓐ᵏ∣↠) Ⓡʲ ⁝  ⭆  𝓐ʲ ↣ 𝓐ᵏ`**
@@ -2664,16 +2736,19 @@ class SFGraphReductionEngine:
         return merges
 
     def reduce_degreek_enclosed_steiner(self) -> int:
-        """
-        General reduction for enclosed Steiner nodes surrounded by
-        degree-2 terminals of the same arborescence.
+        """Reduces Steiner nodes surrounded by degree-2 terminals of
+        the same arborescence by consumption.
 
-        If there exists at least one unambiguous outer Steiner endpoint u*
+        When there exists at least one unambiguous outer Steiner endpoint u*
         such that w(e) <= w(u*), then e must be purchased in any optimal
         solution (even if all other outer endpoints are "free" due to
         external sharing).
 
-        This generalizes both the degree-2 and degree-3 enclosed cases.
+        Handles:
+        > **`⁝Ⓢᵘᵢ ⇋ Ⓣᵏᵢ ⇋ Ⓢᵉ ⇋ Ⓣᵏⱼ ⇋ Ⓢᵘⱼ⁝  ⭆  Ⓢᵉ ↣ Ⓣᵏ  ⇔  ∃ Ⓢᵘ* : 𝔀(Ⓢᵉ) ≤ 𝔀(Ⓢᵘ*)`**
+
+        NOTE: This generalizes both the degree-2 and degree-3 enclosed cases,
+              yet is more expensive to compute than the degree-2 case.
         """
         logger.trace("reduce_enclosed_same_root_steiner...")
 
@@ -2784,13 +2859,12 @@ class SFGraphReductionEngine:
 
     def reduce_enclosed_steiner_clusters(self) -> int:
         """
-        Removes Steiner nodes provably absent from every optimal Steiner tree
+        Reduces Steiner nodes provably absent from every optimal Steiner tree
         realization over every interface subset of recursively decomposed
-        Steiner components.
+        Steiner components by removal.
 
-        Large interface components are recursively decomposed across bridge edges
-        until the interface count becomes tractable for exact Dreyfus-Wagner
-        certification.
+        NOTE: Large interface components are recursively decomposed across bridge edges
+        until the interface count becomes tractable for exact Dreyfus-Wagner certification.
 
         Handles:
         ```
@@ -2973,7 +3047,7 @@ class SFGraphReductionEngine:
             return left_component, right_component, {bridge_u}, {bridge_v}
 
         rxG = subgraph_stable(self.graph, component)
-        result = self.find_and_split_2_edge_components(rxG, PAYLOAD_WEIGHT_KEY)
+        result = self._find_and_split_2_edge_components(rxG, PAYLOAD_WEIGHT_KEY)
         if result is None:
             return None
 
@@ -3043,7 +3117,7 @@ class SFGraphReductionEngine:
 
         return None
 
-    def find_and_split_2_edge_components(
+    def _find_and_split_2_edge_components(
         self, digraph: rx.PyDiGraph, weight_attr: str = "weight"
     ) -> tuple[rx.PyDiGraph, rx.PyDiGraph, set[int], set[int]] | None:
         """
@@ -3189,13 +3263,15 @@ class SFGraphReductionEngine:
         return best_left_graph, best_right_graph, best_cut_left_endpoints, best_cut_right_endpoints
 
     def reduce_steiner_nodes_by_distance(self) -> int:
-        """
-        Steiner node reduction by distance.
+        """Reduces Steiner nodes based on weight or reachability distance bounds by removal.
 
-        For each Steiner node v: if its weight is greater than the longest root -> terminal path, v is dominated and can be removed.
-        Also, for each Steiner node v: if the _shortest_ distance to a terminal is greater than the longest root -> terminal path, v is dominated and can be removed.
+        If a Steiner node's weight exceeds min_max_drt, or if its minimum distance to
+        any terminal exceeds min_max_drt, it is dominated and cannot participate in an
+        optimal solution.
 
-        Returns number of removed/absorbed nodes.
+        Handles:
+            > **` 𝔀(Ⓢ) > min_max_drt  ⭆  𝐆 ≔ 𝐆 ∖ Ⓢ`**
+            > **`¬( 𝔀(Ⓢ ↠ Ⓣ) ≤ min_max_drt )  ⭆  𝐆 ≔ 𝐆 ∖ Ⓢ`**
         """
         logger.trace("reduce_steiner_nodes_by_distance...")
 
@@ -3283,7 +3359,6 @@ class SFGraphReductionEngine:
         of returning a bool.
 
         Returns (envelope, collisions):
-        envelope   -- Steiner nodes actually traversed to reach a collision
         collisions -- the first non-Steiner node hit along each frontier branch
         """
         dist: dict[int, float] = {source: weight_map[source]}
@@ -3311,7 +3386,15 @@ class SFGraphReductionEngine:
         return collisions
 
     def reduce_isolated_super_terminals(self) -> int:
-        """Promote super-terminals to real roots when collision envelope admits a single sink."""
+        """Reduces super root set by promoting super terminals to real roots based on single sink
+        collision envelope over 2 * global_min_max_drt.
+
+        When there exists only a single potential sink for a super terminal within 2 * global_min_max_drt
+        then that must be the super terminal's root in an optimal solution.
+
+        Handles:
+        > **`| 𝕥 : card({○ ∈ (𝓟 ⋃ 𝑻 ⋃ 𝓡) : dist(𝕥, ○) ≤ 2 * min_max_drt}) = 1  ⭆  𝕥 ⭆ Ⓣ, ○ ⭆ Ⓡ, 𝕊 ≔ 𝕊 ∖ 𝕥`**
+        """
         num_moved = 0
         candidate_sink_sets = self.super_candidate_sink_sets
         sr_index = self.super_root_index
@@ -3361,28 +3444,24 @@ class SFGraphReductionEngine:
         return num_moved
 
     def solve_isolated_roots_as_trees(self) -> int:
-        """
-        Singleton root arbor reduction by interactivity isolation.
+        """Reduces globally isolated singleton root arborescences as exact sub-trees by consumption.
 
-        Any isolated root is solved as a single tree. The witness of the tree
-        is then consumed from the root outward, leaving the root node in the
-        graph.
+        When an arborescence 𝓐ᵏ is provably isolated from all other demand sets
+        in the global potential interaction graph, its optimal realization W_k
+        can be computed independently. The nodes of W_k (excluding Ⓡᵏ) are consumed
+        outward into the root, fixing them into the solution set 𝓢.
 
-        NOTE: Isolation, for solving as a tree, is distinct from isolation
-        in the interactivity graph _after_ its' edges have been filtered
-        for arbor reachability. The filtering is purely for the partition
-        block solving and filtering with the global solve_as_tree pathway and
-        says nothing about the isolated root from the global arbor view, that
-        is what the max_rt_distance check is for. In other words, if an isolated
-        root's arbor is consumed it places those nodes in the fixed_nodes set, yet
-        since that isolation is from the filtered interactivity graph perspective
-        which expects the non-globally witnessed nodes to be _removed_ not the
-        witnessed nodes to be consumed which can lead to an alternate route being
-        introduced into the solution thus making it suboptimal.
+        Handles:
+        > | Ⓡᵏ : Isol(𝓐ᵏ) ⭆ ⓥ ↣ Ⓡᵏ ∀ ⓥ ∈ (W_k ∖ Ⓡᵏ), 𝓢 ≔ 𝓢 ⋃ W_k  ⇔  W_k ∈ OPT_ST(𝓐ᵏ, 𝐆)
 
-        NOTE: This function does not handle super terminals as roots.
+        NOTE: Global isolation (`Isol(𝓐ᵏ)`) is distinct from local isolation within a
+        filtered interactivity graph block. Consuming nodes based on filtered local
+        isolation is unsound because fixing nodes in 𝓢 introduces zero-cost paths that
+        may distort global sub-optimality for disjoint arborescences. Only global
+        envelope isolation guarantees that consuming W_k preserves global optimality.
 
-        Returns number of collapsed nodes.
+        NOTE:
+        This function does not process super terminals as roots.
         """
         logger.trace("solve_isolated_roots_as_trees...")
 
@@ -3494,7 +3573,75 @@ class SFGraphReductionEngine:
         return removals
 
     def solve_as_tree(self) -> int:
-        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
+        """Solves the remaining stable reduced state graph by taking the best solution from the composite instances.
+
+        For any optimal global Forest solution that Forest can be found in one of the solutions to
+        all of the partitions of the terminal sets. The partitions themselves can be represented as
+        independent composite instances over all subsets of the terminal sets. This function utilizes
+        a set cover DP solver to find the best solution to each composite instance and then takes
+        the best solution from these composite instances as a witnessed optimal solution to the remaining
+        stable reduced state graph and removes all non-witnessed nodes from the graph.
+
+        Handles:
+        > **`𝐏* ≔ argmin_{𝐏 ∈ Partition(𝒞)} ∑_{B ∈ 𝐏} OPT_ST(B, 𝐆)  ⭆  𝐆 ≔ 𝐆 ∖ ({ⓥ ∈ 𝐆 : ⓥ ∉ ⋃_{B ∈ 𝐏*} W_B} ∖ 𝕊)  ⇔  𝐆 stable ∧ ¬𝓦 ∧ 𝑻 ≠ ∅`**
+        >
+        > where: 𝒞 ≔ 𝓡 ∖ 𝕊, or 𝓡 ∖ 𝕊 augmented with 𝕥 ∈ dom(𝕊) when 𝕊 is active
+
+        Several optimizations take place at the block level, the task level, and the mask level to
+        speed up the solving process; each is independently certified.
+
+        Block level optimization lemmas (prep, applied while generating candidate blocks):
+            1. A basic structurally valid block can only consist of reachable coverage representatives
+               and the potential interactivity graph (IG) represents potential interactions with edges
+               between the coverage representatives, thus all representatives of a block are strongly
+               connected in the IG.
+            2. An IG edge admitted by proximity (gap/drt) but lacking a genuine Steiner-only path is
+               illusory as a standalone pair -- some third representative's own required territory is
+               doing the connecting, and that representative's cost is paid in full regardless of block
+               membership, so the bare pair buys no sharing. The pair itself is excluded from block
+               generation, but nothing else is: {A,B} being illusory says nothing about {A,B,C}, so any
+               superset still generated using that same IG edge is left untouched and judged on its own
+               solve, never pruned by inheritance from the pair's exclusion.
+            3. The same illusory-sharing question, asked directly rather than through the IG's proximity
+               edges: for any candidate block (of any size), union-find the block's own representatives
+               together with the Steiner components each one's own territory touches. A block whose
+               representatives don't all land in one component has no representative acting as the real
+               bridge for at least one pair inside it -- the same node would then be priced by more than
+               one independently-solved block in the DP sum, which is unsound regardless of how the IG's
+               edges happened to admit the block structurally. This is the tightest sound necessary
+               condition available; it subsumes lemma 2 but is more expensive, so lemma 2 still prunes
+               first wherever it can.
+            4. Pre-solve dominance by max terminal-to-terminal distance: no Steiner tree spanning a set
+               of terminals can cost less than the single longest pairwise shortest-path distance among
+               them (that path must be covered by the tree in some form). If that distance already
+               exceeds the sum of the block's already-solved singleton costs, the composite cannot beat
+               the decomposition and is dropped before ever reaching the solver.
+            5. Pre-solve dominance by MST lower bound: `OPT >= W_MST / (2 - 2/k)` (KMB) is a lower bound
+               on any Steiner tree over k terminals. If that bound already exceeds the sum of the block's
+               singleton costs, no joint solve can beat the decomposition, so the block is dropped before
+               solving. Strict '>' only -- a tie falls through to the solver, since a tying composite may
+               still share more structure with the rest of the forest than any decomposition would.
+            6. Post-solve dominance by singletons: once solved, a block whose direct cost is not lower
+               than the sum of its members' singleton costs is dominated by the decomposition and is
+               excluded from the mask space entirely -- it can never be part of an optimal partition,
+               since replacing it with its singletons is always at least as good.
+            7. Super terminal pathway only: any non-super block already proven dominated during the
+               non-super solve stays excluded from the augmented (super-terminal-inclusive) candidate
+               space -- augmenting a block with a super terminal cannot rescue a decomposition that was
+               already proven no better than its primitives before the super terminal was even considered.
+        Mask level optimization lemmas (DP, applied over solved block costs before/during partitioning):
+            8. Composite mask dominance: for a solved block's mask, if any decomposition into two
+               disjoint, already-solved sub-masks costs no more than the block's own direct solve, the
+               block is not a primitive realization -- it is dropped from the mask space the same as
+               lemma 6, just re-checked at the mask level where the full combinatorial decomposition
+               space (not just the block's own singleton members) is available to compare against.
+            9. Co-occurrence partitioning: two coverage representatives only ever need a joint DP state
+               if some surviving mask contains both, directly or transitively via a chain of shared
+               masks. Any representative outside that union-find grouping is provably independent of
+               the rest -- the global optimum decomposes exactly into each component's independent
+               optimum, so the DP is solved once per independent component instead of once over the
+               full state space, which a single combined n-bit DP would pay for needlessly.
+        """
         logger.trace("solve_as_tree...")
 
         start_time = time()
@@ -4132,7 +4279,7 @@ class SFGraphReductionEngine:
             self.reduce_potential_roots()
 
             # Reduce demand roots - this is not a graph mutation it is a terminal set consolidation only
-            self.reduce_roots_via_articulation_points()
+            self.reduce_roots_via_articulation()
 
             # Reduce demand roots - this is not a graph mutation it is a terminal set consolidation only
             self.reduce_demand_roots()
@@ -4141,7 +4288,7 @@ class SFGraphReductionEngine:
             self.reduce_adjacent_terminals()
 
             # Reduce degree1 steiner nodes - this is a Steiner node graph reduction by `consume` with terminal set consolidation
-            self.reduce_degree1_steiner_nodes()
+            self.reduce_degree1_steiners()
 
             # Reduce degree1 terminals - this is a Steiner node graph reduction by `remove` only
             self.reduce_degree1_terminals()
@@ -4173,16 +4320,16 @@ class SFGraphReductionEngine:
             # MARK: Basic reductions
 
             # Reduce 2-degree articulation points - this is a Steiner node graph reduction with mixed handling
-            self.reduce_degree2_articulation()
+            self.reduce_degree2_steiners_via_articulation()
 
             # Reduce 2-degree steiner chains - this is a Steiner node graph reduction by `absorb` only
-            self.merge_adjacent_degree2_steiner_chains()
+            self.reduce_adjacent_degree2_steiners()
 
             # Reduce steiner triangle 2-degree legs - this is a Steiner node graph reduction by `absorb` only
             self.reduce_steiner_triangle_degree2_legs()
 
             # Reduce 2-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
-            self.reduce_degree2_steiner_dominance()
+            self.reduce_degree2_steiners_by_dominance()
 
             # Reduce k-degree steiner dominance - this is a Steiner node graph reduction by `remove` only
             self.reduce_degreek_steiner_dominance()
