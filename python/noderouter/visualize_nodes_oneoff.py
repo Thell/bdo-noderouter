@@ -293,7 +293,7 @@ def visualize_solution_graph(
     # This is the main map which provides the coordinate system for location and ui controls.
     m = folium.Map(
         crs="Simple",  # Don't change
-        location=[0, 0],  # Don't change
+        location=[30, -20],  # Don't change
         zoom_start=2,  # Don't change
         zoom_snap=0.25,
         tiles=None,
