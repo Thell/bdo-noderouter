@@ -433,27 +433,6 @@ def _blocked_interactivity_edges(
     return blocked_edges
 
 
-def _filter_blocked_st_interactivity_edges(
-    interactivity_edges: list[tuple[RootIndex, RootIndex, float]],
-    super_candidate_sink_sets: CoverageSets,
-    surviving_sts: set[NodeIndex],
-) -> list[tuple[RootIndex, RootIndex, float]]:
-    """Drops st<->root edges the gap/drt test reports but the collision-envelope search
-    already disproved. gap1+gap2 <= drt1+drt2 is a proximity condition and candidate sinks
-    is an exact containment proof, so non-membership there certifies non-interactivity
-    which superceeds the gap test.
-    """
-    filtered = []
-    for u, v, gap in interactivity_edges:
-        u_is_st, v_is_st = u in surviving_sts, v in surviving_sts
-        if u_is_st and not v_is_st and v not in super_candidate_sink_sets[u]:
-            continue
-        if v_is_st and not u_is_st and u not in super_candidate_sink_sets[v]:
-            continue
-        filtered.append((u, v, gap))
-    return filtered
-
-
 def _problem_generator(
     instance_id: str,
     component_data: dict[ConnectedComponentMappingKey, ConnectedComponentMappings],
@@ -3490,7 +3469,6 @@ class SFGraphReductionEngine:
                 node_weight_map,
                 candidate_sink_sets,
                 non_super_coverage_sets,
-                allow_filtering=False,
             )
 
         isolates = rx.isolates(interactivity_graph)
@@ -3931,7 +3909,6 @@ class SFGraphReductionEngine:
             node_weight_map,
             super_candidate_sink_sets,
             non_super_coverage_sets,
-            allow_filtering=True,
         )
 
         # Component generation
@@ -4131,7 +4108,6 @@ class SFGraphReductionEngine:
         node_weight_map: dict[int, int],
         super_candidate_sink_sets: CoverageSets,
         non_super_coverage_sets: CoverageSets,
-        allow_filtering: bool,
     ) -> tuple[PyDiGraph, BlockedInteractionEdges, CoverageSets]:
         logger.trace("    _interactivity_graph_super...")
         assert self.super_root_index is not None
@@ -4172,11 +4148,6 @@ class SFGraphReductionEngine:
             node_weight_map,
             arbor_rt_all_shortest_path_unions,
         )
-
-        if allow_filtering:
-            interactivity_edges = _filter_blocked_st_interactivity_edges(
-                interactivity_edges, super_candidate_sink_sets, super_terminals
-            )
 
         # NOTE: We can't use self.graph for the interactivity itself or the gaps will collapse
         interactivity_graph, blocked_edges = self._interactivity_graph(
