@@ -3954,15 +3954,21 @@ class SFGraphReductionEngine:
                 # there are no other roots. This enforces potential root transit when the
                 # super terminals are considered in isolation.
                 block_sr_index = 0  # disabled
+
+                # Adding the super root to the terminals of a block that contains only super terminals
+                # allows the arbor root to be the super root.
                 if all(i in super_terminals for i in block_key):
                     terminals.add(self.super_root_index)
                     block_sr_index = sr_index
 
+                # We purposefully omit the collision envelope (candidate sinks) from the block since
+                # the super terminal is being considered as a normal terminal within the composite block.
                 for k in block_key:
                     terminals.add(k)
                     if k not in super_terminals:
                         terminals.update(self.terminal_sets[k])
 
+                # Any block without any super terminals has already been pre-solved or dominated.
                 if not terminals & super_terminals_set:
                     skipped_presolved_block_count += 1
                     continue
