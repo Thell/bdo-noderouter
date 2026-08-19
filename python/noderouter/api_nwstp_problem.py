@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self, TypedDict, cast
+from typing import Self, cast
 
 import rustworkx as rx
 from bidict import bidict
@@ -44,16 +44,6 @@ terminal: list[int]
 super_root_index: int
     Super root index. `0` denotes no super root.
 """
-
-
-class ConnectedComponentMappings(TypedDict):
-    component: set[int]
-    reachable: set[int]
-    adj_map: dict[int, list[int]]
-    nodes_list: list[int]
-    node_index_map: dict[int, int]
-    dimacs_id_map: dict[int, int]
-    inv_dimacs_id_map: dict[int, int]
 
 
 @dataclass(slots=True)

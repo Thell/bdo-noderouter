@@ -12,6 +12,10 @@ memory = Memory(location=".cache", verbose=0)
 MAX_BUDGET = 550
 
 PAYLOAD_WEIGHT_KEY: str = "need_exploration_point"
+HYPERNODE_CONTENTS_KEY = "collapsed_nodes"
+
+# Matches Rust u64::MAX representation for INF
+INT_INF = 18446744073709551615
 
 
 def set_logger(config: dict):
