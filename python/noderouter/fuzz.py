@@ -8,12 +8,14 @@ import sys
 import threading
 import time
 import tkinter as tk
-from enum import IntEnum
+from dataclasses import dataclass
+from enum import Enum, IntEnum, auto
 
 import polars as pl
 from loguru import logger
 
 import api_data_store as ds
+import api_polars_summaries as ps
 from api_common import MAX_BUDGET, set_logger
 from optimizer_mip import optimize_with_terminals as mip_optimize
 from optimizer_nr import optimize_with_terminals as nr_optimize
@@ -35,11 +37,164 @@ class ShutdownLevel(IntEnum):
     IMMEDIATE = 4  # Exit immediately
 
 
+class ReportLevel(Enum):
+    STRATEGY = auto()
+    DANGER = auto()
+    BUDGET = auto()
+    PROCESS = auto()
+
+
+@dataclass
+class TimingAccumulator:
+    """Accumulate original MIP/NR solve times (not wall-clock / cache-hit times)."""
+
+    # transient — reset on strategy change
+    strategy_mip: float = 0.0
+    strategy_nr: float = 0.0
+    strategy_n: int = 0
+
+    # cumulative by danger mode (survive across budgets)
+    danger_mip: float = 0.0
+    danger_nr: float = 0.0
+    danger_n: int = 0
+    no_danger_mip: float = 0.0
+    no_danger_nr: float = 0.0
+    no_danger_n: int = 0
+
+    # cumulative for current budget — reset on budget change
+    budget_mip: float = 0.0
+    budget_nr: float = 0.0
+    budget_n: int = 0
+
+    # process lifetime — never reset
+    process_mip: float = 0.0
+    process_nr: float = 0.0
+    process_n: int = 0
+
+    prev_strategy: PairingStrategy | None = None
+    prev_danger: bool | None = None
+    prev_budget: int | None = None
+
+    def update(self, row: _FuzzInstanceMetrics) -> None:
+        """Ingest one completed sample; print + reset any levels that just ended."""
+        strategy = PairingStrategy(row["strategy"]) if isinstance(row["strategy"], str) else row["strategy"]
+        danger = bool(row["include_danger"])
+        budget = int(row["budget"])
+        mip = float(row["mip_duration"])
+        nr = float(row["nr_duration"])
+
+        # --- boundary detection (print the level that just finished) ---
+        if self.prev_strategy is not None and strategy != self.prev_strategy:
+            if self.strategy_n > 0:
+                self.print_summary(ReportLevel.STRATEGY)
+            self._reset_strategy()
+
+        if self.prev_budget is not None and budget != self.prev_budget:
+            # budget change implies we should also flush strategy if not already
+            if self.strategy_n > 0:
+                self.print_summary(ReportLevel.STRATEGY)
+                self._reset_strategy()
+            if self.budget_n > 0:
+                self.print_summary(ReportLevel.BUDGET)
+            self._reset_budget()
+
+        # --- accumulate ---
+        self.strategy_mip += mip
+        self.strategy_nr += nr
+        self.strategy_n += 1
+
+        if danger:
+            self.danger_mip += mip
+            self.danger_nr += nr
+            self.danger_n += 1
+        else:
+            self.no_danger_mip += mip
+            self.no_danger_nr += nr
+            self.no_danger_n += 1
+
+        self.budget_mip += mip
+        self.budget_nr += nr
+        self.budget_n += 1
+
+        self.process_mip += mip
+        self.process_nr += nr
+        self.process_n += 1
+
+        self.prev_strategy = strategy
+        self.prev_danger = danger
+        self.prev_budget = budget
+
+    def flush(self) -> None:
+        """Print any non-empty open levels (call on graceful exit / end of run)."""
+        if self.strategy_n > 0:
+            self.print_summary(ReportLevel.STRATEGY)
+            self._reset_strategy()
+        if self.budget_n > 0:
+            self.print_summary(ReportLevel.BUDGET)
+            self._reset_budget()
+        if self.process_n > 0:
+            self.print_summary(ReportLevel.PROCESS)
+
+    def print_summary(self, level: ReportLevel) -> None:
+        if level == ReportLevel.STRATEGY:
+            strat = self.prev_strategy.value if self.prev_strategy else "?"
+            danger_s = "yes" if self.prev_danger else "no"
+            budget = self.prev_budget if self.prev_budget is not None else "?"
+            print(
+                f"[TIMING] strategy={strat:<{MAX_LEN_PAIRING_STRATEGY}} "
+                f"budget={budget} danger={danger_s} n={self.strategy_n}"
+                f"         MIP {self.strategy_mip:10.1f}s   NR {self.strategy_nr:8.1f}s"
+            )
+        elif level == ReportLevel.DANGER:
+            # dual report for both danger modes
+            if self.danger_n > 0:
+                print(
+                    f"[TIMING] danger=yes   n={self.danger_n}"
+                    f"         MIP {self.danger_mip:10.1f}s   NR {self.danger_nr:8.1f}s"
+                )
+            if self.no_danger_n > 0:
+                print(
+                    f"[TIMING] danger=no    n={self.no_danger_n}"
+                    f"         MIP {self.no_danger_mip:10.1f}s   NR {self.no_danger_nr:8.1f}s"
+                )
+        elif level == ReportLevel.BUDGET:
+            budget = self.prev_budget if self.prev_budget is not None else "?"
+            print(
+                f"[TIMING] budget={budget}  n={self.budget_n}"
+                f"         MIP {self.budget_mip:10.1f}s   NR {self.budget_nr:8.1f}s"
+            )
+        elif level == ReportLevel.PROCESS:
+            print(
+                f"[TIMING] PROCESS  n={self.process_n}"
+                f"         MIP {self.process_mip:10.1f}s   NR {self.process_nr:8.1f}s"
+            )
+            if self.danger_n > 0 or self.no_danger_n > 0:
+                self.print_summary(ReportLevel.DANGER)
+
+    def _reset_strategy(self) -> None:
+        self.strategy_mip = 0.0
+        self.strategy_nr = 0.0
+        self.strategy_n = 0
+
+    def _reset_budget(self) -> None:
+        self.budget_mip = 0.0
+        self.budget_nr = 0.0
+        self.budget_n = 0
+
+
+FUZZ_TIMER = TimingAccumulator()
+
+
 LOG_LEVELS = ["SUCCESS", "INFO", "DEBUG", "TRACE"]
 current_log_level_index = 1
 
 _shutdown_level = ShutdownLevel.NONE
 _shutdown_state_index = 0
+
+# Pause-after-test control (set by UI, observed by sample loop)
+_pause_after_test = False
+_paused = False
+_pause_condition = threading.Condition()
 
 SHUTDOWN_STATES = [
     (ShutdownLevel.BUDGET, "Graceful: Budget", "orange"),
@@ -52,7 +207,7 @@ SHUTDOWN_STATES = [
 def _create_ui():
     root = tk.Tk()
     root.title("Test Control")
-    root.geometry("250x120")
+    root.geometry("250x180")
     root.attributes("-topmost", True)
 
     # --- 1. SHUTDOWN BUTTON LOGIC ---
@@ -79,7 +234,34 @@ def _create_ui():
     shutdown_btn = tk.Button(root, text=initial_text, command=on_shutdown_click, bg=initial_bg)
     shutdown_btn.pack(expand=True, fill="both", padx=10, pady=(10, 5))
 
-    # --- 2. LOG LEVEL TOGGLE LOGIC ---
+    # --- 2. PAUSE AFTER TEST BUTTON LOGIC ---
+    def on_pause_click():
+        global _pause_after_test, _paused
+
+        with _pause_condition:
+            if _paused:
+                # Currently paused → resume
+                _paused = False
+                _pause_after_test = False
+                pause_btn.config(text="Pause After Test", bg="lightblue")
+                print("\n[CONTROL] Resumed — continuing tests...", file=sys.stderr)
+                _pause_condition.notify_all()
+            else:
+                # Not paused → request pause after current test
+                _pause_after_test = True
+                pause_btn.config(text="Pause Requested...", bg="gold")
+                print(
+                    "\n[CONTROL] Pause after current test requested — will pause when test finishes...",
+                    file=sys.stderr,
+                )
+
+    pause_btn = tk.Button(root, text="Pause After Test", command=on_pause_click, bg="lightblue")
+    pause_btn.pack(expand=True, fill="both", padx=10, pady=5)
+
+    # Keep a reference so the sample loop can update the button when it actually pauses
+    root.pause_btn = pause_btn  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
+
+    # --- 3. LOG LEVEL TOGGLE LOGIC ---
     def on_log_click():
         global current_log_level_index
         current_log_level_index = (current_log_level_index + 1) % len(LOG_LEVELS)
@@ -102,7 +284,56 @@ def _create_ui():
     log_btn = tk.Button(root, text=initial_text, command=on_log_click, bg="lightgray")
     log_btn.pack(expand=True, fill="both", padx=10, pady=(5, 10))
 
+    # Expose root so the main thread can safely update the pause button when pausing
+    global _ui_root
+    _ui_root = root
+
     root.mainloop()
+
+
+_ui_root: tk.Tk | None = None
+
+
+def _set_paused_ui_state():
+    """Update the pause button to the 'Paused / click to Resume' state (must run on UI thread)."""
+    if _ui_root is None:
+        return
+    try:
+        btn = getattr(_ui_root, "pause_btn", None)
+        if btn is not None:
+            btn.config(text="▶ RESUME", bg="limegreen")
+    except Exception:  # noqa: BLE001  # ruff: ignore[try-except-pass]
+        pass
+
+
+def _wait_if_pause_requested() -> None:
+    """
+    If a pause-after-test was requested, enter a paused state and block until the user
+    clicks Resume. Safe to call from the main (fuzzer) thread.
+    """
+    global _pause_after_test, _paused
+
+    with _pause_condition:
+        if not _pause_after_test:
+            return
+
+        _paused = True
+        _pause_after_test = False
+        print("\n[CONTROL] Paused after test — click RESUME to continue...", file=sys.stderr)
+
+        # Schedule UI update on the Tk thread
+        if _ui_root is not None:
+            try:
+                _ui_root.after(0, _set_paused_ui_state)
+            except Exception:  # noqa: BLE001  # ruff: ignore[try-except-pass]
+                pass
+
+        while _paused:
+            # Wait with a short timeout so we can still react to Immediate shutdown
+            _pause_condition.wait(timeout=0.5)
+            if _shutdown_level >= ShutdownLevel.IMMEDIATE:
+                _paused = False
+                break
 
 
 def _install_shutdown_handler():
@@ -207,354 +438,6 @@ class _FuzzInstanceMetrics(dict):
         )
 
 
-# MARK: Summary Reporting
-def _generate_all_cases_summaries(all_cases_df: pl.DataFrame) -> None:
-    if all_cases_df.is_empty():
-        logger.warning("No results to summarize.")
-        return
-
-    start_time = time.perf_counter()
-
-    # --- Optimized (workerman) summary ---
-    optimized_df = all_cases_df.filter(pl.col("strategy") == PairingStrategy.optimized.value)
-    if not optimized_df.is_empty():
-        optimized_df_summary = _generate_summary(optimized_df).drop(["include_danger"])
-        optimized_df_total = _generate_summary_total(optimized_df_summary)
-
-        print("\n### OPTIMIZED (WORKERMAN) SUMMARY ###")
-        _print_summary(optimized_df_summary)
-        _print_total(optimized_df_total)
-
-    # --- Strategy summary (all non-optimized) ---
-    strategy_df = all_cases_df.filter(pl.col("strategy") != PairingStrategy.optimized.value)
-
-    if not strategy_df.is_empty():
-        strategy_df_summary = _generate_summary(strategy_df).drop(["include_danger"])
-        strategy_df_aggregate_summary = _generate_strategy_aggregate_summary(strategy_df_summary)
-        strategy_df_budget_summary = _generate_budget_aggregate_summary(strategy_df_summary)
-        strategy_df_danger_summary = _generate_danger_aggregate_summary(strategy_df_summary)
-
-        strategy_df_total = _generate_summary_total(strategy_df_summary)
-        out_path = ds.path() / "strategy_summary.csv"
-        strategy_df_summary.with_columns(pl.selectors.float().round(3)).write_csv(out_path)
-
-        print("\n### STRATEGY SUMMARY ###")
-        _print_summary(strategy_df_summary)
-        print("\n--- BY STRATEGY ---")
-        _print_summary(strategy_df_aggregate_summary)
-        print("\n--- BY BUDGET ---")
-        _print_summary(strategy_df_budget_summary)
-        print("\n--- BY DANGER ---")
-        _print_summary(strategy_df_danger_summary)
-        _print_total(strategy_df_total)
-
-    # --- Suboptimal breakdown diagnostics ---
-    suboptimal_df = all_cases_df.filter(pl.col("nr_cost") > pl.col("mip_cost"))
-
-    subset = ["strategy", "seed", "roots", "workers", "dangers"]
-    suboptimal_df = suboptimal_df.sort(["ratio"], descending=True).unique(subset=subset, keep="first")
-
-    if not suboptimal_df.is_empty():
-        suboptimal_breakdown_df = _generate_suboptimal_breakdown(suboptimal_df)
-        print("\n### SUBOPTIMAL BREAKDOWN ###")
-        _print_summary(suboptimal_breakdown_df)
-
-        # --- Suboptimal by danger ---
-        suboptimal_by_danger_df = _generate_suboptimal_by_danger(suboptimal_breakdown_df)
-        suboptimal_by_danger_total = _generate_suboptimal_by_danger_total(suboptimal_by_danger_df)
-        print("\n### SUBOPTIMAL BY DANGER ###")
-        _print_summary(suboptimal_by_danger_df)
-        _print_total(suboptimal_by_danger_total)
-
-        # --- Worst suboptimal instances ---
-        worst_suboptimal_df = _generate_worst_suboptimal_summary(suboptimal_df)
-        out_path = ds.path() / "worst_suboptimal_instances.json"
-        worst_suboptimal_df.with_columns(pl.selectors.float().round(3)).write_json(out_path)
-
-        print(f"\n### WORST SUBOPTIMAL INSTANCES (top {WORST_SUBOPTIMAL_REPORTING_COUNT}) ###")
-        _print_summary(worst_suboptimal_df)
-
-    print("#" * 160)
-    print(f"\nSummary Completed in {time.perf_counter() - start_time:.3f}s")
-
-
-def _generate_single_case_summary(df: pl.DataFrame) -> pl.DataFrame:
-    return df.group_by(["budget", "percent", "strategy", "include_danger"]).agg([
-        pl.len().alias("instances"),
-        (pl.col("nr_cost") == pl.col("mip_cost")).sum().alias("optimal"),
-        (pl.col("nr_cost") != pl.col("mip_cost")).sum().alias("suboptimal"),
-        pl.mean("ratio").alias("avg_ratio"),
-        pl.max("ratio").alias("worst_ratio"),
-        pl.mean("speedup").alias("avg_speedup"),
-    ])
-
-
-def _generate_summary(df: pl.DataFrame) -> pl.DataFrame:
-    return (
-        df
-        .group_by(["strategy", "budget", "include_danger"])
-        .agg([
-            pl.len().alias("instances"),
-            (pl.col("nr_cost") == pl.col("mip_cost")).sum().alias("optimal"),
-            (pl.col("nr_cost") != pl.col("mip_cost")).sum().alias("suboptimal"),
-            (pl.col("nr_cost") == pl.col("mip_cost")).mean().alias("optimal_percent"),
-            pl.mean("terminals").alias("avg_terminals"),
-            pl.mean("roots").alias("avg_roots"),
-            pl.mean("workers").alias("avg_workers"),
-            pl.mean("dangers").alias("avg_dangers"),
-            pl.mean("ratio").alias("avg_ratio"),
-            pl.max("ratio").alias("worst_ratio"),
-            pl.mean("speedup").alias("avg_speedup"),
-        ])
-        .sort(["strategy", "budget", "include_danger"])
-    )
-
-
-def _generate_summary_total(df: pl.DataFrame) -> pl.DataFrame:
-    """Generate a 1 row summary for all cases in df."""
-    longest_strategy = len(max(df["strategy"], key=len))
-    col_widths = [len(col) for col in df.columns]
-    col_widths[0] = max(longest_strategy, col_widths[0])
-
-    total_df = df.select([
-        pl.lit("TOTAL").alias("strategy"),
-        pl.lit("-").alias("budget"),
-        pl.col("instances").sum(),
-        pl.col("optimal").sum(),
-        pl.col("suboptimal").sum(),
-        pl.col("optimal_percent").mean(),
-        pl.lit("-").alias("avg_terminals"),
-        pl.lit("-").alias("avg_roots"),
-        pl.lit("-").alias("avg_workers"),
-        pl.lit("-").alias("avg_dangers"),
-        pl.mean("avg_ratio"),
-        pl.max("worst_ratio"),
-        pl.mean("avg_speedup"),
-    ])
-
-    # Round and cast to string
-    total_df = total_df.with_columns([
-        pl.col(c).cast(pl.Float64).round(SUMMARY_FLOAT_PRECISION).cast(pl.String).alias(c)
-        for c in total_df.select(pl.selectors.numeric()).columns
-    ]).with_columns(pl.all().cast(pl.String))
-
-    # Pad strings
-    padded_strings = []
-    for str_value in total_df.row(0):
-        padding_needed = col_widths.pop(0) - len(str_value)
-        if padding_needed > 0:
-            padded_str_value = str_value + " " * padding_needed
-        else:
-            padded_str_value = str_value
-        padded_strings.append(padded_str_value)
-    return pl.DataFrame([padded_strings], schema=total_df.schema, orient="row")
-
-
-def _generate_strategy_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame:
-    return (
-        summary_df
-        .group_by("strategy")
-        .agg([
-            pl.lit("-").alias("budget"),
-            pl.col("instances").sum(),
-            pl.col("optimal").sum(),
-            pl.col("suboptimal").sum(),
-            pl.col("optimal_percent").mean(),
-            pl.mean("avg_terminals").alias("avg_terminals"),
-            pl.mean("avg_roots").alias("avg_roots"),
-            pl.mean("avg_workers").alias("avg_workers"),
-            pl.mean("avg_dangers").alias("avg_dangers"),
-            pl.col("avg_ratio").mean(),
-            pl.col("worst_ratio").max(),
-            pl.col("avg_speedup").mean(),
-        ])
-        .sort("strategy")
-    )
-
-
-def _generate_budget_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame:
-    longest = max(len(str(v)) for v in summary_df["strategy"].to_list())
-    col_widths = [len(c) for c in summary_df.columns]
-    col_widths[0] = max(longest, col_widths[0])
-
-    tmp_df = (
-        summary_df
-        .group_by(["budget"])
-        .agg([
-            pl.lit("-" + " " * (col_widths[0] - len("-"))).alias("strategy"),
-            pl.col("instances").sum(),
-            pl.col("optimal").sum(),
-            pl.col("suboptimal").sum(),
-            pl.col("optimal_percent").mean(),
-            pl.mean("avg_terminals").alias("avg_terminals"),
-            pl.mean("avg_roots").alias("avg_roots"),
-            pl.mean("avg_workers").alias("avg_workers"),
-            pl.mean("avg_dangers").alias("avg_dangers"),
-            pl.col("avg_ratio").mean(),
-            pl.col("worst_ratio").max(),
-            pl.col("avg_speedup").mean(),
-        ])
-        .sort("budget")
-    )
-
-    return tmp_df.select("strategy", "budget", pl.all().exclude(["strategy", "budget"]))
-
-
-def _generate_danger_aggregate_summary(summary_df: pl.DataFrame) -> pl.DataFrame:
-    longest = max(len(str(v)) for v in summary_df["strategy"].to_list())
-    col_widths = [len(c) for c in summary_df.columns]
-    col_widths[0] = max(longest, col_widths[0])
-
-    return (
-        summary_df
-        .group_by(["avg_dangers"])
-        .agg([
-            pl.lit("-" + " " * (col_widths[0] - len("-"))).alias("strategy"),
-            pl.lit("-").alias("budget"),
-            pl.col("instances").sum(),
-            pl.col("optimal").sum(),
-            pl.col("suboptimal").sum(),
-            pl.col("optimal_percent").mean(),
-            pl.mean("avg_terminals").alias("avg_terminals"),
-            pl.mean("avg_roots").alias("avg_roots"),
-            pl.mean("avg_workers").alias("avg_workers"),
-            # pl.mean("avg_dangers").alias("avg_dangers"),
-            pl.col("avg_ratio").mean(),
-            pl.col("worst_ratio").max(),
-            pl.col("avg_speedup").mean(),
-        ])
-        .sort(["strategy", "avg_dangers"], descending=False)
-        .select(
-            "strategy",
-            "budget",
-            "instances",
-            "optimal",
-            "suboptimal",
-            "optimal_percent",
-            "avg_terminals",
-            "avg_roots",
-            "avg_workers",
-            "avg_dangers",
-            "avg_ratio",
-            "worst_ratio",
-            "avg_speedup",
-        )
-    )
-
-
-def _generate_suboptimal_breakdown(df: pl.DataFrame) -> pl.DataFrame:
-    return (
-        df
-        .group_by(["strategy", "include_danger"])
-        .agg([
-            pl.len().alias("instances"),
-            pl.mean("ratio").alias("avg_ratio"),
-            pl.max("ratio").alias("worst_ratio"),
-            pl.mean("speedup").alias("avg_speedup"),
-            pl.min("budget").alias("first_budget"),
-            pl
-            .col("ratio")
-            .filter(pl.col("budget") == pl.min("budget"))
-            .mean()
-            .alias("ratio_at_first_budget"),
-            pl.max("budget").alias("last_budget"),
-            pl.col("ratio").filter(pl.col("budget") == pl.max("budget")).mean().alias("ratio_at_last_budget"),
-        ])
-        .sort(["avg_ratio"], descending=True)
-    )
-
-
-def _generate_suboptimal_by_danger(suboptimal_df: pl.DataFrame) -> pl.DataFrame:
-    return (
-        suboptimal_df
-        .group_by("include_danger")
-        .agg([
-            pl.col("instances").sum(),
-            pl.col("avg_ratio").mean(),
-            pl.col("worst_ratio").max(),
-            pl.col("avg_speedup").mean(),
-        ])
-        .sort("avg_ratio", descending=True)
-    )
-
-
-def _generate_suboptimal_by_danger_total(suboptimal_by_danger_df: pl.DataFrame) -> pl.DataFrame:
-    longest = max(len(str(v)) for v in suboptimal_by_danger_df["include_danger"].to_list())
-    col_widths = [len(c) for c in suboptimal_by_danger_df.columns]
-    col_widths[0] = max(longest, col_widths[0])
-
-    total = suboptimal_by_danger_df.select([
-        pl.lit("TOTAL").alias("include_danger"),
-        pl.col("instances").sum(),
-        pl.mean("avg_ratio"),
-        pl.max("worst_ratio"),
-        pl.mean("avg_speedup"),
-    ])
-
-    total = total.with_columns([
-        pl.col(c).cast(pl.Float64).round(SUMMARY_FLOAT_PRECISION).cast(pl.String).alias(c)
-        for c in total.select(pl.selectors.numeric()).columns
-    ]).with_columns(pl.all().cast(pl.String))
-
-    padded = []
-    for val, w in zip(total.row(0), col_widths):
-        pad = w - len(val)
-        padded.append(val + (" " * pad if pad > 0 else ""))
-    return pl.DataFrame([padded], schema=total.schema, orient="row")
-
-
-def _generate_worst_suboptimal_summary(suboptimal_df: pl.DataFrame) -> pl.DataFrame:
-    return (
-        suboptimal_df
-        .with_columns(
-            (pl.col("nr_cost") - pl.col("mip_cost")).alias("gap"),
-        )
-        .sort("ratio", descending=True)
-        .head(WORST_SUBOPTIMAL_REPORTING_COUNT)
-        .select([
-            "seed",
-            "strategy",
-            "budget",
-            "percent",
-            "terminals",
-            "roots",
-            "workers",
-            "dangers",
-            "mip_cost",
-            "nr_cost",
-            "gap",
-            "ratio",
-        ])
-    )
-
-
-def _print_summary(df: pl.DataFrame) -> None:
-    with pl.Config(
-        set_float_precision=SUMMARY_FLOAT_PRECISION,
-        set_fmt_str_lengths=100,
-        tbl_hide_column_data_types=True,
-        tbl_hide_dataframe_shape=True,
-        set_tbl_cols=-1,
-        tbl_rows=-1,
-        tbl_width_chars=-1,
-    ):
-        print(df)
-
-
-def _print_total(df: pl.DataFrame) -> None:
-    with pl.Config(
-        set_float_precision=SUMMARY_FLOAT_PRECISION,
-        set_fmt_str_lengths=100,
-        set_tbl_hide_column_names=True,
-        tbl_hide_column_data_types=True,
-        tbl_hide_dataframe_shape=True,
-        set_tbl_cols=-1,
-        tbl_rows=-1,
-        tbl_width_chars=-1,
-    ):
-        print(df)
-
-
 # MARK: Main Fuzzer
 def _make_seed(budget: int, strategy: PairingStrategy, i: int) -> SeedType:
     """Produce a deterministic seed for a given sample."""
@@ -632,7 +515,7 @@ def _run_single_config(
                 continue
 
             # # Debugging - one-offs
-            # target_seed = "e849590"
+            # target_seed = "7f6ae3f"
             # if seed != target_seed:
             #     continue
             # else:
@@ -667,6 +550,7 @@ def _run_single_config(
                     i,
                 )
                 case_rows.append(row)
+                FUZZ_TIMER.update(row)
 
             except Exception as e:  # noqa: BLE001
                 logger.error(f"[ERROR]: skipping seed {seed} due to internal error...")
@@ -678,6 +562,9 @@ def _run_single_config(
                 logger.opt(colors=True).warning(f"⚠️  <n>{log_str} (gap: +{gap})</>")
             else:
                 logger.success(f"✅ {log_str}")
+
+            # Honour "Pause After Test" request (blocks until Resume or Immediate shutdown)
+            _wait_if_pause_requested()
 
             # The MIP optimized strategy should only be executed once since
             # the pairs will always be the same for a given budget.
@@ -691,8 +578,13 @@ def _run_single_config(
 
         all_cases_df = all_cases_df.vstack(case_df)
 
-        case_summary = _generate_single_case_summary(case_df)
-        _print_summary(case_summary)
+        case_summary = ps._generate_single_case_summary(case_df)
+        ps._print_summary(case_summary)
+
+        # Explicit strategy boundary report (covers final strategy / single-strategy budgets)
+        if FUZZ_TIMER.strategy_n > 0:
+            FUZZ_TIMER.print_summary(ReportLevel.STRATEGY)
+            FUZZ_TIMER._reset_strategy()
 
     return all_cases_df
 
@@ -721,14 +613,21 @@ def fuzzer_main(
                 total_test_cases = all_metrics.shape[0]
                 print(f"=> {total_test_cases} test cases completed in {current_elapsed:.2f}s")
 
+            # Budget boundary (after all danger states for this budget)
+            if FUZZ_TIMER.budget_n > 0:
+                FUZZ_TIMER.print_summary(ReportLevel.BUDGET)
+                FUZZ_TIMER._reset_budget()
+
             if _shutdown_level == ShutdownLevel.BUDGET:
                 break
 
-        _generate_all_cases_summaries(all_metrics)
+        FUZZ_TIMER.flush()
+        ps._generate_all_cases_summaries(all_metrics)
 
     except KeyboardInterrupt:
         print("\nShutdown complete — generating summary from accumulated data...")
-        _generate_all_cases_summaries(all_metrics)
+        FUZZ_TIMER.flush()
+        ps._generate_all_cases_summaries(all_metrics)
         sys.exit(0)
 
     logger.success("Fuzz test suite finished")
@@ -746,21 +645,16 @@ if __name__ == "__main__":
     # NOTE: For full fuzzing we should use a subset of budgets since the MIP
     # solver takes a long time and is executed for each strategy within each budget
     # times the number of samples.
-    budgets = range(5, 555, 5)
+    budgets = range(275, 555, 5)
 
     # NOTE: For testing purposes or limited subsets the range can be increased
     # to include all possible budgets.
-    # NOTE: MIP optimal solutions are available for (5, 555, 5).
+    # NOTE: MIP optimal solutions (from EmpireOptimizer) are available for (5, 555, 5).
     # budgets = range(5, 555, 5)
 
     # NOTE: For normal fuzzing or testing purposes the sample count can be adjusted
     # as desired. The default is 20 to allow for a diverse random selection of pairs.
     samples = 20
-
-    # # Settings for running the optimized strategy purely to populate the MIP cache
-    # strategies = [PairingStrategy.cheapest_town]
-    # budgets = range(5, 555, 5)
-    # samples = 1
 
     # # For normal fuzzing use [False, True]
     # include_danger = [False, True]
