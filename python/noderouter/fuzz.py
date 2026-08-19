@@ -171,6 +171,38 @@ class TimingAccumulator:
             if self.danger_n > 0 or self.no_danger_n > 0:
                 self.print_summary(ReportLevel.DANGER)
 
+    def prime(self, df: pl.DataFrame) -> None:
+        """
+        Seed cumulative danger/process totals from prior metrics (budgets strictly
+        before the current campaign). Does not touch strategy/budget transient slots —
+        those are filled by the live/fast-forward path for the current window.
+        """
+        if df.is_empty():
+            return
+
+        for danger_val, mip_attr, nr_attr, n_attr in (
+            (True, "danger_mip", "danger_nr", "danger_n"),
+            (False, "no_danger_mip", "no_danger_nr", "no_danger_n"),
+        ):
+            subset = df.filter(pl.col("include_danger") == danger_val)
+            if subset.is_empty():
+                continue
+            setattr(self, mip_attr, getattr(self, mip_attr) + float(subset["mip_duration"].sum()))
+            setattr(self, nr_attr, getattr(self, nr_attr) + float(subset["nr_duration"].sum()))
+            setattr(self, n_attr, getattr(self, n_attr) + subset.shape[0])
+
+        self.process_mip += float(df["mip_duration"].sum())
+        self.process_nr += float(df["nr_duration"].sum())
+        self.process_n += df.shape[0]
+
+        print(
+            f"[TIMING] PRIMED from prior metrics  n={df.shape[0]}"
+            f"         MIP {float(df['mip_duration'].sum()):10.1f}s   "
+            f"NR {float(df['nr_duration'].sum()):8.1f}s"
+        )
+        if self.danger_n > 0 or self.no_danger_n > 0:
+            self.print_summary(ReportLevel.DANGER)
+
     def _reset_strategy(self) -> None:
         self.strategy_mip = 0.0
         self.strategy_nr = 0.0
@@ -183,6 +215,82 @@ class TimingAccumulator:
 
 
 FUZZ_TIMER = TimingAccumulator()
+
+# Persisted metrics used to prime the timer across process restarts
+_METRICS_PATH_NAME = "all_metrics.parquet"
+_METRICS_DEDUP_SUBSET = ["seed", "strategy", "budget", "include_danger"]
+
+
+def _metrics_path():
+    return ds.path() / _METRICS_PATH_NAME
+
+
+def _load_historical_metrics() -> pl.DataFrame:
+    path = _metrics_path()
+    if not path.exists():
+        return pl.DataFrame()
+    try:
+        return pl.read_parquet(path)
+    except Exception as e:  # noqa: BLE001
+        print(f"[TIMING] WARNING: failed to load {path}: {e}", file=sys.stderr)
+        return pl.DataFrame()
+
+
+def _persist_merged_metrics(historical: pl.DataFrame, this_run: pl.DataFrame) -> None:
+    """Merge this run into the historical frame and write to disk."""
+    if this_run.is_empty() and historical.is_empty():
+        return
+    if historical.is_empty():
+        merged = this_run
+    elif this_run.is_empty():
+        merged = historical
+    else:
+        # Align columns in case schemas drift slightly
+        shared = [c for c in historical.columns if c in this_run.columns]
+        merged = pl.concat([historical.select(shared), this_run.select(shared)], how="vertical_relaxed")
+    _save_historical_metrics(merged)
+
+
+def _save_historical_metrics(df: pl.DataFrame) -> None:
+    if df.is_empty():
+        return
+    path = _metrics_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        (
+            df
+            .unique(subset=_METRICS_DEDUP_SUBSET, keep="last")
+            .sort(["budget", "strategy", "include_danger", "seed"])
+            .write_parquet(path)
+        )
+        print(f"[TIMING] Persisted {df.shape[0]} metrics rows → {path}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[TIMING] WARNING: failed to save {path}: {e}", file=sys.stderr)
+
+
+def _build_primer_df(
+    historical: pl.DataFrame,
+    strategies: list[PairingStrategy],
+    budgets: list[int] | range,
+    danger_states: list[bool],
+) -> pl.DataFrame:
+    """Rows from prior runs that sit strictly before the current campaign start."""
+    if historical.is_empty():
+        return historical
+
+    budget_list = list(budgets)
+    if not budget_list:
+        return historical.clear()
+
+    start_budget = min(budget_list)
+    strategy_values = [s.value for s in strategies if s != PairingStrategy.custom]
+
+    primer = historical.filter(
+        (pl.col("budget") < start_budget)
+        & (pl.col("strategy").is_in(strategy_values))
+        & (pl.col("include_danger").is_in(danger_states))
+    )
+    return primer
 
 
 LOG_LEVELS = ["SUCCESS", "INFO", "DEBUG", "TRACE"]
@@ -594,6 +702,16 @@ def fuzzer_main(
 ) -> None:
     set_logger(ds.get_config("config"))
     # set_logger({"logger": {"level": "ERROR", "format": "<level>{message}</level>"}})
+
+    # --- load prior metrics & prime timer (budgets strictly before this campaign) ---
+    historical = _load_historical_metrics()
+    primer_df = _build_primer_df(historical, strategies, budgets, danger_states)
+    if not primer_df.is_empty():
+        FUZZ_TIMER.prime(primer_df)
+    else:
+        print("[TIMING] No prior metrics to prime (fresh start or nothing before current range)")
+
+    # Metrics collected by *this* process only (used for end-of-run summaries)
     all_metrics: pl.DataFrame = pl.DataFrame()
     _install_shutdown_handler()
 
@@ -628,8 +746,10 @@ def fuzzer_main(
         print("\nShutdown complete — generating summary from accumulated data...")
         FUZZ_TIMER.flush()
         ps._generate_all_cases_summaries(all_metrics)
+        _persist_merged_metrics(historical, all_metrics)
         sys.exit(0)
 
+    _persist_merged_metrics(historical, all_metrics)
     logger.success("Fuzz test suite finished")
     print(f"Total runtime: {time.time() - start_time:.2f}s")
 
@@ -645,7 +765,7 @@ if __name__ == "__main__":
     # NOTE: For full fuzzing we should use a subset of budgets since the MIP
     # solver takes a long time and is executed for each strategy within each budget
     # times the number of samples.
-    budgets = range(275, 555, 5)
+    budgets = range(25, 555, 5)
 
     # NOTE: For testing purposes or limited subsets the range can be increased
     # to include all possible budgets.
