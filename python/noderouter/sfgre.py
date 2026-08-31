@@ -3278,31 +3278,42 @@ class SFGraphReductionEngine:
                 logger.info(f"  removed {len(isolates)} isolates...")
                 logger.trace(f"    {sorted(self.get_node_key(n) for n in isolates)}")
 
+            simple_trigger_count = len(isolates)
+
             # Reduce potential roots - this is not a graph mutation it is a potential roots set consolidation only
-            self.reduce_potential_roots()
+            simple_trigger_count += self.reduce_potential_roots()
 
             # Reduce demand roots - this is not a graph mutation it is a terminal set consolidation only
-            self.reduce_roots_via_articulation()
+            simple_trigger_count += self.reduce_roots_via_articulation()
 
             # Reduce demand roots - this is not a graph mutation it is a terminal set consolidation only
-            self.reduce_demand_roots()
+            simple_trigger_count += self.reduce_demand_roots()
 
             # Reduce adjacent terminals - this is a terminal reduction by `consume` with terminal set consolidation
-            self.reduce_adjacent_terminals()
+            simple_trigger_count += self.reduce_adjacent_terminals()
 
             # Reduce degree1 steiner nodes - this is a Steiner node graph reduction by `consume` with terminal set consolidation
-            self.reduce_degree1_steiners()
+            simple_trigger_count += self.reduce_degree1_steiners()
 
             # Reduce degree1 terminals - this is a Steiner node graph reduction by `remove` only
-            self.reduce_degree1_terminals()
+            simple_trigger_count += self.reduce_degree1_terminals()
 
             # Reduce degree1 roots - this is a Steiner node graph reduction by `consume` with terminal set consolidation
-            self.reduce_degree1_roots()
+            simple_trigger_count += self.reduce_degree1_roots()
 
             if len(self.terminal_sets) == 1 and len(next(iter(self.terminal_sets.values()))) == 1:
                 self.solve_as_path()
 
+            if simple_trigger_count != 0:
+                logger.info("  repeating simple reductions...")
+                tmp_num_nodes = 0
+                continue
+
+            # This is a direct backup to the simple_trigger_count check above.
             if num_nodes != self.graph.num_nodes():
+                logger.error(
+                    "  graph mutation detected during simple reductions not captured by trigger count..."
+                )
                 logger.info("  repeating simple reductions...")
                 continue
 
@@ -3311,13 +3322,20 @@ class SFGraphReductionEngine:
                 break
 
             if self.super_root_index is not None:
-                self.super_candidate_sink_sets = self._super_candidate_sink_sets()
+                self.super_candidate_sink_sets, self.ambiguous_super_terminals = (
+                    self._super_candidate_sink_sets()
+                )
 
                 # Reduce isolated super terminals - this is a super-root member reduction only
-                self.reduce_isolated_super_terminals()
+                if self.reduce_isolated_super_terminals():
+                    # Force a reduction pass if isolated super terminals were moved
+                    tmp_num_nodes = 0
+                    continue
 
             # Solve isolated roots - this is a terminal set and Steiner node reduction by `consumption` only
             if self.solve_isolated_roots_as_trees():
+                # Force a reduction pass if isolated roots were solved
+                tmp_num_nodes = 0
                 continue
 
             # MARK: Basic reductions
@@ -3353,10 +3371,12 @@ class SFGraphReductionEngine:
                 continue
 
             # Reduce enclosed steiner clusters - this is a Steiner node graph reduction by `remove` only
-            if num_nodes == self.graph.num_nodes():
-                self.reduce_enclosed_steiner_clusters()
+            if num_nodes == self.graph.num_nodes() and self.reduce_enclosed_steiner_clusters():
+                # Force a reduction pass if blocked roots were merged.
+                tmp_num_nodes = 0
+                continue
 
-            # Solve as tree composite
+            # Solve as tree composite - this is a super-root member reduction and a Steiner node reduction by `remove` only
             if not self._solved_as_tree and num_nodes == self.graph.num_nodes() and self.terminal_sets:
                 self.dump_reduction_results(
                     "pre: solve_as_tree",
@@ -3367,6 +3387,13 @@ class SFGraphReductionEngine:
                 )
                 self.solve_as_tree()
                 self._solved_as_tree = True
+                self.dump_reduction_results(
+                    "post: solve_as_tree",
+                    num_edges_start,
+                    num_nodes_start,
+                    num_terminal_roots_start,
+                    num_terminals_start,
+                )
 
         # Rebuild pairs
         fixed_nodes_wp = {self.get_node_key(n) for n in self.fixed_nodes}
