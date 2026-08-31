@@ -490,11 +490,8 @@ class SFGraphReductionEngine:
         max_rt_distance = 1
         for r, terminals in self.terminal_sets.items():
             for t in terminals:
-                if r == self.super_root_index:
-                    # Ensure path goes from terminal to root to handle super-root reachability
-                    max_rt_distance = max(max_rt_distance, self.shortest_path_length(t, r))
-                else:
-                    max_rt_distance = max(max_rt_distance, self.shortest_path_length(r, t))
+                # Ensure path goes from terminal to root to handle super-root reachability
+                max_rt_distance = max(max_rt_distance, self.shortest_path_length(t, r))
         return max_rt_distance
 
     @property
@@ -503,9 +500,9 @@ class SFGraphReductionEngine:
         self.set_edge_weights()
         max_rt_distance = min(self._global_min_max_drt, self._get_maximum_rt_distance())
         if max_rt_distance != self._global_min_max_drt and max_rt_distance > 0:
-            logger.trace(f"  => max_rt_distance changed from {self._global_min_max_drt} to {max_rt_distance}")
+            logger.trace(f"  max_rt_distance changed from {self._global_min_max_drt} to {max_rt_distance}")
             self._global_min_max_drt = int(max_rt_distance)
-        logger.trace(f"  => max_rt_distance: {max_rt_distance}")
+        logger.trace(f"  max_rt_distance: {max_rt_distance}")
 
         return max_rt_distance
 
@@ -954,7 +951,11 @@ class SFGraphReductionEngine:
         non_steiners.discard(self.super_root_index)
 
         removables = []
-        while deg1_nodes := {i for i in self.graph.node_indices() if self.reduction_degree(i) == 1}:
+        # A true steiner node leaf has a strict degree of 1 not just a reduction degree of 1 because
+        # a root/potential root demotion to a Steiner node may have a reduction degree of 1 but a true
+        # degree of 2 because of the presence of a super root and its removal breaks the directionality
+        # of reductions by moving towards the terminals instead of towards the roots.
+        while deg1_nodes := {i for i in self.graph.node_indices() if self.graph.out_degree(i) == 1}:
             deg1_nodes.difference_update(non_steiners)
             if not deg1_nodes:
                 break
@@ -1522,6 +1523,11 @@ class SFGraphReductionEngine:
                         break
 
                     u = neighbors[i]
+
+                    # NOTE: Since both dijkstra_shortest_path_lengths and
+                    #       dijkstra_avoiding are based on Dijkstra's algorithm, they
+                    #       are guaranteed to return the same result.
+                    #       (Which omits the initial tail weight.)
 
                     # Full distances
                     try:
@@ -2314,8 +2320,8 @@ class SFGraphReductionEngine:
         Steiner rule, but accumulates the touched envelope and collision points instead
         of returning a bool.
 
-        Returns (envelope, collisions):
-        collisions -- the first non-Steiner node hit along each frontier branch
+        Returns:
+          collisions -- the first non-Steiner node hit along each frontier branch
         """
         dist: dict[int, float] = {source: weight_map[source]}
         heap = [(weight_map[source], source)]
@@ -3192,6 +3198,25 @@ class SFGraphReductionEngine:
 
     # MARK: Main Loop
 
+    # NOTE: Reductions that are known and certified but are not implemented here are:
+    #
+    # - leaf potential root reduction: not implemented because a potential root demotion
+    #   to a Steiner node does not directly impact the problem space and holds low impact
+    #   for cascading ruductions.
+    #
+    # - adjacent degree-3 Steiner triangle reduction: not implemented because the reduction
+    #   does not directly impact the problem space and holds low impact for cascading
+    #   reductions.
+    #
+    # - 2-cut isolated arbor reduction (super-terminal not present): this reduction is
+    #   potentially impactful but expensive to test for if done per pipeline iteration
+    #   and rare when terminal coverage percentage gets above ~20%.
+    #   (which is a majority of real world cases)
+
+    # NOTE: Potential high impact areas to explore if certification can be shown:
+    #
+    # - wider exploitation of the drt measure
+
     def run_pipeline(self) -> tuple[set[int], dict[int, int]]:
         """Runs the main reduction pipeline."""
         logger.trace("run_pipeline...")
@@ -3213,6 +3238,18 @@ class SFGraphReductionEngine:
 
         tmp_num_nodes = self.graph.num_nodes() + 1
         iteration = 0
+
+        # NOTE: Any transformed super-terminal that has transformed into a fixed node
+        # is no longer a super-terminal, since the 'transform_pairs' is not aware
+        # of what nodes are roots versus potential roots we satisfy the demand here.
+        if self.super_root_index is not None:
+            roots = self.potential_roots
+            for sts in self.terminal_sets[self.super_root_index].copy():
+                if sts in roots:
+                    self.terminal_sets[self.super_root_index].discard(sts)
+                    logger.warning(
+                        f"  Super terminal {self.get_node_key(sts)} demand satisfied by initial graph transform..."
+                    )
 
         while (num_nodes := self.graph.num_nodes()) != tmp_num_nodes:
             # Update self.do_debug flag when log level is externally modified
