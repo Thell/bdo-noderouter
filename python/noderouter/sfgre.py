@@ -114,7 +114,7 @@ are symmetric.
 ## 2. Grammar Structure
 Rules follow a "Pattern-First" sequence:
 
-**`|Pattern : Local Guards ⭆ Transform ⇔ Global/Attribute Guards`**
+**`Pattern : Local Guards ⭆ Transform ⇔ Global/Attribute Guards`**
 
 ---
 
