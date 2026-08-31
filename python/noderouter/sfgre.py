@@ -211,6 +211,7 @@ class SFGraphReductionEngine:
 
     # Global maximum distance between a root and its' furthest terminal
     _global_min_max_drt: float = float("inf")
+    _steiner_distance_prev_max_drt: float = float("inf")
 
     # solve_as_tree is a witness of a non-reducible graph and should only execute once
     _solved_as_tree: bool = False
@@ -2247,37 +2248,40 @@ class SFGraphReductionEngine:
         non_steiner_nodes = self.non_steiner_nodes()
         min_max_drt = self.min_max_rt_distance
 
+        # This can be a fairly expensive reduction so if min_max_drt has not changed,
+        # we can skip it knowing that it would have only reduced Steiner nodes not
+        # roots/terminals which is a lessor impact.
+        if min_max_drt >= self._steiner_distance_prev_max_drt:
+            return 0
+        self._steiner_distance_prev_max_drt = min_max_drt
+
+        steiners = set(self.graph.node_indices()) - non_steiner_nodes - {self.super_root_index}
+        terminals = (set(self.terminal_sets.keys()) | set().union(*self.terminal_sets.values())) - {
+            self.super_root_index
+        }
+
         removables = []
         removed_by_weight = 0
         removed_by_distance = 0
 
-        for v in self.graph.node_indices():
-            if v in non_steiner_nodes or v == self.super_root_index:
-                continue
-
+        for v in steiners:
             if self.graph[v][PAYLOAD_WEIGHT_KEY] > min_max_drt:
-                logger.trace(f"  => removing Steiner node {self.get_node_key(v)} by weight")
+                logger.trace(f"  removing Steiner node {self.get_node_key(v)} by weight")
                 removables.append(v)
                 removed_by_weight += 1
                 continue
 
-            min_drt = float("inf")
-            for r, terminals in self.terminal_sets.items():
-                for t in terminals | {r}:
-                    if t == self.super_root_index:
-                        continue
-                    min_drt = min(min_drt, self.shortest_path_length(v, t))
-
-            if min_drt > min_max_drt:
-                logger.trace(f"  => removing Steiner node {self.get_node_key(v)} by distance")
+            # NOTE: Since all edge weights are head node weighted and all t are terminals
+            #       with zero weight, t -> v via dijkstra is always the full path cost.
+            if all(self.shortest_path_length(t, v) > min_max_drt for t in terminals):
+                logger.trace(f"  removing Steiner node {self.get_node_key(v)} by distance")
                 removables.append(v)
                 removed_by_distance += 1
-                continue
 
         if removables:
             self.remove_nodes_from(removables)
-            logger.info(
-                f"  => removed {len(removables)} Steiner nodes [({min_max_drt}) by weight: {removed_by_weight}, by distance: {removed_by_distance}]"
+            logger.debug(
+                f"    removed {len(removables)} Steiner nodes [max_drt: ({min_max_drt}) by weight: {removed_by_weight}, by distance: {removed_by_distance}]"
             )
             if self.do_debug:
                 logger.trace(f"    {sorted(self.get_node_key(n) for n in removables)}")
