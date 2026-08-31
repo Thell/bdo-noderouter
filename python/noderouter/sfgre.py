@@ -70,6 +70,7 @@ are symmetric.
 | **Ⓣ** | Terminal Node | A node that *must* be connected to its partner. |
 | **Ⓡ** | Root Node | The root of an Arborescence (**𝓐**). |
 | **𝕡** | Potential Root Node | An individual node member of **𝓟**. |
+| **𝕣** | Super Root Node | A super root sink for super terminal demands. |
 | **𝕥** | Super Terminal Node | A terminal whose demand is met by any node in **𝔹**. |
 | **ⓤ, ⓥ, ⓦ** | Variable Nodes | Generic nodes often consumed in reductions. |
 | **⦿** | Hyper-Node | A contracted component or cluster of nodes. |
@@ -151,12 +152,12 @@ sink in 𝓟 ∪ 𝓡 that can reach its super root.
 > 𝕥 ∈ 𝓐_𝕊          (reference: |𝕊| = 1)
 > 𝕥 ∈ 𝓐_s, s ∈ 𝕊   (general)
 
-### Super Root (s ∈ 𝕊)
+### Super Root (𝕣 ∈ 𝕊)
 
-A virtual sink vertex whose arbor 𝓐_s collects every super terminal assigned
-to it. Every potential root in 𝓟 that is eligible for s has an outbound edge
-to s; s itself has no outbound edges. This lets each super-terminal demand be
-treated as ordinary single-sink reachability (𝕥 ↠ s) during reduction and DP
+A virtual sink vertex whose arbor 𝓐_𝕣 collects every super terminal assigned
+to it. Every potential root in 𝓟 that is eligible for 𝕣 has an outbound edge
+to 𝕣; 𝕣 itself has no outbound edges. This lets each super-terminal demand be
+treated as ordinary single-sink reachability (𝕥 ↠ 𝕣) during reduction and DP
 partitioning, while still allowing any admissible sink in 𝓟 ∪ 𝓡 to serve
 that demand.
 
@@ -164,7 +165,7 @@ When |𝕊| = 1 this recovers the single global sink of the reference
 implementation; |𝕊| > 1 permits regional super roots.
 
 > 𝕊 ∩ 𝓡 = ∅,  𝕊 ∩ 𝓟 = ∅
-> 𝓐_𝕊 ≔ ⋃_{s ∈ 𝕊} 𝓐_s
+> 𝓐_𝕊 ≔ ⋃_{s ∈ 𝕊} 𝓐_𝕣
 
 ### Max DRT
 
