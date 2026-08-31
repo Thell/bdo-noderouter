@@ -107,6 +107,8 @@ class TimingAccumulator:
         if self.budget_n > 0:
             self.print_summary(ReportLevel.BUDGET)
             self._reset_budget()
+        if self.danger_n > 0 or self.no_danger_n > 0:
+            self.print_summary(ReportLevel.DANGER)
         if self.process_n > 0:
             self.print_summary(ReportLevel.PROCESS)
 

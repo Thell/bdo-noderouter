@@ -188,7 +188,7 @@ def _run_single_config(
                 continue
 
             # # Debugging - one-offs
-            # target_seed = "45d3939"
+            # target_seed = "e4c4d0b"
             # if seed != target_seed:
             #     continue
             # else:
@@ -196,7 +196,7 @@ def _run_single_config(
 
             # # fmt: off
             # # target_seeds = ["0181f0b", "7bc6454", "3f9f8ff", "f43d040", "eec0177", "708bad0", "fd367b5", "8ecc41a", "182c9c7", "18ac274", "e936ec6", "7cce804", "446a70a", "19662a1", "067dab4", "d10c799", "ea57e16", "693caf0", "e6b2db3", "9c69237"]
-            # target_seeds = ["5ec7724", "cafacf9", "c68ef41"]
+            # target_seeds = ["f9f8ae1"]
             # # fmt: on
             # if seed not in target_seeds:
             #     continue
@@ -256,6 +256,7 @@ def _run_single_config(
         # Explicit strategy boundary report (covers final strategy / single-strategy budgets)
         if FUZZ_TIMER.strategy_n > 0:
             FUZZ_TIMER.print_summary(ReportLevel.STRATEGY)
+            FUZZ_TIMER.print_summary(ReportLevel.DANGER)
             FUZZ_TIMER._reset_strategy()
 
     return all_cases_df
@@ -298,6 +299,8 @@ def fuzzer_main(
             # Budget boundary (after all danger states for this budget)
             if FUZZ_TIMER.budget_n > 0:
                 FUZZ_TIMER.print_summary(ReportLevel.BUDGET)
+                FUZZ_TIMER.print_summary(ReportLevel.DANGER)
+                FUZZ_TIMER.print_summary(ReportLevel.PROCESS)
                 FUZZ_TIMER._reset_budget()
 
             if get_shutdown_level() == ShutdownLevel.BUDGET:
@@ -319,29 +322,24 @@ def fuzzer_main(
 
 
 if __name__ == "__main__":
-    # NOTE: For full fuzzing we would want to include all possible strategies
-    strategies = [s for s in PairingStrategy]
+    # NOTE: MIP optimal solutions (from EmpireOptimizer), PairingStrategy.optimized,
+    #       are only available for budgets (5, 555, 5).
 
-    # NOTE: For testing purposes we can use a subset of strategies
+    # NOTE: For full fuzzing we would want to include all possible strategies
+    # NOTE: For testing purposes we can use a list of a subset of strategies
     # strategies = [PairingStrategy.optimized, PairingStrategy.random_town]
-    # strategies = [PairingStrategy.nearest_town]
+    strategies = [s for s in PairingStrategy]
 
     # NOTE: For full fuzzing we should use a subset of budgets since the MIP
     # solver takes a long time and is executed for each strategy within each budget
     # times the number of samples.
-    budgets = range(30, 555, 5)
-
-    # NOTE: For testing purposes or limited subsets the range can be increased
-    # to include all possible budgets.
-    # NOTE: MIP optimal solutions (from EmpireOptimizer) are available for (5, 555, 5).
-    # budgets = range(5, 555, 5)
+    budgets = range(5, 555, 5)
 
     # NOTE: For normal fuzzing or testing purposes the sample count can be adjusted
     # as desired. The default is 20 to allow for a diverse random selection of pairs.
     samples = 20
 
-    # # For normal fuzzing use [False, True]
-    # include_danger = [False, True]
+    # For normal fuzzing use [False, True]
     danger_states = [True]
 
     fuzzer_main(strategies, samples, budgets, danger_states)
