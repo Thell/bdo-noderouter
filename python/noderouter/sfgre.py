@@ -608,19 +608,21 @@ class SFGraphReductionEngine:
 
     # MARK: Reductions
 
-    def reduce_potential_roots(self):
+    def reduce_potential_roots(self) -> int:
         """
-        Reduces potential roots by state demotion based on distance.
+        Reduces potential roots by state demotion based on candidacy.
 
-        A potential root is only viable if it is within 2 * global_min_max_drt of any super terminal
-        and is reachable by a super terminal. If not it is removed from the set of potential roots
-        and becomes a normal Steiner node.
+        A potential root is only viable if it is a candidate sink for some super terminal,
+        per super candidate sink sets.
+        If not, it is removed from the set of potential roots and becomes a normal Steiner node.
 
-        > **𝕡 ∈ 𝓟 : min(dist(𝕥, 𝕡)) > 2 * max_drt ⭆ 𝓟 ⭆ 𝓟 ∖ {𝕡}, Ⓢ ⭆ Ⓢ ⋃ {𝕡} ⇔ 𝓢 ≡ 𝓢'**
+        > **𝕡 ∈ 𝓟 : ∄ 𝕥 : 𝕡 ∈ candidate_sinks(𝕥) ⭆ 𝓟 ⭆ 𝓟 ∖ {𝕡}, Ⓢ ⭆ Ⓢ ⋃ {𝕡} ⇔ 𝓢 ≡ 𝓢'**
         """
+        logger.trace("reduce_potential_roots...")
+
         # Nothing to do...
-        if self.super_root_index is None:
-            return
+        if self.super_root_index is None or self._solved_as_tree:
+            return 0
 
         sr_index = self.super_root_index
 
@@ -631,41 +633,45 @@ class SFGraphReductionEngine:
             self.graph.remove_node(sr_index)
             self.potential_roots = set()
             self.super_root_index = None
-            sr_index = None
-            return
+            return 0
 
         logger.trace("reduce_potential_roots...")
 
-        collisions: set[int] = set()
-        guaranteed_sinks: set[int] = set()
-        non_steiners: set[int] = self.non_steiner_nodes()
-        radius_cap = 2 * self.min_max_rt_distance
-        weight_map = self.node_weight_map
-
-        for st in self.terminal_sets[sr_index]:
-            st_collisions = self._collision_envelope(st, non_steiners, weight_map, radius_cap)
-            collisions |= st_collisions
-
-            # The collision envelope is a radius-based reachability guarantee, but
-            # it does not guarantee a sink.
-            # The one thing that's true unconditionally is that st is a surviving
-            # super terminal, so it has a real path to sr so we need to guarantee
-            # that a sink survives, independent of collision/radius outcome.
-            if not st_collisions & self.potential_roots:
-                paths = rx.all_shortest_paths(
-                    self.graph, st, sr_index, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY]
-                )
-                # The potential root will always be the node prior to the super root and if more
-                # than one exists then there is still ambiguity regarding which is globally optimal
-                # so we need to keep all of them.
-                guaranteed_sinks |= {p[-2] for p in paths}
-
+        old_roots = set(self.potential_roots)
         num_old_roots = len(self.potential_roots)
         real_roots = set(self.terminal_sets.keys())
-        self.potential_roots = (collisions & self.potential_roots) | real_roots | guaranteed_sinks
 
+        # drt factor is 1 because we are only interested in the single terminal's perspective not arbor collisions
+        candidate_sink_sets, _ = self._super_candidate_sink_sets(max_drt_factor=1)
+        used_sinks = set().union(*candidate_sink_sets.values()) - {sr_index}
+
+        self.potential_roots = used_sinks | real_roots - {sr_index}
+
+        # This can potentially leave a leaf root node that was demoted to potential root
+        # and then further demoted to Steiner node in the graph and in that case there could
+        # potentially be a cascading pipeline reduction that doesn't trigger because of it
+        # but it is not a correctness issue. (A state could be tracked for all original roots
+        # and then we could check if any of them were demoted to a Steiner node but that is
+        # out of scope of a pure "potential root" reduction and state tracking for terminals
+        # and roots is a performance sink for every reduction when they are written as self
+        # contained reference implementations.)
+        demoted = old_roots - self.potential_roots - self.fixed_nodes
         if self.do_debug:
-            logger.debug(f"  reduced potential roots from {num_old_roots} to {len(self.potential_roots)}")
+            logger.debug(f"    demoted: {sorted(demoted)}")
+
+        # A demoted potential root that is not already a fixed root no longer
+        # needs to be connected to the super root.
+        for pr in demoted:
+            if self.graph.has_edge(pr, sr_index):
+                self.graph.remove_edge(pr, sr_index)
+
+        num_removed = num_old_roots - len(self.potential_roots)
+        if num_removed > 0:
+            logger.warning(f"  reduced potential roots from {num_old_roots} to {len(self.potential_roots)}")
+            self.dump_state("reduce_potential_roots", num_removed)
+            self.validate_reachability()
+
+        return num_removed
 
     def reduce_demand_roots(self) -> int:
         """
