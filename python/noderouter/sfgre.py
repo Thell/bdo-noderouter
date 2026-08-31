@@ -2369,14 +2369,16 @@ class SFGraphReductionEngine:
         """
         num_moved = 0
         candidate_sink_sets = self.super_candidate_sink_sets
+        ambiguous_super_terminals = self.ambiguous_super_terminals
         sr_index = self.super_root_index
 
         if sr_index is None:
             return 0
 
         for st, sinks in list(candidate_sink_sets.items()):
-            if len(sinks) != 1:
+            if len(sinks) != 1 or st in ambiguous_super_terminals:
                 continue
+
             sink = next(iter(sinks))
             num_moved += 1
 
@@ -2600,6 +2602,9 @@ class SFGraphReductionEngine:
                non-super solve stays excluded from the augmented (super-terminal-inclusive) candidate
                space -- augmenting a block with a super terminal cannot rescue a decomposition that was
                already proven no better than its primitives before the super terminal was even considered.
+            8. Co-occurrence dominance: when a block's non-super members were already solved as their own
+               block B, B's solution may cover super-terminals. If so B's result is dominant at equality --
+               reuse B's solution and cost for the super-composite instead of issuing a solve.
         Mask level optimization lemmas (DP, applied over solved block costs before/during partitioning):
             8. Composite mask dominance: for a solved block's mask, if any decomposition into two
                disjoint, already-solved sub-masks costs no more than the block's own direct solve, the
@@ -2627,6 +2632,8 @@ class SFGraphReductionEngine:
             solution,
             _cost,
             non_super_valid_blocks,
+            non_super_valid_block_results,
+            non_super_valid_block_costs,
             non_super_dp_block_results,
             non_super_dp_block_costs,
         ) = self.solve_as_tree_composite(non_super_G, non_super_coverage_sets)
@@ -2642,6 +2649,8 @@ class SFGraphReductionEngine:
                     non_super_G,
                     non_super_coverage_sets,
                     non_super_valid_blocks,
+                    non_super_valid_block_results,
+                    non_super_valid_block_costs,
                     non_super_dp_block_results,
                     non_super_dp_block_costs,
                 )
@@ -2753,13 +2762,15 @@ class SFGraphReductionEngine:
         ConnectedComponent_BlockKeys,
         BlockResults,
         BlockCosts,
+        BlockResults,
+        BlockCosts,
     ]:
         """Solves the remaining stable reduced state graph by taking the best solution from the composite instances."""
         logger.warning("  solve_as_tree_composite...")
 
         # Sometimes all that is left are super terminals and there's nothing to be done here...
         if not coverage_sets:
-            return set(), float("inf"), {}, {}, {}
+            return set(), float("inf"), {}, {}, {}, {}, {}
 
         coverage_representatives = set(coverage_sets.keys())
 
@@ -2867,6 +2878,8 @@ class SFGraphReductionEngine:
             best_solution,
             best_cost,
             valid_blocks,
+            block_results,
+            block_costs,
             dp_block_results,
             dp_block_costs,
         )
@@ -2876,6 +2889,8 @@ class SFGraphReductionEngine:
         non_super_G: PyDiGraph,
         non_super_coverage_sets: CoverageSets,
         non_super_valid_blocks: ConnectedComponent_BlockKeys,
+        non_super_valid_block_results: BlockResults,
+        non_super_valid_block_costs: BlockCosts,
         non_super_dp_block_results: BlockResults,
         non_super_dp_block_costs: BlockCosts,
     ) -> SolutionSet:
@@ -2934,11 +2949,17 @@ class SFGraphReductionEngine:
                 f"    dominated non-super block filtering lowered valid_blocks from {num_blocks} to {num_surviving_blocks}..."
             )
 
+        # NOTE: Long lived collections throughout the solving phases
+        # Pre-populated with non-super block results for filtering and final DP solving
+        block_results = dict(non_super_dp_block_results)
+        block_costs = dict(non_super_dp_block_costs)
+
         # Task generation
         singleton_tasks: list[BlockTask] = []
         composite_tasks: list[BlockTask] = []
 
         skipped_presolved_block_count = 0
+        skipped_dominated_block_count = 0
 
         for cc_i, blocks in valid_blocks.items():
             for block_key in blocks:
@@ -2956,8 +2977,8 @@ class SFGraphReductionEngine:
                     terminals.add(self.super_root_index)
                     block_sr_index = sr_index
 
-                # We purposefully omit the collision envelope (candidate sinks) from the block since
-                # the super terminal is being considered as a normal terminal within the composite block.
+                # We purposefully omit the collision envelope's covered entities (candidate sinks) from the block
+                # since the super terminal is being considered as a normal terminal within the composite block.
                 for k in block_key:
                     terminals.add(k)
                     if k not in super_terminals:
@@ -2968,6 +2989,18 @@ class SFGraphReductionEngine:
                     skipped_presolved_block_count += 1
                     continue
 
+                # When a previously solved non-super block covers the super terminals of the
+                # augmented block, we can use its solution as the solution for the augmented block.
+                non_super_part = tuple(sorted(k for k in block_key if k not in super_terminals))
+                non_super_mask = non_super_valid_block_results.get(non_super_part) if non_super_part else None
+                if non_super_mask is not None:
+                    non_super_witness_nodes = nwst._unmask_solution(self.graph, non_super_mask)
+                    if (set(block_key) & super_terminals_set) <= non_super_witness_nodes:
+                        block_results[block_key] = non_super_mask
+                        block_costs[block_key] = non_super_valid_block_costs[non_super_part]
+                        skipped_dominated_block_count += 1
+                        continue
+
                 terminals = sorted(terminals)
                 task = (cc_i, block_key, terminals, block_sr_index)
                 if len(block_key) == 1 or len(block_key) == 2 and block_sr_index == block_key[1]:
@@ -2977,6 +3010,10 @@ class SFGraphReductionEngine:
 
         if skipped_presolved_block_count:
             logger.warning(f"    skipped re-solving {skipped_presolved_block_count} non-super blocks...")
+        if skipped_dominated_block_count:
+            logger.warning(
+                f"    reused {skipped_dominated_block_count} non-super witnesses containing super terminals..."
+            )
 
         # --- Wave 1: singletons. These are the atoms of every decomposition --
         # there's nothing to prune them against, so they always get solved.
@@ -2989,13 +3026,8 @@ class SFGraphReductionEngine:
             mip_validation=False,
         )
 
-        # NOTE: Long lived collections throughout the solving phases
-        # Pre-populated with non-super block results for filtering and final DP solving
-        block_results = dict(non_super_dp_block_results)
-        block_costs = dict(non_super_dp_block_costs)
-
         # Solve all singletons for usage in composite block filtering (Wave 2)
-        logger.warning(f"    solving {len(singleton_tasks)} singleton blocks of {num_candidate_blocks}...")
+        logger.warning(f"    solving {len(singleton_tasks)} singleton blocks of {num_blocks}...")
 
         self.solved_trees += len(singleton_tasks)
         nwst._solve_treeproblem_tasks(
@@ -3061,7 +3093,7 @@ class SFGraphReductionEngine:
 
         return best_solution
 
-    def _super_candidate_sink_sets(self) -> CoverageSets:
+    def _super_candidate_sink_sets(self, max_drt_factor: int = 2) -> tuple[CoverageSets, set[NodeIndex]]:
         """Collects remaining super terminal roots, potential roots and terminals that can be
         used as demand sinks for each super terminal.
 
@@ -3069,26 +3101,43 @@ class SFGraphReductionEngine:
         _nor_ allow them to become isolated terminals. Therefore, we need to identify the
         demand sinks (roots, potential roots and terminals) in the neighborhood of each
         super terminal and add them to the candidate roots for that super terminal.
+
+        A collision with another super terminal never resolves to a candidate sink -- a
+        super terminal id is not a valid promotion target -- but it does prove a second,
+        unresolved potential sink route exists (st routes through that other super
+        terminal's own eventual path to sr), so any st that collided with another super
+        terminal is reported separately as ambiguous, regardless of what else was found.
+        A resolved candidate set of size 1 is only a forced sink when st is NOT ambiguous;
+        otherwise the untested alternate route may be cheaper once resolved against the
+        interactivity graph, and forcing the promotion here would pre-empt that. If every
+        collision for st was of this kind (or none occurred), st is still guaranteed a real
+        path to sr, as its nearest potential root(s) are used.
+
+        Returns:
+            (candidate_sinks, ambiguous_sts)
         """
         if self.super_root_index is None:
-            return {}
+            return {}, set()
 
+        sr_index = self.super_root_index
         candidate_sinks: CoverageSets = defaultdict(set)
+        ambiguous_sts: set[int] = set()
 
-        roots = set(self.terminal_sets.keys())
-        terminal_to_root_map = {v: k for k in roots for v in self.terminal_sets[k]}
+        real_roots = set(self.terminal_sets.keys()) - {sr_index}
+        super_terminals = self.terminal_sets[sr_index]
+        terminal_to_root_map = {v: k for k in real_roots for v in self.terminal_sets[k]}
 
         non_steiners = self.non_steiner_nodes()
-        radius_cap = 2 * self._global_min_max_drt
+        radius_cap = max_drt_factor * self._global_min_max_drt
         weight_map = {i: self.graph[i][PAYLOAD_WEIGHT_KEY] for i in self.graph.node_indices()}
 
         self.set_edge_weights()
 
-        for st in self.terminal_sets[self.super_root_index]:
+        for st in super_terminals:
             covered = self._collision_envelope(st, non_steiners, weight_map, radius_cap)
 
             for v in covered:
-                if v in roots:
+                if v in real_roots:
                     candidate_sinks[st].add(v)
                     continue
 
@@ -3097,11 +3146,21 @@ class SFGraphReductionEngine:
                     candidate_sinks[st].add(terminal_to_root_map[v])
                     continue
 
-                # Otherwise it is a potential root...
+                if v in super_terminals:
+                    # ambiguous, resolved below if nothing else survives
+                    ambiguous_sts.add(st)
+                    continue
+
                 if v in self.potential_roots and self.shortest_path_length(st, v) <= self._global_min_max_drt:
                     candidate_sinks[st].add(v)
 
-        return candidate_sinks
+            if not candidate_sinks[st]:
+                paths = rx.all_shortest_paths(
+                    self.graph, st, sr_index, weight_fn=lambda e: e[PAYLOAD_WEIGHT_KEY]
+                )
+                candidate_sinks[st] |= {p[-2] for p in paths}
+
+        return candidate_sinks, ambiguous_sts
 
     def _interactivity_graph_super(
         self,
