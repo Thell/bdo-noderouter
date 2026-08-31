@@ -169,6 +169,31 @@ def transform_pairs_to_reduced_pairs(
     return list(transformed_pairs)
 
 
+def dump_reduction_results(
+    msg: str,
+    graph: PyDiGraph,
+    terminal_sets: dict[int, set[int]],
+    super_root_index: int | None,
+    num_edges_start: int,
+    num_nodes_start: int,
+    num_terminal_roots_start: int,
+    num_terminals_start: int,
+):
+    # Reduction percentages
+    num_edges_end = graph.num_edges()
+    num_nodes_end = graph.num_nodes()
+    num_terminal_roots_end = len(terminal_sets)
+    num_terminals_end = sum(len(ts) for ts in terminal_sets.values()) + num_terminal_roots_end
+    per_edges = (num_edges_end - num_edges_start) / num_edges_start
+    per_nodes = (num_nodes_end - num_nodes_start) / num_nodes_start
+    per_terminals = (num_terminals_end - num_terminals_start) / num_terminals_start
+    per_roots = (num_terminal_roots_end - num_terminal_roots_start) / num_terminal_roots_start
+    num_super_terminals = 0 if super_root_index is None else len(terminal_sets.get(super_root_index, []))
+    print(
+        f"  {msg}: Reduction Percentages: Edges ({num_edges_start} -> {num_edges_end}): {per_edges * 100:.2f}%, Nodes ({num_nodes_start} -> {num_nodes_end}): {per_nodes * 100:.2f}%, Terminals ({num_terminals_start} -> {num_terminals_end}): {per_terminals * 100:.2f}%, Roots ({num_terminal_roots_start} -> {num_terminal_roots_end}): {per_roots * 100:.2f}% ({num_super_terminals} super terminals) [Trees solved: 0]"
+    )
+
+
 def transform_terminal_pairs(
     seed: str, graph: PyDiGraph, fp_graph: fp.PyFastGraph, mappings: dict, terminals: dict
 ) -> tuple[set[int], dict[int, int]]:
@@ -185,6 +210,17 @@ def transform_terminal_pairs(
     node_key_by_index = graph.attrs.get("node_key_by_index", {})
     super_root_index = node_key_by_index.inv.get(SUPER_ROOT, None)
     terminal_idx_pairs = {node_key_by_index.inv[t]: node_key_by_index.inv[r] for t, r in terminals.items()}
+
+    exploration_data = get_exploration_data()
+    if super_root_index is not None:
+        num_edges_start = exploration_data.super_graph.num_edges()
+        num_nodes_start = exploration_data.super_graph.num_nodes()
+    else:
+        num_edges_start = exploration_data.graph.num_edges()
+        num_nodes_start = exploration_data.graph.num_nodes()
+
+    num_terminal_roots_start = len(set(terminals.values()))
+    num_terminals_start = len(terminals) + num_terminal_roots_start
 
     # Transform terminal pairs to reduced graph pairs
     fixed_nodes: set[int] = set()
@@ -218,6 +254,17 @@ def transform_terminal_pairs(
     for node in fixed_nodes:
         if graph.has_node(node):
             graph[node][PAYLOAD_WEIGHT_KEY] = 0
+
+    dump_reduction_results(
+        "Initial Transformation",
+        graph,
+        terminal_sets,
+        super_root_index,
+        num_edges_start,
+        num_nodes_start,
+        num_terminal_roots_start,
+        num_terminals_start,
+    )
 
     reduction_engine = SFGraphReductionEngine(
         seed,
@@ -316,7 +363,7 @@ def optimize_with_terminals(seed: str, terminals: dict, config: dict) -> Solutio
         print(f"MIP: num_nodes: {exploration_graph_reduced.num_nodes()}, num_fixed_nodes: {len(fixed_nodes)}")
         set_graph_terminal_sets_attribute(exploration_graph_reduced, reduced_terminals)
         model = get_highs(config)
-        if exploration_graph_reduced.num_nodes()/2 < len(fixed_nodes):
+        if exploration_graph_reduced.num_nodes() / 2 < len(fixed_nodes):
             model, vars = create_model(model, graph=exploration_graph_reduced)
         else:
             model, vars = create_model(model, graph=exploration_graph_reduced, fixed_nodes=fixed_nodes)
@@ -438,6 +485,7 @@ if __name__ == "__main__":
 
     config = ds.get_config("config")
     config["name"] = "node_router"
+    config["logger"]["level"] = "TRACE"
     set_logger(config)
 
     strat_optimized = PairingStrategy.optimized
@@ -513,16 +561,16 @@ if __name__ == "__main__":
 
     # # Example: Run one-off for
     # # 95faa43 nearest_captial  Budget: 150
-    budget = 150
+    budget = 145
     percent = round(budget / MAX_BUDGET * 100)
-    seed = "95faa43"
+    seed = "86e63d9"
     mip_plan = Plan(
         optimize_with_terminals,
         budget,
         percent,
         seed,
-        False,
-        PairingStrategy.nearest_capital,
+        True,
+        PairingStrategy.cheapest_town,
         False,
     )
     print(mip_plan)
