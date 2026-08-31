@@ -651,13 +651,13 @@ def _blocks_to_blockmasks(
 
 
 def _blockmasks_to_blocks(
-    coverage_sets: CoverageSets,
+    coverage_representatives: CoverageRepresentatives,
     block_mask_solutions: MaskedBlockSolutionMasks,
     block_mask_costs: MaskedBlockCosts,
 ) -> tuple[BlockResults, BlockCosts]:
     logger.warning(f"    reversing block masks... ({len(block_mask_solutions)})")
 
-    coverage_roots = sorted(coverage_sets.keys())
+    coverage_roots = sorted(coverage_representatives)
 
     block_results = {}
     block_costs = {}

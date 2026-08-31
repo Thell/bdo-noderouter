@@ -13,7 +13,13 @@ import nwst_dw
 import rustworkx as rx
 from bidict import bidict
 from loguru import logger
-from nwst_types import (
+from rustworkx import PyDiGraph
+from sfpgre_cch import get_interactivity_edges
+
+import api_nwst as nwst
+from api_common import HYPERNODE_CONTENTS_KEY, INT_INF, PAYLOAD_WEIGHT_KEY
+from api_exploration_data import get_exploration_data
+from api_nwst_types import (
     BlockCosts,
     BlockedInteractionEdges,
     BlockResults,
@@ -24,12 +30,6 @@ from nwst_types import (
     NodeIndex,
     SolutionSet,
 )
-from rustworkx import PyDiGraph
-from sfpgre_cch import get_interactivity_edges
-
-import api_nwst as nwst
-from api_common import HYPERNODE_CONTENTS_KEY, INT_INF, PAYLOAD_WEIGHT_KEY
-from api_exploration_data import get_exploration_data
 from api_nwstp_problem import TreeProblem
 from api_nwstp_solver import solve_tree
 from api_rx_pydigraph import subgraph_stable
