@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import sys
 import time
+from collections import UserDict
 
 import polars as pl
 from loguru import logger
@@ -34,7 +35,7 @@ from orchestrator_types import Instance, Plan, SeedType
 SKIPPED_SEEDS_HEX = {}
 
 
-class _FuzzInstanceMetrics(dict):
+class _FuzzInstanceMetrics(UserDict):
     """Factory for producing Polars rows from test incidents."""
 
     def __init__(
