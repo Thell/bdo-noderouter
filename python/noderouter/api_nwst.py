@@ -975,7 +975,6 @@ def _unmask_solution(
     mask: SolutionMask,
     nodes_list: list[NodeIndex] | None = None,
 ) -> set[int]:
-    logger.trace("    extracting solution from mask...")
     solution = set()
 
     if nodes_list is None:
