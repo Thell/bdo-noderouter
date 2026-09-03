@@ -2435,6 +2435,102 @@ class SFGraphReductionEngine:
 
         return collisions
 
+    def _zero_increment_superterminal_assignments(self) -> dict[int, int]:
+        """Certify floating demands that can join a real class at zero incremental cost.
+
+        Every active demand endpoint is selected in every feasible solution, and
+        optional representatives with zero residual payload can be added for free.
+        Virtual antiparallel arcs represent connectivity already required inside
+        each real demand class.  Consequently, a superterminal in the same
+        strongly connected closure as a real root can be assigned to that root
+        when the root has an explicit current admissibility arc to the directed
+        super-root.
+
+        ``fixed_nodes`` alone is deliberately not a zero-increment certificate:
+        an active fixed representative can contain unpaid absorbed hypernodes.
+        The artificial super-root is excluded because its inbound arcs represent
+        alternative sink choices rather than ordinary graph connectivity.
+        """
+        sr_index = self.super_root_index
+        if sr_index is None or not self.terminal_sets.get(sr_index):
+            return {}
+
+        admissible_real_roots = {
+            root
+            for root, terminals in self.terminal_sets.items()
+            if root != sr_index and terminals and self.graph.has_edge(root, sr_index)
+        }
+        if not admissible_real_roots:
+            return {}
+
+        active_nodes = set(self.graph.node_indices())
+        demand_nodes = {
+            node for root, terminals in self.terminal_sets.items() if terminals for node in {root, *terminals}
+        }
+        zero_increment_nodes = (
+            demand_nodes | {node for node in active_nodes if self.graph[node][PAYLOAD_WEIGHT_KEY] == 0}
+        ) - {sr_index}
+
+        closure = subgraph_stable(self.graph, zero_increment_nodes)
+
+        # Each virtual pair is backed by connectivity that every feasible
+        # solution already supplies; it does not choose or charge a concrete path.
+        for root, terminals in self.terminal_sets.items():
+            if root == sr_index or not terminals:
+                continue
+            for terminal in terminals:
+                if not closure.has_edge(root, terminal):
+                    closure.add_edge(root, terminal, {})
+                if not closure.has_edge(terminal, root):
+                    closure.add_edge(terminal, root, {})
+
+        assignments: dict[int, int] = {}
+        superterminals = self.terminal_sets[sr_index]
+        for component in rx.strongly_connected_components(closure):
+            component_nodes = set(component)
+            roots = sorted(
+                component_nodes & admissible_real_roots,
+                key=self.get_node_key,
+            )
+            if not roots:
+                continue
+
+            for superterminal in sorted(component_nodes & superterminals, key=self.get_node_key):
+                root = next((candidate for candidate in roots if candidate != superterminal), None)
+                if root is not None:
+                    assignments[superterminal] = root
+
+        return assignments
+
+    def _assign_zero_increment_superterminals(self, assignments: dict[int, int]) -> int:
+        """Apply one immutable snapshot of certified floating-demand assignments."""
+        sr_index = self.super_root_index
+        if sr_index is None:
+            return 0
+
+        assigned = 0
+        for superterminal, root in assignments.items():
+            if (
+                superterminal not in self.terminal_sets.get(sr_index, set())
+                or root == superterminal
+                or not self.terminal_sets.get(root)
+                or not self.graph.has_edge(root, sr_index)
+            ):
+                continue
+
+            self.terminal_sets[root].add(superterminal)
+            self.terminal_sets[sr_index].remove(superterminal)
+            self.super_candidate_sink_sets.pop(superterminal, None)
+            self.ambiguous_super_terminals.discard(superterminal)
+            assigned += 1
+
+            logger.warning(
+                f"      assigned zero-increment super-terminal {self.get_node_key(superterminal)} "
+                f"to real root {self.get_node_key(root)}"
+            )
+
+        return assigned
+
     def reduce_isolated_super_terminals(self) -> int:
         """Reduces super root set by promoting super terminals to real roots based on single sink
         collision envelope over 2 * global_min_max_drt.
@@ -2477,6 +2573,12 @@ class SFGraphReductionEngine:
                 f"      promoted super-terminal {self.get_node_key(st)} "
                 f"to root {self.get_node_key(sink)} (was: {sink_type})"
             )
+
+        zero_increment_assignments = self._zero_increment_superterminal_assignments()
+        zero_increment_moved = self._assign_zero_increment_superterminals(zero_increment_assignments)
+        if zero_increment_moved:
+            self.call_counts["reduce_zero_increment_superterminal_assignment"] += zero_increment_moved
+            num_moved += zero_increment_moved
 
         # super-root may now be empty
         if not self.terminal_sets.get(sr_index):
