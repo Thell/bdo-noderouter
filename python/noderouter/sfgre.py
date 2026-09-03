@@ -498,6 +498,13 @@ class SFGraphReductionEngine:
                 max_rt_distance = max(max_rt_distance, self.shortest_path_length(t, r))
         return max_rt_distance
 
+    def _get_maximum_rt_distances(self) -> dict[int, float]:
+        """Calculates and returns the maximum root to terminal distance from shortest paths for each arbor."""
+        max_rt_distances = defaultdict(float)
+        for r, terminals in self.terminal_sets.items():
+            max_rt_distances[r] = max(self.shortest_path_length(t, r) for t in terminals)
+        return max_rt_distances
+
     @property
     def min_max_rt_distance(self) -> float:
         """Updates and returns the maximum root to terminal distance."""
@@ -2368,6 +2375,76 @@ class SFGraphReductionEngine:
 
         return len(removables)
 
+    def reduce_steiner_nodes_by_distance_recursive(self) -> int:
+        """Reduces Steiner nodes based on weight or reachability distance bounds by removal.
+
+        If a Steiner node's weight exceeds min_max_drt, or if its minimum distance to
+        any terminal exceeds min_max_drt, it is dominated and cannot participate in an
+        optimal solution. Where the max drt is the max of the nearest reachable arbor
+        within the bound of the currently applied max drt.
+
+        Handles:
+            > **` 𝔀(Ⓢ) > min_max_drt  ⭆  𝐆 ≔ 𝐆 ∖ Ⓢ`**
+            > **`¬( 𝔀(Ⓢ ↠ Ⓣ) ≤ min_max_drt )  ⭆  𝐆 ≔ 𝐆 ∖ Ⓢ`**
+        """
+        logger.trace("reduce_steiner_nodes_by_distance_recursive...")
+
+        self.set_edge_weights()
+        non_steiner_nodes = self.non_steiner_nodes()
+
+        # This can be a fairly expensive reduction so if min_max_drt has not changed,
+        # we can skip it knowing that it would have only reduced Steiner nodes not
+        # roots/terminals which is a lessor impact.
+        global_min_max_drt = self.min_max_rt_distance
+        # if global_min_max_drt >= self._steiner_distance_prev_max_drt:
+        #     return 0
+        # self._steiner_distance_prev_max_drt = global_min_max_drt
+
+        steiners = set(self.graph.node_indices()) - non_steiner_nodes - {self.super_root_index}
+
+        drt_distances = self._get_maximum_rt_distances()
+        terminal_to_root_map = {t: r for r, terminals in self.terminal_sets.items() for t in terminals}
+        terminal_to_root_map.update({r: r for r in self.terminal_sets})
+
+        effective_terminal_drt = {
+            t: min(global_min_max_drt, drt_distances[r]) for t, r in terminal_to_root_map.items()
+        }
+        # populate the root entries as well, using any of the terminal drts
+        effective_terminal_drt.update({
+            r: min(global_min_max_drt, drt_distances[r]) for r in self.terminal_sets
+        })
+
+        def is_safe_to_remove(v: int, drt: float, blockers: set[int]) -> bool:
+            if nearby_terminals := self._collect_local_demand_neighborhood(
+                v, blockers, self.node_weight_map, int(drt)
+            ):
+                nearby_terminals -= {self.super_root_index}
+                if not nearby_terminals:
+                    return True
+                # recurse using max effective distance
+                max_effective_distance = max(effective_terminal_drt.get(t, drt) for t in nearby_terminals)
+                if max_effective_distance == drt:
+                    return False
+                return is_safe_to_remove(v, max_effective_distance, nearby_terminals)
+            return True
+
+        removables = [
+            v
+            for v in steiners
+            if self.graph[v][PAYLOAD_WEIGHT_KEY] > global_min_max_drt
+            or is_safe_to_remove(v, global_min_max_drt, self.non_steiner_nodes())
+        ]
+
+        if removables:
+            self.remove_nodes_from(removables)
+            logger.warning(f"    removed {len(removables)} Steiner nodes via recursive drt reduction")
+            if self.do_debug:
+                logger.trace(f"    {sorted(self.get_node_key(n) for n in removables)}")
+                self.dump_state("reduce_steiner_nodes_by_distance_recursive", len(removables))
+                self.validate_reachability()
+
+        return len(removables)
+
     def _local_dijkstra(self, source: int, radius: int, weight: dict[int, int]) -> dict[int, int]:
         import heapq
 
@@ -3599,6 +3676,7 @@ class SFGraphReductionEngine:
 
             # Reduce Steiner nodes by distance - this is a Steiner node graph reduction by `remove` only
             self.reduce_steiner_nodes_by_distance()
+            self.reduce_steiner_nodes_by_distance_recursive()
 
             # Reduce degreek enclosed steiner - this is a Steiner node graph reduction by `consume` only
             self.reduce_degreek_enclosed_steiner()
