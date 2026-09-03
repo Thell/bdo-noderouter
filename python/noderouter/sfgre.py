@@ -677,6 +677,74 @@ class SFGraphReductionEngine:
 
         return num_removed
 
+    def _zero_increment_root_merge_groups(self) -> list[set[int]]:
+        """Certify real-root groups connected at zero incremental cost.
+
+        Every active demand endpoint is selected in every feasible solution.
+        Optional representatives with zero residual payload can be added for
+        free. Real demand edges are added as virtual antiparallel arcs because
+        feasibility already connects each such class. Therefore, real roots in
+        one resulting strongly connected component can be required to share one
+        class without increasing cost.
+
+        ``fixed_nodes`` alone is deliberately not a zero-increment certificate:
+        an active fixed representative can contain unpaid absorbed hypernodes.
+
+        The directed super-root is excluded: its synthetic inbound arcs encode a
+        choice of floating sink, not an ordinary zero-cost connection.
+        """
+        sr_index = self.super_root_index
+        real_roots = {
+            root for root, terminals in self.terminal_sets.items() if root != sr_index and terminals
+        }
+        if len(real_roots) < 2:
+            return []
+
+        active_nodes = set(self.graph.node_indices())
+        demand_nodes = real_roots | {
+            terminal for terminals in self.terminal_sets.values() for terminal in terminals
+        }
+        zero_increment_nodes = (
+            demand_nodes | {node for node in active_nodes if self.graph[node][PAYLOAD_WEIGHT_KEY] == 0}
+        ) - {sr_index}
+
+        closure = subgraph_stable(self.graph, zero_increment_nodes)
+
+        # A virtual arc pair represents connectivity already required by a real
+        # demand class; it carries no assertion about which paid path realizes it.
+        for root, terminals in self.terminal_sets.items():
+            if root == sr_index or not terminals:
+                continue
+            for terminal in terminals:
+                if not closure.has_edge(root, terminal):
+                    closure.add_edge(root, terminal, {})
+                if not closure.has_edge(terminal, root):
+                    closure.add_edge(terminal, root, {})
+
+        groups = [set(component) & real_roots for component in rx.strongly_connected_components(closure)]
+        groups = [group for group in groups if len(group) > 1]
+        return sorted(groups, key=lambda group: tuple(sorted(group)))
+
+    def _merge_zero_increment_root_groups(self, groups: list[set[int]]) -> int:
+        """Apply certified root-class merges from one immutable snapshot."""
+        merges = 0
+        for certified_roots in groups:
+            roots = {root for root in certified_roots if self.terminal_sets.get(root)}
+            if len(roots) < 2:
+                continue
+
+            merged_terminals = set().union(*(self.terminal_sets[root] for root in roots))
+            representative = self.choose_minimax_root(roots, merged_terminals)
+            merged_terminals.update(roots - {representative})
+            self.terminal_sets[representative] = merged_terminals
+
+            for root in roots - {representative}:
+                self.terminal_sets.pop(root)
+
+            merges += len(roots) - 1
+
+        return merges
+
     def reduce_demand_roots(self) -> int:
         """
         Reduces roots by merging arbor sets based on arbor adjacency.
@@ -782,7 +850,13 @@ class SFGraphReductionEngine:
 
         self.terminal_sets = terminal_sets
 
-        merges = num_roots - len(terminal_sets)
+        zero_increment_groups = self._zero_increment_root_merge_groups()
+        zero_increment_merges = self._merge_zero_increment_root_groups(zero_increment_groups)
+        if zero_increment_merges:
+            self.call_counts["reduce_zero_increment_root_closure"] += zero_increment_merges
+            logger.warning(f"  merged {zero_increment_merges} roots through zero-increment closure")
+
+        merges = num_roots - len(self.terminal_sets)
 
         if merges > 0:
             logger.info(f"  merged {merges} roots")
@@ -1042,11 +1116,12 @@ class SFGraphReductionEngine:
         logger.trace("reduce_degree1_roots...")
 
         # NOTE: Potential roots are not considered as roots here because a potential
-        #       root absorbs rather than consumes its neighbors and can only absorb
-        #       a 2-degree neighbor since if it consumes a neighbor with deg() > 2
-        #       it can end up in the optimal path of a different demand set which
-        #       would incur the cost of the previously absorbed neighbors in its
-        #       hyper node contents which may not be part of the optimal solution.
+        #       root may not be part of the optimal solution. If a potential root was
+        #       to absorb its neighbor into its hypernode contents then it would only
+        #       be able to do so if the neighbor was degree-2 since it could end up
+        #       in a path used in the optimal solution after the absorption while
+        #       containing hypernode contents thereby making what would have been an
+        #       optimal solution no longer optimal.
 
         terminal_sets = self.terminal_sets
 
