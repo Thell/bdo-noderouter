@@ -443,7 +443,10 @@ class SFGraphReductionEngine:
 
         for r in candidate_roots:
             # Compute distances from r to all terminals
-            path_lengths = [self.shortest_path_length(r, t) for t in terminals]
+            # NOTE: since demand endpoints are all zero-weight order does not matter
+            #       but since all other r -> t paths are taken as terminal -> root
+            #       we do the same here.
+            path_lengths = [self.shortest_path_length(t, r) for t in terminals]
 
             # Compute the maximum distance to terminals
             max_rt = max(path_lengths)
