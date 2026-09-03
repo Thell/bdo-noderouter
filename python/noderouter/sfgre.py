@@ -653,8 +653,8 @@ class SFGraphReductionEngine:
 
         # This can potentially leave a leaf root node that was demoted to potential root
         # and then further demoted to Steiner node in the graph and in that case there could
-        # potentially be a cascading pipeline reduction that doesn't trigger because of it
-        # but it is not a correctness issue. (A state could be tracked for all original roots
+        # potentially be a cascading pipeline reduction that doesn't trigger.
+        # This is not a correctness issue. (A state could be tracked for all original roots
         # and then we could check if any of them were demoted to a Steiner node but that is
         # out of scope of a pure "potential root" reduction and state tracking for terminals
         # and roots is a performance sink for every reduction when they are written as self
