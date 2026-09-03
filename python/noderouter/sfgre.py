@@ -218,7 +218,7 @@ class SFGraphReductionEngine:
 
     do_debug: bool = False
     call_counts: Counter = field(default_factory=Counter)
-    solved_trees = 0
+    solved_trees: int = 0
 
     # MARK: Common Helpers
 
