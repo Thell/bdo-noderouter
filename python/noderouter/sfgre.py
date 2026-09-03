@@ -206,9 +206,6 @@ class SFGraphReductionEngine:
     terminal_sets: CoverageSets = field(default_factory=dict)
     super_candidate_sink_sets: CoverageSets = field(default_factory=dict)
 
-    _seen_nonreducible_outer_windows: set[tuple[int, ...]] = field(default_factory=set)
-    _seen_nonreducible_steiner_face_clusters: set[tuple[int, ...]] = field(default_factory=set)
-
     # Global maximum distance between a root and its' furthest terminal
     _global_min_max_drt: float = float("inf")
     _steiner_distance_prev_max_drt: float = float("inf")
