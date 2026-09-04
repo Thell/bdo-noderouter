@@ -675,7 +675,7 @@ class SFGraphReductionEngine:
 
         num_removed = num_old_roots - len(self.potential_roots)
         if num_removed > 0:
-            logger.warning(f"  reduced potential roots from {num_old_roots} to {len(self.potential_roots)}")
+            logger.info(f"  reduced potential roots from {num_old_roots} to {len(self.potential_roots)}")
             self.dump_state("reduce_potential_roots", num_removed)
             self.validate_reachability()
 
@@ -2434,7 +2434,7 @@ class SFGraphReductionEngine:
 
         if removables:
             self.remove_nodes_from(removables)
-            logger.warning(f"    removed {len(removables)} Steiner nodes via recursive drt reduction")
+            logger.info(f"    removed {len(removables)} Steiner nodes via recursive drt reduction")
             if self.do_debug:
                 logger.trace(f"    {sorted(self.get_node_key(n) for n in removables)}")
                 self.dump_state("reduce_steiner_nodes_by_distance_recursive", len(removables))
@@ -2762,7 +2762,7 @@ class SFGraphReductionEngine:
             self.terminal_sets.pop(root)
 
         if all_consumed:
-            logger.warning(f"      solved {len(isolates)} isolated trees...")
+            logger.info(f"      solved {len(isolates)} isolated trees...")
             if self.do_debug:
                 logger.trace(f"    consumed: {sorted(self.get_node_key(n) for n in all_consumed)}")
                 self.dump_state("solve_isolated_roots_as_trees", len(all_consumed))
