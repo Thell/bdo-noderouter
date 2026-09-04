@@ -1707,38 +1707,33 @@ class SFGraphReductionEngine:
 
         return removals
 
-    def reduce_blocked_roots(self):
-        """Reduces roots whose demands are blocked by strictly one other root's arbor.
+    def reduce_blocked_roots(self) -> int:
+        """Reduces roots by merging arbor sets forced to collide by closed-neighborhood
+        reachability denial.
 
-        Any root whose demands are blocked by strictly one other root's arbor can
-        only satisfy a demand by collision with that other root's arbor.
+        Axiom 1: A purchased node adjacent to a purchased member of arbor B is thereby
+        forced into collision with B (the adjacency principle already relied on by
+        `reduce_demand_roots`'s direct-edge merge test).
+
+        Axiom 2: If removing a set of nodes severs a demand's reachability, some member
+        of that removed set is required by any optimal solution satisfying that demand.
+
+        Lemma: Let 𝓐ᵏ ⋃ N(𝓐ᵏ) be arbor k's terminal/root set closed under one hop of
+        reduction-neighbors. If removing 𝓐ᵏ ⋃ N(𝓐ᵏ) severs some demand of arbor j from
+        its root, j and k must collide. By Axiom 2, the surviving path's absence means
+        some node of 𝓐ᵏ ⋃ N(𝓐ᵏ) is required by j. That node is either a member of 𝓐ᵏ
+        itself (direct membership: collision immediate) or a neighbor of one (Axiom 1:
+        collision immediate). Either way, j and k collide — a pure structural
+        reachability certificate, independent of any cost or distance comparison.
+
+        NOTE: Tested per ordered pair (j, k), not symmetrized, since k's own closed
+        neighborhood need not equal j's; a merge is applied as soon as either
+        direction certifies it.
 
         Handles:
-        > **` ⁝ Ⓣʲ ¬(↠∣𝓐ᵏ∣↠) Ⓡʲ ⁝  ⭆  𝓐ʲ ↣ 𝓐ᵏ`**
+        > **`⁝ Ⓣʲ ¬(↠∣𝓐ᵏ ⋃ N(𝓐ᵏ)∣↠) Ⓡʲ ⁝  ⭆  𝓐ʲ ↣ 𝓐ᵏ`**
         """
         logger.trace("reduce_blocked_roots...")
-
-        def is_blocking_cluster(t: int, r: int, blockers: set[int]) -> bool:
-            visited = set()
-            stack = [t]
-
-            while stack:
-                u = stack.pop()
-
-                if u == r:
-                    return False
-
-                if u in visited or u in blockers:
-                    continue
-
-                visited.add(u)
-
-                # NOTE: We do not use self.reduction_neighbors here because the super root could potentially
-                #       be blocked by another root, and this allows for super-terminal to regular root merges
-                stack.extend(self.graph.successor_indices(u))
-                stack.extend(self.graph.predecessor_indices(u))
-
-            return True
 
         terminal_sets = self.terminal_sets
         merges = 0
@@ -1747,25 +1742,42 @@ class SFGraphReductionEngine:
         while made_progress:
             made_progress = False
 
-            # 𝓐𐞪 lookup
-            # Blocker-first ordering: larger clusters first
-            cluster_nodes = {r: set(ts) | {r} for r, ts in terminal_sets.items()}
-            sorted_roots = sorted(terminal_sets.keys(), key=lambda r: len(terminal_sets[r]), reverse=True)
+            roots = [r for r in terminal_sets if r != self.super_root_index]
 
-            # Try each root as a potential blocker
-            for r_k in sorted_roots:
-                if r_k == self.super_root_index:
+            # Blocker-first ordering: larger clusters first, more likely to trigger
+            sorted_roots = sorted(roots, key=lambda r: len(terminal_sets[r]), reverse=True)
+
+            # Arbor under test
+            for r_j in roots:
+                if r_j not in terminal_sets:
                     continue
+                terminals_j = terminal_sets[r_j]
 
-                Ck = cluster_nodes[r_k]
-
-                # Test whether r_j blocks any other root r_k
-                for r_j, terminals in terminal_sets.items():
-                    if r_j == r_k or r_j == self.super_root_index:
+                # Candidate blocker
+                for r_k in sorted_roots:
+                    if r_k == r_j or r_k not in terminal_sets:
                         continue
 
-                    if any(is_blocking_cluster(t, r_j, Ck) for t in terminals):
-                        # Perform merge: 𝓐ʲ ↣ 𝓐ᵏ
+                    # Axiom 1: augment blockers with their reduction-neighbors
+                    blockers = set(terminal_sets[r_k]) | {r_k}
+                    for u in list(blockers):
+                        blockers.update(self.reduction_neighbors(u))
+
+                    if self.super_root_index is not None:
+                        blockers.discard(self.super_root_index)
+
+                    remaining = set(self.graph.node_indices()) - blockers
+                    if r_j not in remaining:
+                        # r_j's own root was adjacent to r_k → already forced
+                        self.consume_terminal_set(terminal_sets, r_j, r_k)
+                        merges += 1
+                        made_progress = True
+                        break
+
+                    tmpG = subgraph_stable(self.graph, remaining)
+
+                    # Does any demand of r_j become unsatisfiable?
+                    if any(t not in remaining or not rx.has_path(tmpG, t, r_j) for t in terminals_j):
                         self.consume_terminal_set(terminal_sets, r_j, r_k)
                         merges += 1
                         made_progress = True
@@ -1778,7 +1790,7 @@ class SFGraphReductionEngine:
         self.terminal_sets = {r: ts for r, ts in terminal_sets.items() if ts}
 
         if merges > 0:
-            logger.info(f"  merged {merges} blocked roots")
+            logger.warning(f"  merged {merges} roots via forced collisions")
             if self.do_debug:
                 self.dump_state("reduce_blocked_roots", merges)
                 self.validate_reachability()
